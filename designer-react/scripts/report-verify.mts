@@ -5,10 +5,12 @@
  * A. 多级列头合并，以及多指标下的「指标子表头」行
  * B. sources 的 where / params 筛选
  * C. 行字段中文别名映射（表头/小计/合计标题全部中文化）
+ * D. 真库多级列头 + 双指标 + 筛选（sales_month）
+ * E. 数值列格式（货币 / 整数，含 xlsx 数字格式串下发）
  *
  * 运行：node_modules/.bin/vite-node scripts/report-verify.mts
  */
-import { buildCrossTemplate, buildGroupTemplate, headerRowCount } from '../src/report/grid-report'
+import { buildCrossTemplate, buildGroupTemplate, headerRowCount } from '@/report/grid-report'
 
 const SERVER = 'http://127.0.0.1:18888'
 const DB = 'F:/project/_nop/report-demo.db'
@@ -236,11 +238,60 @@ async function scenarioDbMultiLevel(): Promise<void> {
   check('总计 = 83,200', flat.includes('83,200'), '')
 }
 
+async function scenarioNumberFormat(): Promise<void> {
+  console.log('\nE. 数值列格式（真库 sales_month：金额=货币 / 数量=整数）')
+  const tpl = buildCrossTemplate({
+    sheetName: '格式化交叉表',
+    ds: 'ds1',
+    rowFields: ['region'],
+    colFields: ['year', 'month'],
+    valueFields: ['amount', 'qty'],
+    valueFormats: {
+      amount: { kind: 'currency', code: 'CNY', digits: 2, thousands: true },
+      qty: { kind: 'int', digits: 0, thousands: true },
+    },
+    title: 'region × year/month',
+  })
+  const res = await fetch(`${SERVER}/api/report/render`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      template: tpl,
+      sources: [{ name: 'ds1', engine: 'sqlite', database: DB, table: 'sales_month' }],
+    }),
+  })
+  const text = await res.text()
+  if (!res.ok) {
+    console.error(`  渲染失败 ${res.status}: ${text.slice(0, 400)}`)
+    failures++
+    return
+  }
+  type FCell = Cell & { num_format?: string; raw_number?: number }
+  const rows = (JSON.parse(text) as { sheets: { rows: FCell[][] }[] }).sheets[0].rows
+  show(rows)
+  const flat = rows.map((r) => cells(r).join('|')).join('\n')
+
+  // 金额：货币符号 + 千分位 + 两位小数（华东 2024-1月 = 12,000）
+  check('金额按货币格式渲染（¥12,000.00）', flat.includes('¥12,000.00'), flat.slice(0, 300))
+  // 数量：整数（无 .00 尾巴）
+  check('数量按整数渲染（120，不带小数）', /(^|\|)120(\||$)/m.test(flat), flat.slice(0, 300))
+  // 千分位生效：不应出现「¥」后紧跟 4 位以上数字
+  check('金额一律带千分位', !/¥\d{4}/.test(flat))
+  // xlsx 导出靠这两个字段设置 Excel 数字格式（文本渲染与 Excel 显示同口径）
+  const moneyCells = rows.flat().filter((c) => c.num_format === '"¥"#,##0.00')
+  check('金额格下发 Excel 数字格式串', moneyCells.length > 0, `命中 ${moneyCells.length} 个`)
+  const qtyCells = rows.flat().filter((c) => c.num_format === '#,##0')
+  check('数量格下发 Excel 数字格式串', qtyCells.length > 0, `命中 ${qtyCells.length} 个`)
+  // 数值格仍保留原始数字（Excel 里可继续参与计算）
+  check('数值格保留原始数字', moneyCells.every((c) => typeof c.raw_number === 'number'))
+}
+
 async function main(): Promise<void> {
   await scenarioMultiLevel()
   await scenarioWhere()
   await scenarioAlias()
   await scenarioDbMultiLevel()
+  await scenarioNumberFormat()
   console.log(failures === 0 ? '\n全部通过 ✅' : `\n${failures} 项未通过 ❌`)
   if (failures) process.exit(1)
 }

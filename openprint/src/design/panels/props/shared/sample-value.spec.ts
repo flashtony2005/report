@@ -73,7 +73,7 @@ describe('typeMeta', () => {
   it('已知类型有专属配色，未知类型回退灰色并显示原始类型名', () => {
     expect(TYPE_META.string?.label).toBe('文本')
     expect(typeMeta(mkField({ path: 'a', type: 'string' })).color).toBe('#1677ff')
-    const unknown = typeMeta(mkField({ path: 'a', type: 'jsonb' }))
+    const unknown = typeMeta(mkField({ path: 'a', type: 'jsonb' as never }))
     expect(unknown.label).toBe('jsonb')
     expect(unknown.color).toBe('#8c8c8c')
   })

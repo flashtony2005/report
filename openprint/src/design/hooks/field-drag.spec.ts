@@ -85,8 +85,10 @@ describe('field-drag · 绑定补丁', () => {
       )
       expect(patch).toMatchObject({ contentType: 'variable', binding: 'items[0].phone' })
       // 清掉旧三态值，避免 expression/value 抢占优先级
-      expect(patch?.value).toBeUndefined()
-      expect(patch?.expression).toBeUndefined()
+      // （AnyControl 联合体里表格/图片等分支无 value/expression，测试侧松散取值）
+      const loose = patch as unknown as Record<string, unknown>
+      expect(loose?.value).toBeUndefined()
+      expect(loose?.expression).toBeUndefined()
     }
   })
 

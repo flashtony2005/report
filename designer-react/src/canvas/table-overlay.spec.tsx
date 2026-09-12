@@ -127,6 +127,29 @@ describe('TableViewLayer', () => {
     expect(item.className).not.toContain('is-editing')
   })
 
+  it('编辑态挂出 CellToolbar；点关闭 → 退出编辑（P7 收尾）', async () => {
+    const obj = new PrintTable(tableControl('t1'))
+    attachCanvasHost(fakeHost([obj]))
+    useDesignerStore.setState({
+      controls: [tableControl('t1')],
+      editingCell: { controlId: 't1', row: 0, col: 0 },
+    })
+
+    const m = await mount(createElement(TableViewLayer))
+    roots.push([m.root, m.host])
+
+    const toolbar = m.host.querySelector<HTMLElement>('[data-testid="cell-toolbar"]')
+    expect(toolbar).toBeTruthy()
+    expect(toolbar!.querySelector('[data-testid="cell-role"]')?.textContent).toBe('标题行')
+
+    const close = toolbar!.querySelector<HTMLButtonElement>('[data-testid="cell-close"]')!
+    await act(async () => {
+      close.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+    expect(useDesignerStore.getState().editingCell).toBeNull()
+    expect(m.host.querySelector('[data-testid="cell-toolbar"]')).toBeNull()
+  })
+
   it('tableCss 幂等注入，且限定在 .op-table-overlay 作用域内', async () => {
     const obj = new PrintTable(tableControl('t1'))
     attachCanvasHost(fakeHost([obj]))

@@ -92,7 +92,10 @@ const vTicks = computed<Tick[]>(() => {
 const bandRef = shallowRef<RulerBand | null>(getRulerBand())
 let unsubBand: (() => void) | null = null
 onMounted(() => {
-  unsubBand = onRulerBandChange((v) => (bandRef.value = v))
+  // 订阅通知只表示「变了」，值需用 getRulerBand() 重新取快照（onRulerBandChange 不传参）
+  unsubBand = onRulerBandChange(() => {
+    bandRef.value = getRulerBand()
+  })
   // 补上挂载前发生过的更新（SmartGuides 可能在组件挂载前就已写入）
   bandRef.value = getRulerBand()
 })

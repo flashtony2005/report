@@ -318,6 +318,7 @@ pub fn sample_template() -> ReportTemplate {
             col_after: None,
             value_expr: value_expr.map(|s| s.to_string()),
             expand_expr: None,
+            format: None,
         })
     };
 
@@ -393,6 +394,7 @@ pub fn cross_tab_template() -> ReportTemplate {
             col_after: None,
             value_expr: None,
             expand_expr: None,
+            format: None,
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
@@ -441,6 +443,7 @@ pub fn cross_tab_two_metrics_template() -> ReportTemplate {
             col_after: None,
             value_expr: None,
             expand_expr: None,
+            format: None,
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
@@ -507,6 +510,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
             col_after: col_after.map(|s| s.to_string()),
             value_expr: value_expr.map(|s| s.to_string()),
             expand_expr: None,
+            format: None,
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
@@ -579,6 +583,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
             col_after: col_after.map(|s| s.to_string()),
             value_expr: value_expr.map(|s| s.to_string()),
             expand_expr: None,
+            format: None,
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
@@ -671,6 +676,7 @@ pub fn cross_tab_multi_level_template() -> ReportTemplate {
             col_after: col_after.map(|s| s.to_string()),
             value_expr: value_expr.map(|s| s.to_string()),
             expand_expr: None,
+            format: None,
         })
     };
     let cell = |value: Option<&str>,
@@ -813,6 +819,117 @@ mod tests {
         rows.iter().map(|r| r.iter().map(|c| c.text.clone()).collect::<Vec<_>>().join(" | ")).collect()
     }
 
+    /// 只含一个数值格的模板（隔离验证数值格式，不受分组/交叉表干扰）
+    fn one_number_template(value: f64, fmt: Option<NumFmt>) -> ReportTemplate {
+        ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "t".into(),
+                rows: vec![RowTpl {
+                    cells: vec![CellTpl {
+                        pos: None,
+                        value: Some(serde_json::json!(value)),
+                        model: Some(CellModel { format: fmt, ..Default::default() }),
+                        merge_across: 0,
+                        merge_down: 0,
+                        merge_to_end: false,
+                    }],
+                }],
+            }],
+            datasets: BTreeMap::new(),
+        }
+    }
+
+    fn render_one(value: f64, fmt: Option<NumFmt>) -> GridCell {
+        let resp = render(RenderRequest {
+            template: one_number_template(value, fmt),
+            datasets: None,
+            sources: None,
+        })
+        .unwrap();
+        resp.sheets.into_iter().next().unwrap().rows[0][0].clone()
+    }
+
+    fn fmt_of(kind: &str, digits: Option<usize>, thousands: Option<bool>, code: Option<&str>) -> NumFmt {
+        NumFmt {
+            kind: kind.to_string(),
+            digits,
+            thousands,
+            code: code.map(|s| s.to_string()),
+        }
+    }
+
+    /// 数值列格式：文本渲染按 kind/digits/thousands/code 生效
+    #[test]
+    fn num_format_renders_expected_text() {
+        // 未配置 → 全局兜底口径（整数千分位 / 非整数两位小数且无千分位）
+        assert_eq!(render_one(1234567.0, None).text, "1,234,567");
+        assert_eq!(render_one(1234.5, None).text, "1234.50");
+
+        // 金额：货币符号 + 千分位 + 两位小数
+        assert_eq!(
+            render_one(1234567.891, Some(fmt_of("currency", None, None, Some("CNY")))).text,
+            "¥1,234,567.89"
+        );
+        assert_eq!(
+            render_one(1234.5, Some(fmt_of("currency", None, None, Some("USD")))).text,
+            "$1,234.50"
+        );
+        // 小数：3 位、关千分位
+        assert_eq!(
+            render_one(1234567.891, Some(fmt_of("decimal", Some(3), Some(false), None))).text,
+            "1234567.891"
+        );
+        // 整数：四舍五入 + 千分位
+        assert_eq!(render_one(1234567.6, Some(fmt_of("int", None, None, None))).text, "1,234,568");
+        // 百分比：0.1234 → 12.3%
+        assert_eq!(render_one(0.1234, Some(fmt_of("percent", Some(1), None, None))).text, "12.3%");
+        // 文本：不加千分位、不补零
+        assert_eq!(render_one(1234567.0, Some(fmt_of("text", None, None, None))).text, "1234567");
+    }
+
+    /// 数值格仍保留原始数字与 Excel 数字格式串（xlsx 导出靠它显示正确位数）
+    #[test]
+    fn num_format_reaches_xlsx_fields() {
+        let plain = render_one(1234.5, None);
+        assert_eq!(plain.raw_number, Some(1234.5));
+        assert!(plain.num_format.is_none());
+
+        let money = render_one(1234.5, Some(fmt_of("currency", None, None, Some("CNY"))));
+        assert_eq!(money.raw_number, Some(1234.5));
+        assert_eq!(money.num_format.as_deref(), Some("\"¥\"#,##0.00"));
+
+        // percent / text 的 Excel 格式串
+        assert_eq!(
+            render_one(0.25, Some(fmt_of("percent", Some(2), None, None))).num_format.as_deref(),
+            Some("0.00%")
+        );
+        assert!(render_one(1.0, Some(fmt_of("text", None, None, None))).num_format.is_none());
+    }
+
+    /// 小计 / 合计格沿用数值列的格式（同列口径一致）
+    #[test]
+    fn num_format_applies_to_group_subtotals() {
+        let mut tpl = sample_template();
+        let fmt = fmt_of("currency", None, None, Some("CNY"));
+        // 给所有带模型的格子挂上同一格式（字符串展开格不受影响，apply_format 只作用于数字）
+        for sheet in tpl.sheets.iter_mut() {
+            for row in sheet.rows.iter_mut() {
+                for c in row.cells.iter_mut() {
+                    if let Some(m) = c.model.as_mut() {
+                        m.format = Some(fmt.clone());
+                    }
+                }
+            }
+        }
+        let resp = render(RenderRequest { template: tpl, datasets: None, sources: None }).unwrap();
+        let text = lines(&resp.sheets[0].rows);
+        assert!(
+            text.iter().any(|l| l.contains("城市小计") && l.contains("¥20,600.00")),
+            "{text:#?}"
+        );
+        assert!(text.iter().any(|l| l.contains("¥116,400.00")), "{text:#?}");
+    }
+
     #[test]
     fn sample_group_report_totals() {
         let rows = grid();
@@ -928,6 +1045,7 @@ mod tests {
                 col_after: col_after.map(|s| s.to_string()),
                 value_expr: value_expr.map(|s| s.to_string()),
                 expand_expr: None,
+                format: None,
             })
         };
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {

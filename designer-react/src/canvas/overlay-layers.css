@@ -118,3 +118,103 @@
   white-space: nowrap;
   z-index: 29;
 }
+
+/* ------------------------------ 单元格浮动工具栏 ------------------------------ */
+
+/* 双击进入单元格后浮在其上方（来源：Vue 版 canvas/CellToolbar.vue 的 scoped 样式） */
+.op-cell-toolbar {
+  position: absolute;
+  transform: translateY(-100%) translateY(-8px);
+  pointer-events: auto;
+  z-index: 30;
+}
+
+.op-cell-toolbar__inner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--brand-surface, #ffffff);
+  border: 1px solid var(--brand-border, #e5e6eb);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  max-width: 92vw;
+}
+
+.op-cell-toolbar__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.op-cell-toolbar__tag {
+  font-size: 11px;
+  color: var(--brand-text-secondary, #86909c);
+  padding-right: 2px;
+  white-space: nowrap;
+}
+
+/* 等宽工具控件（对齐 Vue 版的 w-24 / w-20 / w-18 …） */
+.op-cell-toolbar__w30 {
+  width: 120px;
+}
+.op-cell-toolbar__w24 {
+  width: 96px;
+}
+.op-cell-toolbar__w20 {
+  width: 80px;
+}
+.op-cell-toolbar__w18 {
+  width: 72px;
+}
+.op-cell-toolbar__w16 {
+  width: 64px;
+}
+
+/* 内容三态编辑器在工具条里限宽，避免撑爆单行 */
+.op-cell-content {
+  width: 260px;
+  max-width: 60vw;
+}
+
+/* 对齐 / 垂直对齐的箭头字符（React 端无图标库，用 Unicode） */
+.op-cell-toolbar__icon {
+  display: inline-block;
+  line-height: 1;
+  font-size: 13px;
+}
+
+/* 取色器自定义触发器：图标 + 当前色块 */
+.op-cell-toolbar__swatch-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.op-cell-toolbar__swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  vertical-align: middle;
+}
+
+/* 表达式配色时色块位置的 fx 占位（紫底提示「此处由表达式求值」） */
+.i-fx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 2px;
+  border-radius: 2px;
+  background: linear-gradient(135deg, #b084ff 0%, #6b5cff 100%);
+  border: 1px solid rgba(107, 92, 255, 0.5);
+  color: #fff;
+  font-size: 10px;
+  font-style: italic;
+  line-height: 1;
+}
+

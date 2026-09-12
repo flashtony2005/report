@@ -124,7 +124,7 @@ impl Engine {
             if inst.row_start >= total_rows || inst.col_start >= ncols {
                 continue;
             }
-            let (text, num) = display(inst.value.clone());
+            let (text, num) = display(inst.value.clone(), inst.format.as_ref());
             // 合并规则：横向 = max(列子树跨度, merge_across+1) 或「铺到行尾」；
             // 纵向 = max(行子树跨度, merge_down+1)
             let colspan = if inst.merge_to_end {
@@ -138,6 +138,7 @@ impl Engine {
                 rowspan: inst.row_span.max(1).max(inst.merge_down + 1),
                 colspan,
                 raw_number: num,
+                num_format: inst.format.as_ref().and_then(excel_num_format),
             });
         }
 
@@ -206,6 +207,7 @@ impl Engine {
                 inst.merge_across = cell.merge_across;
                 inst.merge_down = cell.merge_down;
                 inst.merge_to_end = cell.merge_to_end;
+                inst.format = model.format.clone();
                 inst.value_expr = model.value_expr.clone();
                 inst.col_parent = col_parent;
                 inst.col_after = model.col_after.clone();
@@ -221,6 +223,7 @@ impl Engine {
             inst.merge_across = cell.merge_across;
             inst.merge_down = cell.merge_down;
             inst.merge_to_end = cell.merge_to_end;
+            inst.format = model.format.clone();
             inst.value = match &model.field {
                 Some(f) => view.first().and_then(|r| self.ds.get(*r)).and_then(|row| row.get(f)).cloned().unwrap_or(JsonValue::Null),
                 None => cell.value.clone().unwrap_or(JsonValue::Null),
@@ -591,17 +594,119 @@ fn as_number(v: JsonValue) -> Option<f64> {
     }
 }
 
-fn display(v: JsonValue) -> (String, Option<f64>) {
+fn display(v: JsonValue, fmt: Option<&NumFmt>) -> (String, Option<f64>) {
     match &v {
         JsonValue::Null => (String::new(), None),
         JsonValue::String(s) => (s.clone(), None),
         JsonValue::Number(n) => {
             let f = n.as_f64().unwrap_or(0.0);
-            (format_number(f), Some(f))
+            (apply_format(f, fmt), Some(f))
         }
         JsonValue::Bool(b) => (b.to_string(), None),
         other => (other.to_string(), None),
     }
+}
+
+/// 按格式渲染数值；`fmt=None` 时退化为全局兜底口径。
+fn apply_format(f: f64, fmt: Option<&NumFmt>) -> String {
+    let Some(fmt) = fmt else { return format_number(f) };
+    let kind = fmt.kind.as_str();
+    match kind {
+        // 文本：不加任何千分位 / 补零，原样输出（去掉 f64 的 .0 尾巴）
+        "text" => plain_number(f),
+        "int" => {
+            let d = fmt.digits.unwrap_or(0);
+            fixed_with_sep(f, d, fmt.thousands.unwrap_or(true))
+        }
+        "decimal" => {
+            let d = fmt.digits.unwrap_or(2);
+            fixed_with_sep(f, d, fmt.thousands.unwrap_or(true))
+        }
+        "currency" => {
+            let d = fmt.digits.unwrap_or(2);
+            let sym = currency_symbol(fmt.code.as_deref().unwrap_or("CNY"));
+            let neg = f < 0.0;
+            let body = fixed_with_sep(f.abs(), d, fmt.thousands.unwrap_or(true));
+            if neg { format!("-{sym}{body}") } else { format!("{sym}{body}") }
+        }
+        // 百分比：0.1234 → 12.34%（乘 100 后按位数渲染）
+        "percent" => {
+            let d = fmt.digits.unwrap_or(2);
+            let v = f * 100.0;
+            let neg = v < 0.0;
+            let body = fixed_with_sep(v.abs(), d, fmt.thousands.unwrap_or(false));
+            if neg { format!("-{body}%") } else { format!("{body}%") }
+        }
+        // 未知 kind：不改变默认口径
+        _ => format_number(f),
+    }
+}
+
+/// 固定小数位 + 可选千分位（负数取绝对值由调用方处理符号）
+fn fixed_with_sep(f: f64, digits: usize, thousands: bool) -> String {
+    let s = format!("{:.*}", digits.min(10), f.abs());
+    let (int_part, frac_part) = match s.split_once('.') {
+        Some((i, fr)) => (i.to_string(), Some(fr.to_string())),
+        None => (s, None),
+    };
+    let int_part = if thousands { with_sep(&int_part) } else { int_part };
+    match frac_part {
+        Some(fr) => format!("{int_part}.{fr}"),
+        None => int_part,
+    }
+}
+
+/// f64 → 不带多余小数尾巴的字符串（1.0 → "1"，1.5 → "1.5"）
+fn plain_number(f: f64) -> String {
+    if (f.fract()).abs() < 1e-9 {
+        format!("{}", f.round() as i64)
+    } else {
+        let s = format!("{f}");
+        s
+    }
+}
+
+/// 货币代码 → 符号（与设计器 expression.ts 的 CURRENCY_SYMBOL 对齐）
+fn currency_symbol(code: &str) -> &'static str {
+    match code {
+        "USD" => "$",
+        "EUR" => "€",
+        "GBP" => "£",
+        "HKD" => "HK$",
+        "JPY" => "¥",
+        _ => "¥",
+    }
+}
+
+/// NumFmt → Excel 数字格式串（xlsx 导出用；None 表示用 Excel 默认常规格式）
+fn excel_num_format(fmt: &NumFmt) -> Option<String> {
+    let thr = |b: Option<bool>| if b.unwrap_or(true) { "#,##0" } else { "0" };
+    let body = match fmt.kind.as_str() {
+        "int" => {
+            let d = fmt.digits.unwrap_or(0);
+            if d == 0 {
+                thr(fmt.thousands).to_string()
+            } else {
+                format!("{}.{}", thr(fmt.thousands), "0".repeat(d))
+            }
+        }
+        "decimal" => {
+            let d = fmt.digits.unwrap_or(2);
+            format!("{}.{}", thr(fmt.thousands), "0".repeat(d))
+        }
+        "currency" => {
+            let d = fmt.digits.unwrap_or(2);
+            let sym = currency_symbol(fmt.code.as_deref().unwrap_or("CNY"));
+            format!("\"{sym}\"{}.{}", thr(fmt.thousands), "0".repeat(d))
+        }
+        "percent" => {
+            let d = fmt.digits.unwrap_or(2);
+            format!("0.{}%", "0".repeat(d))
+        }
+        // 文本 / 未知：不设数字格式
+        _ => return None,
+    };
+    Some(body)
 }
 
 fn format_number(f: f64) -> String {
@@ -628,5 +733,12 @@ fn with_sep(s: &str) -> String {
 }
 
 fn empty_cell() -> GridCell {
-    GridCell { text: String::new(), pos: String::new(), rowspan: 1, colspan: 1, raw_number: None }
+    GridCell {
+        text: String::new(),
+        pos: String::new(),
+        rowspan: 1,
+        colspan: 1,
+        raw_number: None,
+        num_format: None,
+    }
 }

@@ -33,16 +33,16 @@ describe('filterCatalog', () => {
   it('按中文 label 过滤命中「求和」（aggregate + table-agg 两分类命中）', () => {
     const r = filterCatalog('求和')
     expect(r.map((c) => c.key)).toEqual(['aggregate', 'table-agg'])
-    expect(r[0].items.map((i) => i.id)).toEqual(['sum'])
+    expect(r[0]!.items.map((i) => i.id)).toEqual(['sum'])
   })
   it('按 snippet 过滤命中 pageSum', () => {
     const r = filterCatalog('pageSum')
     expect(r.map((c) => c.key)).toEqual(['table-agg'])
-    expect(r[0].items.every((i) => i.snippet.toLowerCase().includes('pagesum'))).toBe(true)
+    expect(r[0]!.items.every((i) => i.snippet.toLowerCase().includes('pagesum'))).toBe(true)
   })
   it('按 description 过滤命中「人民币大写」', () => {
     const r = filterCatalog('人民币大写')
-    expect(r[0].items.map((i) => i.id)).toEqual(['page-cap', 'total-cap'])
+    expect(r[0]!.items.map((i) => i.id)).toEqual(['page-cap', 'total-cap'])
   })
   it('无命中返回空数组', () => {
     expect(filterCatalog('zzzz不存在')).toEqual([])

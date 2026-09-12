@@ -11,6 +11,7 @@ import {
   parseParams,
   stripArrayPrefix,
   toWorkbookData,
+  type ReportTemplate,
 } from './grid-report'
 
 describe('位置名', () => {
@@ -361,5 +362,70 @@ describe('展开结果 → Univer 工作簿', () => {
     })
     // 标题 + 两层列头
     expect(headerRowCount(cross)).toBe(3)
+  })
+})
+
+/** 收集模板里所有带数值格式的格子（位置 / 字段 / 格式种类） */
+function collectFormats(tpl: ReportTemplate): Array<{ pos: string; field?: string; kind: string }> {
+  const out: Array<{ pos: string; field?: string; kind: string }> = []
+  tpl.sheets[0]!.rows.forEach((r, ri) =>
+    r.cells.forEach((c, ci) => {
+      if (c.model?.format) {
+        out.push({ pos: cellPos(ri, ci), field: c.model.field, kind: c.model.format.kind })
+      }
+    }),
+  )
+  return out
+}
+
+describe('数值列格式', () => {
+  it('分组模板：明细 / 小计 / 总计三处都带上数值格式（同列口径一致）', () => {
+    const tpl = buildGroupTemplate({
+      groupFields: ['region', 'city'],
+      valueField: 'amount',
+      valueFormats: { amount: { kind: 'currency', code: 'CNY', digits: 2, thousands: true } },
+      title: '标题',
+    })
+    const hits = collectFormats(tpl)
+    expect(hits.length).toBe(3)
+    expect(hits.every((h) => h.kind === 'currency')).toBe(true)
+  })
+
+  it('分组模板：未配置格式时不下发 format（服务端走全局兜底）', () => {
+    const tpl = buildGroupTemplate({ groupFields: ['region'], valueField: 'amount' })
+    expect(collectFormats(tpl).length).toBe(0)
+    // 也不该留 undefined 键（否则 JSON 里会出现 "format": null 噪音）
+    const raw = JSON.stringify(tpl)
+    expect(raw.includes('"format"')).toBe(false)
+  })
+
+  it('交叉表模板：数值格 / 行合计 / 列合计 / 总计 全部套用，未配置的字段不受影响', () => {
+    const tpl = buildCrossTemplate({
+      rowFields: ['region'],
+      colFields: ['year', 'month'],
+      valueFields: ['amount', 'qty'],
+      valueFormats: { amount: { kind: 'decimal', digits: 3, thousands: false } },
+      title: '标题',
+    })
+    const hits = collectFormats(tpl)
+    // amount 的：数值格 + 行合计 + 列合计 + 总计
+    expect(hits.length).toBe(4)
+    expect(hits.every((h) => h.kind === 'decimal')).toBe(true)
+    // 只有数值格绑字段；三类合计格是 value_expr（无 field），但格式同样落地
+    expect(hits.filter((h) => h.field === 'amount').length).toBe(1)
+  })
+
+  it('明细模板：只有配置了的列带格式', () => {
+    const tpl = buildDetailTemplate({
+      columns: [
+        { title: '地区', field: 'items[].region' },
+        { title: '金额', field: 'items[].amount' },
+      ],
+      valueFormats: { amount: { kind: 'int', thousands: true } },
+    })
+    const hits = collectFormats(tpl)
+    expect(hits.length).toBe(1)
+    expect(hits[0]!.kind).toBe('int')
+    expect(hits[0]!.field).toBe('amount')
   })
 })

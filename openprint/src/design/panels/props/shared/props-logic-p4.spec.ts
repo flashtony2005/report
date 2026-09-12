@@ -111,26 +111,26 @@ describe('chart-props-logic', () => {
   it('categoriesPatch 对齐各序列数据长度（缺位补 0）', () => {
     const p = categoriesPatch(c, '甲\n乙\n丙') as { categories: string[]; series: { data: number[] }[] }
     expect(p.categories).toEqual(['甲', '乙', '丙'])
-    expect(p.series[0].data).toEqual([10, 20, 0])
-    expect(p.series[1].data).toEqual([5, 8, 0])
+    expect(p.series[0]!.data).toEqual([10, 20, 0])
+    expect(p.series[1]!.data).toEqual([5, 8, 0])
   })
   it('setSeriesNameAt / setSeriesColorAt 不可变更新', () => {
     const s: ChartSeries[] = [{ name: 'A', data: [1] }, { name: 'B', data: [2] }]
-    expect(setSeriesNameAt(s, 1, 'C')[1].name).toBe('C')
-    expect(s[1].name).toBe('B')
-    expect(setSeriesColorAt(s, 0, '#FF0000')[0].color).toBe('#FF0000')
+    expect(setSeriesNameAt(s, 1, 'C')[1]!.name).toBe('C')
+    expect(s[1]!.name).toBe('B')
+    expect(setSeriesColorAt(s, 0, '#FF0000')[0]!.color).toBe('#FF0000')
   })
   it('alignSeriesData 非数值缺位补 0、过滤空行', () => {
     const s: ChartSeries[] = [{ name: 'A', data: [] }]
     const out = alignSeriesData(s, 0, '3\n\nx\n7', ['a', 'b', 'c'])
-    expect(out[0].data).toEqual([3, 0, 7])
+    expect(out[0]!.data).toEqual([3, 0, 7])
     expect(seriesDataText(out, 0)).toBe('3\n0\n7')
   })
   it('addSeriesAt 名称/零数据/调色板颜色', () => {
     const out = addSeriesAt([{ name: '系列1', data: [0] }], ['a', 'b'])
-    expect(out[1].name).toBe('系列2')
-    expect(out[1].data).toEqual([0, 0])
-    expect(typeof out[1].color).toBe('string')
+    expect(out[1]!.name).toBe('系列2')
+    expect(out[1]!.data).toEqual([0, 0])
+    expect(typeof out[1]!.color).toBe('string')
   })
   it('removeSeriesAt 至少保留 1 条', () => {
     const one: ChartSeries[] = [{ name: 'A', data: [] }]
@@ -227,8 +227,8 @@ describe('table-props-logic', () => {
     const opts = columnFieldOptions(fields)
     expect(opts[0]).toEqual({ label: '（不绑定）', value: '' })
     expect(opts).toHaveLength(3)
-    expect(opts[1].value).toBe('items[].qty')
-    expect(opts[1].label).toContain('数量')
+    expect(opts[1]!.value).toBe('items[].qty')
+    expect(opts[1]!.label).toContain('数量')
   })
   it('fieldTypeMapOf 按 path 建索引', () => {
     const m = fieldTypeMapOf([{ path: 'a.b', type: 'date' }] as never)

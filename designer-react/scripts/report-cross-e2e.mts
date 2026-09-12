@@ -9,7 +9,7 @@
  * 运行：node_modules/.bin/vite-node scripts/report-cross-e2e.mts
  */
 import { writeFileSync } from 'node:fs'
-import { buildCrossTemplate } from '../src/report/grid-report'
+import { buildCrossTemplate } from '@/report/grid-report'
 
 const SERVER = 'http://127.0.0.1:18888'
 const DB = 'F:/project/_nop/report-demo.db'

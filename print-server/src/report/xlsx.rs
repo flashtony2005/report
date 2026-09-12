@@ -78,7 +78,13 @@ pub fn to_xlsx(sheets: &[RenderedSheet]) -> Result<Vec<u8>, String> {
                         .map_err(|e| e.to_string())?;
                 } else {
                     match cell.raw_number {
-                        Some(n) => ws.write_number(r0, c0, n).map_err(|e| e.to_string())?,
+                        Some(n) => match &cell.num_format {
+                            // 带格式的数值格：Excel 侧套用数字格式（保留可计算性，显示交给格式串）
+                            Some(nf) => ws
+                                .write_number_with_format(r0, c0, n, &Format::new().set_num_format(nf))
+                                .map_err(|e| e.to_string())?,
+                            None => ws.write_number(r0, c0, n).map_err(|e| e.to_string())?,
+                        },
                         None => ws.write_string(r0, c0, &cell.text).map_err(|e| e.to_string())?,
                     };
                 }
@@ -127,7 +133,14 @@ mod tests {
     use crate::report::model::GridCell;
 
     fn cell(text: &str, rowspan: usize, colspan: usize, num: Option<f64>) -> GridCell {
-        GridCell { text: text.into(), pos: String::new(), rowspan, colspan, raw_number: num }
+        GridCell {
+            text: text.into(),
+            pos: String::new(),
+            rowspan,
+            colspan,
+            raw_number: num,
+            num_format: None,
+        }
     }
 
     #[test]

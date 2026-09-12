@@ -3,7 +3,7 @@
  * 运行：node_modules/.bin/vite-node scripts/report-e2e.mts
  */
 import { writeFileSync } from 'node:fs'
-import { buildGroupTemplate } from '../src/report/grid-report'
+import { buildGroupTemplate } from '@/report/grid-report'
 
 const SERVER = 'http://127.0.0.1:18888'
 const DB = 'F:/project/_nop/report-demo.db'

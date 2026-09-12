@@ -120,7 +120,7 @@ export function withDeterministicIds<T>(fn: () => T): T {
   const origRandom = Math.random
   const origNow = Date.now
   let i = 0
-  Math.random = () => RAND_SEQUENCE[i++ % RAND_SEQUENCE.length]
+  Math.random = () => RAND_SEQUENCE[i++ % RAND_SEQUENCE.length]!
   Date.now = () => 1_700_000_000_000
   try {
     return fn()
@@ -188,7 +188,7 @@ export function runDesignerContract(driver: DesignerDriver): ContractResult {
     scenario('03-update-then-undo-redo', (d, mark) => {
       d.addControlOfType('text', { leftMm: 20, topMm: 20 })
       mark('after-add')
-      const id = d.getSnapshot().controls[0].id
+      const id = d.getSnapshot().controls[0]!.id
       // 两次 update 都改几何，保证撤销的每一档在快照里可区分
       d.updateControl(id, { value: 'hello', fontSize: 18, bold: true, left: 11.1, width: 66 })
       d.updateControl(id, { left: 35.5, top: 42.3, width: 90, height: 20 })
@@ -209,12 +209,12 @@ export function runDesignerContract(driver: DesignerDriver): ContractResult {
       const ids = d.getSnapshot().controls.map((c) => c.id)
       mark('before-move')
       // 移动**中间/首个**控件且不被后续删除抵消，否则方向写反也看不出来
-      d.moveControl(ids[0], 'up') // [text,rect,line] → [rect,text,line]
+      d.moveControl(ids[0]!, 'up') // [text,rect,line] → [rect,text,line]
       mark('after-move-up')
-      d.moveControl(ids[0], 'down') // → [text,rect,line]
+      d.moveControl(ids[0]!, 'down') // → [text,rect,line]
       mark('after-move-down')
-      d.removeControl(ids[2]) // 删 line
-      d.selectControl(ids[0])
+      d.removeControl(ids[2]!) // 删 line
+      d.selectControl(ids[0]!)
     })
 
     /* ---------- 5. 撤销到底 / 重做到底 ---------- */
@@ -244,26 +244,26 @@ export function runDesignerContract(driver: DesignerDriver): ContractResult {
       d.addControlOfType('text', { leftMm: 10, topMm: 10 })
       const zones = d.getSnapshot().zones
       // 往页眉里塞一个子控件
-      d.addControlOfType('text', { leftMm: 12, topMm: 4 }, { value: '页眉标题' }, zones[0].id)
+      d.addControlOfType('text', { leftMm: 12, topMm: 4 }, { value: '页眉标题' }, zones[0]!.id)
       // 往页脚里塞一个子控件
-      d.addControlOfType('line', { leftMm: 12, topMm: 6 }, undefined, zones[1].id)
+      d.addControlOfType('line', { leftMm: 12, topMm: 6 }, undefined, zones[1]!.id)
     })
 
     /* ---------- 7. 页眉高度变更 → 正文重排 ---------- */
     scenario('07-zone-height-reflow', (d) => {
       d.addZone('header')
       d.addControlOfType('text', { leftMm: 10, topMm: 40 })
-      const header = d.getSnapshot().zones[0]
+      const header = d.getSnapshot().zones[0]!
       d.updateControl(header.id, { zoneHeight: 45 })
     })
 
     /* ---------- 8. 标签网格：首卡子控件增删 ---------- */
     scenario('08-labelgrid', (d) => {
       d.addControlOfType('labelgrid', { leftMm: 10, topMm: 10 })
-      const grid = d.getSnapshot().controls[0]
+      const grid = d.getSnapshot().controls[0]!
       d.addControlIntoLabelGrid(grid.id, 'text', { leftMm: 14, topMm: 14 }, { value: '品名' })
       d.addControlIntoLabelGrid(grid.id, 'barcode', { leftMm: 14, topMm: 22 })
-      const withChildren = d.getSnapshot().controls[0]
+      const withChildren = d.getSnapshot().controls[0]!
       d.removeLabelGridChild(withChildren.id, 'FOR_REMOVE')
     })
 
@@ -290,8 +290,8 @@ export function runDesignerContract(driver: DesignerDriver): ContractResult {
       d.addControlOfType('text', { leftMm: 10, topMm: 10 })
       d.addControlOfType('rect', { leftMm: 10, topMm: 30 })
       const ids = d.getSnapshot().controls.map((c) => c.id)
-      d.selectControl(ids[1])
-      d.removeControl(ids[1])
+      d.selectControl(ids[1]!)
+      d.removeControl(ids[1]!)
       d.selectControl(null)
     })
 
@@ -308,7 +308,7 @@ export function runDesignerContract(driver: DesignerDriver): ContractResult {
     // 该场景把 style 全量记进 golden，任何污染都会导致两端不一致。
     scenario('13-nested-style-history', (d, mark) => {
       d.addControlOfType('text', { leftMm: 10, topMm: 10 })
-      const id = d.getSnapshot().controls[0].id
+      const id = d.getSnapshot().controls[0]!.id
       d.updateControl(id, { style: { fontSize: 24, bold: true } })
       mark('after-style-1')
       d.updateControl(id, { style: { fontSize: 9 } })

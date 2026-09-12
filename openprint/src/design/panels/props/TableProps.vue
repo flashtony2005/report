@@ -52,6 +52,7 @@ import {
   tableSourceOptions,
   withSummaryExpr,
   withSummaryFallback,
+  type SummaryRowCfg,
 } from './shared/table-props-logic'
 import { tableStyleLabel, TABLE_STYLE_PRESETS } from '@/design/canvas/table-style-presets'
 import TableStylePickerModal from '@/design/modals/TableStylePickerModal.vue'
@@ -186,6 +187,26 @@ const ds = useDataSourceStore()
 const summary = computed(() => control.value?.options?.summaryRow ?? null)
 const hasSummary = computed(() => summary.value !== null)
 
+/**
+ * 归一化合计行配置为纯函数要求的完整形态。
+ * `options.summaryRow` 的 inline 声明里 fields/label 是可选的（只有 type 必填），
+ * 而 shared 层纯函数入参 `SummaryRowCfg` 要求它们存在 —— 在边界处补齐，
+ * 避免把「可选」这一 UI 侧的自由度泄漏进纯逻辑层。
+ */
+function currentSummary(): SummaryRowCfg {
+  const s = summary.value
+  if (!s) return defaultSummary()
+  return {
+    type: s.type,
+    fields: s.fields ?? [],
+    label: s.label ?? '合计',
+    expression: s.expression,
+    expressions: s.expressions,
+    subtotalLabel: s.subtotalLabel,
+    subtotalStyle: s.subtotalStyle,
+  }
+}
+
 /** 开关合计行：开启时给一个兜底配置，关闭时清空 summaryRow 与遗留的 summary[]（单真相源） */
 function toggleSummary(on: boolean): void {
   if (!control.value) return
@@ -200,7 +221,7 @@ function toggleSummary(on: boolean): void {
 
 function patchSummary(p: Partial<NonNullable<TableControl['options']>['summaryRow']>): void {
   if (!control.value) return
-  const cur = summary.value ?? defaultSummary()
+  const cur = currentSummary()
   patchOptions({ summaryRow: { ...cur, ...p } })
   patch({ summary: undefined })
 }
@@ -208,7 +229,7 @@ function patchSummary(p: Partial<NonNullable<TableControl['options']>['summaryRo
 /** 自定义合计：编辑某字段的专属表达式（expressions[field]） */
 function patchSummaryExpr(field: string, expr: string | null): void {
   if (!control.value) return
-  const cur = summary.value ?? defaultSummary()
+  const cur = currentSummary()
   patchOptions({ summaryRow: withSummaryExpr(cur, field, expr) })
   patch({ summary: undefined })
 }
@@ -216,7 +237,7 @@ function patchSummaryExpr(field: string, expr: string | null): void {
 /** 自定义合计：兜底单表达式（无聚合列时生效） */
 function patchSummaryFallbackExpr(expr: string | null): void {
   if (!control.value) return
-  const cur = summary.value ?? defaultSummary()
+  const cur = currentSummary()
   patchOptions({ summaryRow: withSummaryFallback(cur, expr) })
   patch({ summary: undefined })
 }

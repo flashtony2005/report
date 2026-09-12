@@ -31,6 +31,21 @@ export type ExpandDir = 'r' | 'c'
 /** 交叉表数值格的聚合方式：同一 (行分组, 列分组) 交集里通常有多行数据 */
 export type AggType = 'sum' | 'count' | 'avg' | 'min' | 'max'
 
+/**
+ * 数值显示格式（与设计器控件的 `CellFormat` 同形；服务端 `NumFmt` 与之逐字段对应）。
+ *
+ * 不配置则走服务端全局兜底：整数带千分位、非整数两位小数。
+ */
+export interface CellFormatSpec {
+  kind: 'text' | 'int' | 'decimal' | 'currency' | 'percent'
+  /** 小数位数；int 默认 0，decimal/currency/percent 默认 2 */
+  digits?: number
+  /** 千分位；int/decimal/currency 默认 true */
+  thousands?: boolean
+  /** 货币代码（kind=currency），默认 CNY */
+  code?: string
+}
+
 export interface CellModel {
   ds?: string
   field?: string
@@ -42,6 +57,8 @@ export interface CellModel {
   col_after?: string
   value_expr?: string
   expand_expr?: string
+  /** 数值显示格式（小计 / 合计格应与所在数值列一致） */
+  format?: CellFormatSpec
 }
 
 export interface CellTpl {
@@ -135,6 +152,14 @@ export function labelOf(field: string, aliases?: Record<string, string>): string
   return aliases?.[field] || DEFAULT_FIELD_LABELS[field] || field
 }
 
+/** 取某数值字段的显示格式；未配置 → undefined（服务端走全局兜底口径） */
+function fmtOf(
+  field: string,
+  map?: Record<string, CellFormatSpec>,
+): CellFormatSpec | undefined {
+  return map?.[field]
+}
+
 /** 解析参数输入框：空 → []；否则必须是 JSON 数组 */
 export function parseParams(text: string): { ok: boolean; params?: unknown[]; message?: string } {
   const t = text.trim()
@@ -188,6 +213,8 @@ export interface GroupTemplateOptions {
   agg?: AggType
   /** 字段 → 中文别名（表头与小计标签用它），缺省回落到内置别名表 */
   aliases?: Record<string, string>
+  /** 字段 → 数值显示格式（表头不受影响；小计 / 总计沿用数值列的格式） */
+  valueFormats?: Record<string, CellFormatSpec>
   /** 标题（留空则不输出标题行） */
   title?: string
 }
@@ -208,6 +235,8 @@ export function buildGroupTemplate(opts: GroupTemplateOptions): ReportTemplate {
   const groups = opts.groupFields.filter((f) => !!f)
   const cols = groups.length + 1
   const valueCol = cols - 1
+  /** 数值列格式：明细 / 小计 / 总计保持一致 */
+  const vfmt = fmtOf(opts.valueField, opts.valueFormats)
   const rows: RowTpl[] = []
 
   if (opts.title) {
@@ -240,6 +269,7 @@ export function buildGroupTemplate(opts: GroupTemplateOptions): ReportTemplate {
       field: opts.valueField,
       agg: opts.agg ?? 'sum',
       row_parent: cellPos(detailRow, Math.max(0, groups.length - 1)),
+      format: vfmt,
     }),
   )
   rows.push({ cells: detail })
@@ -255,6 +285,7 @@ export function buildGroupTemplate(opts: GroupTemplateOptions): ReportTemplate {
       ds,
       row_parent: parentPos,
       value_expr: `${valuePos}[${parentPos}:+0].sum()`,
+      format: vfmt,
     })
     rows.push({ cells: row })
   }
@@ -262,7 +293,7 @@ export function buildGroupTemplate(opts: GroupTemplateOptions): ReportTemplate {
   // 总计：标签横跨所有分组列（单级分组时 cols-2 = 0，不会与数值列撞在同一格）
   const totalRow: CellTpl[] = new Array(cols).fill(null).map(() => cell(null))
   totalRow[0] = cell('总计', undefined, Math.max(0, cols - 2))
-  totalRow[valueCol] = cell(null, { ds, value_expr: `${valuePos}.sum()` })
+  totalRow[valueCol] = cell(null, { ds, value_expr: `${valuePos}.sum()`, format: vfmt })
   rows.push({ cells: totalRow })
 
   void headerRow
@@ -276,6 +307,8 @@ export interface DetailTemplateOptions {
   columns: Array<{ title?: string; field?: string }>
   /** 字段 → 中文别名（列没有 title 时用它兜底） */
   aliases?: Record<string, string>
+  /** 字段 → 数值显示格式（仅对配置了的数值列生效） */
+  valueFormats?: Record<string, CellFormatSpec>
   title?: string
 }
 
@@ -307,6 +340,7 @@ export function buildDetailTemplate(opts: DetailTemplateOptions): ReportTemplate
         field: i === 0 ? undefined : stripArrayPrefix(c.field ?? ''),
         expand_type: i === 0 ? 'r' : undefined,
         row_parent: i === 0 ? undefined : firstPos,
+        format: i === 0 ? undefined : fmtOf(stripArrayPrefix(c.field ?? ''), opts.valueFormats),
       }),
     ),
   })
@@ -329,6 +363,8 @@ export interface CrossTemplateOptions {
   totals?: boolean
   /** 字段 → 中文别名（各级表头与「xx合计」用它），缺省回落到内置别名表 */
   aliases?: Record<string, string>
+  /** 字段 → 数值显示格式（数值格 / 行合计 / 列合计 / 总计 一致套用） */
+  valueFormats?: Record<string, CellFormatSpec>
   title?: string
 }
 
@@ -361,6 +397,8 @@ export function buildCrossTemplate(opts: CrossTemplateOptions): ReportTemplate {
     throw new Error('交叉表需要至少一个行字段、一个列字段和一个数值字段')
   }
   const withTotals = opts.totals !== false
+  /** 每个数值字段的显示格式（数值格与各类合计格共用） */
+  const vfmt = valFs.map((f) => fmtOf(f, opts.valueFormats))
   /** 多值字段时补一列表头行，标明每个列分组下并排的是哪个指标 */
   const hasMetricRow = valFs.length > 1
   const rows: RowTpl[] = []
@@ -439,6 +477,7 @@ export function buildCrossTemplate(opts: CrossTemplateOptions): ReportTemplate {
       agg: opts.agg ?? 'sum',
       row_parent: leafRowPos,
       col_parent: leafColPos,
+      format: vfmt[j],
     }))
   })
   if (withTotals) {
@@ -450,6 +489,7 @@ export function buildCrossTemplate(opts: CrossTemplateOptions): ReportTemplate {
         row_parent: leafRowPos,
         col_after: prev ?? leafColPos,
         value_expr: `${valPos[j]}[${leafRowPos}:+0].sum()`,
+        format: vfmt[j],
       }))
       prev = cellPos(valueRowIdx, col)
     })
@@ -466,6 +506,7 @@ export function buildCrossTemplate(opts: CrossTemplateOptions): ReportTemplate {
         ds,
         col_parent: leafColPos,
         value_expr: `${valPos[j]}[${leafColPos}:+0].sum()`,
+        format: vfmt[j],
       }))
     })
     let prev: string | undefined
@@ -475,6 +516,7 @@ export function buildCrossTemplate(opts: CrossTemplateOptions): ReportTemplate {
         ds,
         col_after: prev ?? leafColPos,
         value_expr: `${valPos[j]}.sum()`,
+        format: vfmt[j],
       }))
       prev = cellPos(totalRowIdx, col)
     })

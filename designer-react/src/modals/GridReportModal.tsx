@@ -11,13 +11,27 @@
  * 3. 交叉表：行字段纵向 × 列字段横向（可多级）→ 自动带指标子表头 + 行/列合计 + 总计
  * 4. 画布表格：把设计器里选中的表格控件转成明细表模板
  *
- * 三类通用能力：
+ * 四类通用能力：
  * - **筛选条件**：WHERE 子句 + 参数（JSON 数组）下推给服务端，走参数化查询
  * - **字段中文别名**：给已选字段填显示名（留空回落内置别名表，region → 地区）
+ * - **数值列格式**：按列选「整数 / 小数 / 货币 / 百分比 + 小数位 + 千分位 + 币种」，
+ *   服务端渲染文本与 xlsx 数字格式同时生效；小计 / 合计 / 总计同列同口径
  * - **合并美化**：标题铺满整行、多级列头下表头格纵向合并、双指标显示「金额/数量」子表头
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Button, Input, Modal, Segmented, Select, Space, Spin, Typography } from 'antd'
+import {
+  Alert,
+  Button,
+  Input,
+  InputNumber,
+  Modal,
+  Segmented,
+  Select,
+  Space,
+  Spin,
+  Switch,
+  Typography,
+} from 'antd'
 import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets'
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
 import UniverPresetSheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
@@ -30,12 +44,14 @@ import {
   DEFAULT_FIELD_LABELS,
   headerRowCount,
   parseParams,
+  stripArrayPrefix,
   toWorkbookData,
   type AggType,
+  type CellFormatSpec,
   type RenderRequest,
   type RenderResponse,
   type ReportTemplate,
-} from '../report/grid-report'
+} from '@/report/grid-report'
 import { useDataSourceStore } from '../stores/dataSource'
 import { useDesignerStore } from '../stores/designer'
 
@@ -52,6 +68,45 @@ type BuildResult =
 interface CanvasTableLike {
   type: string
   columns?: Array<{ title?: string; field?: string }>
+}
+
+/**
+ * 字段别名编辑器：只给已选中的字段提供输入框。
+ * 留空 → 回落到内置中文别名表（如 region → 地区）。
+ */
+/** 数值格式种类下拉（空值 = 默认，交回服务端全局口径） */
+const FORMAT_KIND_OPTIONS: Array<{ label: string; value: string }> = [
+  { label: '默认', value: '' },
+  { label: '文本', value: 'text' },
+  { label: '整数', value: 'int' },
+  { label: '小数', value: 'decimal' },
+  { label: '货币', value: 'currency' },
+  { label: '百分比', value: 'percent' },
+]
+
+const CURRENCY_OPTIONS = [
+  { label: '¥ CNY', value: 'CNY' },
+  { label: '$ USD', value: 'USD' },
+  { label: '€ EUR', value: 'EUR' },
+  { label: '£ GBP', value: 'GBP' },
+  { label: 'HK$ HKD', value: 'HKD' },
+  { label: '¥ JPY', value: 'JPY' },
+]
+
+/** 选中某格式种类时的默认参数（与服务端 NumFmt 的缺省口径一致） */
+function defaultFormat(kind: CellFormatSpec['kind']): CellFormatSpec {
+  switch (kind) {
+    case 'int':
+      return { kind, thousands: true }
+    case 'decimal':
+      return { kind, digits: 2, thousands: true }
+    case 'currency':
+      return { kind, code: 'CNY', digits: 2, thousands: true }
+    case 'percent':
+      return { kind, digits: 2 }
+    default:
+      return { kind: 'text' }
+  }
 }
 
 /**
@@ -93,6 +148,91 @@ function AliasFields({
   )
 }
 
+/**
+ * 数值列格式编辑器：给每个数值字段选「种类 / 小数位 / 千分位 / 币种」。
+ *
+ * 不选（默认）→ 不下发 format，服务端走全局兜底（整数千分位、非整数两位小数）；
+ * 选了 → 该数值列及其小计 / 合计 / 总计格统一套用，xlsx 导出同时带上 Excel 数字格式串。
+ */
+function FormatFields({
+  fields,
+  formats,
+  onChange,
+  testid,
+}: {
+  fields: string[]
+  formats: Record<string, CellFormatSpec>
+  onChange: (next: Record<string, CellFormatSpec>) => void
+  testid?: string
+}) {
+  const shown = fields.filter(Boolean)
+  if (!shown.length) return null
+
+  const set = (f: string, v: CellFormatSpec | undefined): void => {
+    const next = { ...formats }
+    if (!v) delete next[f]
+    else next[f] = v
+    onChange(next)
+  }
+
+  return (
+    <Space wrap size="small">
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        数值格式
+      </Typography.Text>
+      {shown.map((f) => {
+        const cur = formats[f]
+        const kind = cur?.kind ?? ''
+        const hasDigits = !!cur && ['int', 'decimal', 'currency', 'percent'].includes(cur.kind)
+        const hasThousands = !!cur && ['int', 'decimal', 'currency'].includes(cur.kind)
+        return (
+          <Space key={f} size={4}>
+            <Typography.Text style={{ fontSize: 12 }}>{f} →</Typography.Text>
+            <Select
+              size="small"
+              style={{ width: 92 }}
+              value={kind}
+              options={FORMAT_KIND_OPTIONS}
+              data-testid={testid ? `${testid}-${f}` : undefined}
+              onChange={(v: string) =>
+                set(f, v ? defaultFormat(v as CellFormatSpec['kind']) : undefined)
+              }
+            />
+            {hasDigits && (
+              <InputNumber
+                size="small"
+                style={{ width: 60 }}
+                min={0}
+                max={6}
+                value={cur.digits ?? (cur.kind === 'int' ? 0 : 2)}
+                data-testid={testid ? `${testid}-digits-${f}` : undefined}
+                onChange={(v: number | null) => set(f, { ...cur, digits: v ?? 0 })}
+              />
+            )}
+            {hasThousands && (
+              <Switch
+                size="small"
+                checked={cur.thousands ?? true}
+                data-testid={testid ? `${testid}-sep-${f}` : undefined}
+                onChange={(v: boolean) => set(f, { ...cur, thousands: v })}
+              />
+            )}
+            {cur?.kind === 'currency' && (
+              <Select
+                size="small"
+                style={{ width: 96 }}
+                value={cur.code ?? 'CNY'}
+                options={CURRENCY_OPTIONS}
+                onChange={(v: string) => set(f, { ...cur, code: v })}
+              />
+            )}
+          </Space>
+        )
+      })}
+    </Space>
+  )
+}
+
 export default function GridReportModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const univerRef = useRef<{ dispose: () => void } | null>(null)
@@ -111,6 +251,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const [crossAgg, setCrossAgg] = useState<AggType>('sum')
   /** 字段 → 中文别名（行/列/数值/分组字段通用） */
   const [aliases, setAliases] = useState<Record<string, string>>({})
+  /** 数值字段 → 显示格式（留空 = 服务端全局兜底口径） */
+  const [valueFormats, setValueFormats] = useState<Record<string, CellFormatSpec>>({})
   /** 服务端筛选：WHERE 子句（占位符 ?）+ 参数（JSON 数组） */
   const [where, setWhere] = useState('')
   const [paramText, setParamText] = useState('')
@@ -163,6 +305,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         ds: dsName,
         columns: canvasTable.columns,
         aliases,
+        valueFormats,
         title: '画布表格明细',
       })
     } else if (mode === 'cross') {
@@ -177,6 +320,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         valueFields: crossValueFields,
         agg: crossAgg,
         aliases,
+        valueFormats,
         title: `${rowFields.join('/')} × ${colFields.join('/')}`,
       })
     } else {
@@ -190,6 +334,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         valueField,
         agg: groupAgg,
         aliases,
+        valueFormats,
         title: `${groupFields.join(' / ')} · ${valueField} 汇总`,
       })
     }
@@ -222,6 +367,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     crossValueFields,
     crossAgg,
     aliases,
+    valueFormats,
     where,
     paramText,
     dbSelection,
@@ -481,6 +627,12 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
               onChange={setAliases}
               testid="grid-report-alias"
             />
+            <FormatFields
+              fields={[valueField]}
+              formats={valueFormats}
+              onChange={setValueFormats}
+              testid="grid-report-format"
+            />
           </>
         )}
 
@@ -538,15 +690,35 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
               onChange={setAliases}
               testid="grid-report-cross-alias"
             />
+            <FormatFields
+              fields={crossValueFields}
+              formats={valueFormats}
+              onChange={setValueFormats}
+              testid="grid-report-cross-format"
+            />
           </>
         )}
 
         {mode === 'canvas' && (
-          <Typography.Text type={canvasTable ? 'secondary' : 'warning'} style={{ fontSize: 12 }}>
-            {canvasTable
-              ? `已取到画布表格：${canvasTable.columns?.length ?? 0} 列`
-              : '请先在画布里选中一个表格控件'}
-          </Typography.Text>
+          <>
+            <Typography.Text type={canvasTable ? 'secondary' : 'warning'} style={{ fontSize: 12 }}>
+              {canvasTable
+                ? `已取到画布表格：${canvasTable.columns?.length ?? 0} 列`
+                : '请先在画布里选中一个表格控件'}
+            </Typography.Text>
+            <AliasFields
+              fields={(canvasTable?.columns ?? []).map((c) => stripArrayPrefix(c.field ?? ''))}
+              aliases={aliases}
+              onChange={setAliases}
+              testid="grid-report-canvas-alias"
+            />
+            <FormatFields
+              fields={(canvasTable?.columns ?? []).map((c) => stripArrayPrefix(c.field ?? ''))}
+              formats={valueFormats}
+              onChange={setValueFormats}
+              testid="grid-report-canvas-format"
+            />
+          </>
         )}
       </Space>
 

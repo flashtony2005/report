@@ -34,6 +34,23 @@ pub enum AggType {
     Max,
 }
 
+/// 数值显示格式（按格 / 按列）。
+///
+/// 与设计器控件的 `CellFormat` 同形（kind/digits/thousands/code），便于两端对齐；
+/// 缺省（None）走全局兜底：整数带千分位、非整数两位小数。
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct NumFmt {
+    /// 格式种类：`text` | `int` | `decimal` | `currency` | `percent`
+    pub kind: String,
+    /// 小数位数；`int` 默认 0，`decimal` / `currency` / `percent` 默认 2
+    pub digits: Option<usize>,
+    /// 是否千分位；`int` / `decimal` / `currency` 默认 true
+    pub thousands: Option<bool>,
+    /// 货币代码（`kind=currency` 时用），默认 CNY
+    pub code: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CellModel {
@@ -59,6 +76,8 @@ pub struct CellModel {
     pub value_expr: Option<String>,
     /// 展开表达式（P1 支持：数据集名 / 数组字面量）
     pub expand_expr: Option<String>,
+    /// 数值显示格式（缺省走全局兜底）；小计 / 合计格应与它所在数值列保持一致
+    pub format: Option<NumFmt>,
 }
 
 impl CellModel {
@@ -157,6 +176,8 @@ pub struct CellInst {
     pub merge_down: usize,
     /// 横向铺到行尾（见 CellTpl::merge_to_end）
     pub merge_to_end: bool,
+    /// 数值显示格式（见 CellModel::format）
+    pub format: Option<NumFmt>,
 }
 
 impl CellInst {
@@ -186,6 +207,7 @@ impl CellInst {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            format: None,
         }
     }
 }
@@ -199,6 +221,9 @@ pub struct GridCell {
     pub colspan: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_number: Option<f64>,
+    /// Excel 数字格式串（由 NumFmt 推导）；xlsx 导出时套到数值格上
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_format: Option<String>,
 }
 
 /// 展开结果

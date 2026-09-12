@@ -26,12 +26,14 @@ import { renderTableGridHtml } from '@/design/canvas/table-design-render'
 import { tableCss } from '@/core/renderer-html/css-generator'
 import {
   buildDesignGrid,
+  designRowInfo,
   patchCellText,
   rowRoleLabel,
 } from '@/core/layout-engine/table-cells'
 import { collectOverlayItems, overlayItemStyle, type OverlayItem } from '@/design/canvas/overlay-logic'
 import type { AnyControl, TableControl, ZoneControl } from '@/types/control'
 import { getCanvasHost, useDesignerStore } from '../stores/designer'
+import CellToolbar from './CellToolbar'
 import './overlay-layers.css'
 
 /* ------------------------------ 纯辅助 ------------------------------ */
@@ -203,6 +205,11 @@ export default function TableViewLayer() {
     if (!editingControl || !editingCell) return ''
     return rowRoleLabel(buildDesignGrid(editingControl), editingCell.row)
   }, [editingControl, editingCell])
+  /** 当前编辑格的行语义（表头 / 数据样例 / 静态），工具栏据此调整可用项 */
+  const editingRowKind = useMemo(() => {
+    if (!editingControl || !editingCell) return null
+    return designRowInfo(buildDesignGrid(editingControl), editingCell.row)
+  }, [editingControl, editingCell])
 
   /* ---------- 样式注入：与打印产物共用同一份 tableCss（仅作用域不同） ---------- */
   useEffect(() => {
@@ -311,6 +318,20 @@ export default function TableViewLayer() {
     }
     ;(document.activeElement as HTMLElement | null)?.blur?.()
     useDesignerStore.getState().closeCellEditor()
+  }
+
+  /**
+   * CellToolbar 动作写回：更新模型 + 用新模型重放冻结 HTML。
+   *
+   * 刻意**不重新聚焦**（`refreshFrozen` 默认 `refocus=false`）—— 否则工具条上的
+   * 输入框（字号 / 合并列数 / 表达式）会因单元格抢焦而丢失光标。
+   * 与 Vue 版 `onToolbarApply` 语义一致（工具条不夺焦）。
+   */
+  function onToolbarApply(next: TableControl): void {
+    const id = useDesignerStore.getState().editingCell?.controlId
+    if (!id) return
+    useDesignerStore.getState().updateControl(id, next as Partial<AnyControl>)
+    refreshFrozen(id)
   }
 
   function moveTo(id: string, r: number, c: number): void {
@@ -452,7 +473,18 @@ export default function TableViewLayer() {
         </div>
       )}
 
-      {/* TODO(P7)：CellToolbar（单元格浮动工具栏）迁移中 —— 见 canvas/CellToolbar.tsx */}
+      {editingControl && editingCell && toolbarPos && (
+        <CellToolbar
+          control={editingControl}
+          row={editingCell.row}
+          col={editingCell.col}
+          rowKind={editingRowKind?.kind ?? 'static'}
+          x={toolbarPos.x}
+          y={toolbarPos.y}
+          onApply={onToolbarApply}
+          onClose={exitEditing}
+        />
+      )}
     </div>
   )
 }
