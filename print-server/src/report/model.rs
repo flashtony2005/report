@@ -76,8 +76,32 @@ pub struct CellModel {
     pub value_expr: Option<String>,
     /// 展开表达式（P1 支持：数据集名 / 数组字面量）
     pub expand_expr: Option<String>,
+    /// 展开条数下限：不足时补空值（「默认留 N 个空行」）
+    pub expand_min_count: Option<usize>,
+    /// 展开条数上限：超过的丢弃（「只显示前 N 条」）
+    pub expand_max_count: Option<usize>,
+    /// 展开集为空时保留该格（值为 null）；缺省会连同子格一起删除
+    pub keep_expand_empty: Option<bool>,
     /// 数值显示格式（缺省走全局兜底）；小计 / 合计格应与它所在数值列保持一致
     pub format: Option<NumFmt>,
+    /// 展示期表达式（第三值阶段）。可用 `value` 指代本格的值，如
+    /// `IF(value >= 1000, "大额", "小额")`；也可引用其他格。
+    /// 结果只影响展示文本，不影响 `value` —— 导出 xlsx 时数字格仍写原值。
+    pub format_expr: Option<String>,
+    /// 字典翻译：原始值文本 → 展示文本，如 `{"1": "是", "0": "否"}`。
+    /// 键取**未套数字格式**的原始文本；命中不了就回落到 `format` / 全局兜底。
+    pub dict: Option<BTreeMap<String, String>>,
+    /// 行测试表达式：返回假则**整行删除**（本格连同子树一起不占位）。
+    /// 用于「小计为 0 的分组不显示」这类按结果过滤，WHERE 里做不到的场景。
+    pub row_test_expr: Option<String>,
+    /// 列测试表达式：返回假则整列删除
+    pub col_test_expr: Option<String>,
+    /// 导出 xlsx 时把 `value_expr` 翻译成 Excel 公式（而非写死算好的值）。
+    ///
+    /// 好处是导出后在 Excel 里改明细，小计 / 合计会跟着重算。
+    /// 只在该格有 `value_expr`、且表达式能翻译时生效（见 `Engine::excel_formula`），
+    /// 翻不出来就回落写值并告警——静态值不会算错，静默丢公式才难查。
+    pub export_formula: Option<bool>,
 }
 
 impl CellModel {
@@ -116,11 +140,34 @@ pub struct RowTpl {
     pub cells: Vec<CellTpl>,
 }
 
+/// 分页配置（页面级：按数据行数切页，表头/表尾每页重复）
+///
+/// 只解决「打印时按固定行数分页」这一层，不引入润乾那套完整的 9 类带区模型。
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PageConfig {
+    /// 每页容纳的**数据**行数（不含重复的表头/表尾）
+    pub rows_per_page: usize,
+    /// 每页顶部重复的模板行数（表头）
+    pub repeat_header_rows: usize,
+    /// 每页底部重复的模板行数（表尾 / 签字栏等）
+    pub repeat_footer_rows: usize,
+}
+
+impl PageConfig {
+    /// 表头 + 表尾已经吃掉整张表时无法分页
+    pub fn is_effective(&self, total_rows: usize) -> bool {
+        self.rows_per_page > 0 && total_rows > self.repeat_header_rows + self.repeat_footer_rows
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SheetTpl {
     pub name: String,
     pub rows: Vec<RowTpl>,
+    /// 分页配置；缺省不分页
+    pub page: Option<PageConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -162,6 +209,10 @@ pub struct CellInst {
     pub value: JsonValue,
     /// 求值表达式（层次坐标聚合），如 `D3[B3:+0].sum()`
     pub value_expr: Option<String>,
+    /// 本实例的 value 已求值完成（惰性求值 + 依赖传播：被引用的格会先被求值）
+    pub evaluated: bool,
+    /// 求值进行中。再次进入说明表达式成环，此时放弃求值以避免无限递归
+    pub evaluating: bool,
     /// 在本层父格下的序号（从 0 开始）
     pub expand_index: usize,
     /// 后代实例：位置名 -> 实例下标（向祖格链逐级注册，跨层汇总的前提）
@@ -178,6 +229,31 @@ pub struct CellInst {
     pub merge_to_end: bool,
     /// 数值显示格式（见 CellModel::format）
     pub format: Option<NumFmt>,
+    /// 展示期表达式（见 CellModel::format_expr）
+    pub format_expr: Option<String>,
+    /// 字典翻译（见 CellModel::dict）
+    pub dict: Option<BTreeMap<String, String>>,
+    /// 行测试表达式（见 CellModel::row_test_expr）
+    pub row_test_expr: Option<String>,
+    /// 列测试表达式（见 CellModel::col_test_expr）
+    pub col_test_expr: Option<String>,
+    /// 导出 xlsx 时写公式而不是值（见 CellModel::export_formula）
+    pub export_formula: bool,
+    /// 自身行测试的结果（`row_test_expr`）
+    pub row_test_passed: bool,
+    /// 自身列测试的结果（`col_test_expr`）
+    pub col_test_passed: bool,
+    /// 传递后的「已删除」：自身测试没过，或行 / 列主格里有一个被删。
+    ///
+    /// 与 `dropped` 的区别：`dropped` 是**布局**结果（没落位就是被删），
+    /// 这里记录的是**语义**上的删除，要在求值阶段就用上——否则被 row_test
+    /// 藏起来的行仍会被 `C2.sum()` 算进合计，出现「明细 1000、合计 1500」。
+    pub hidden: bool,
+    /// 已被测试表达式删除（或随被删的父格一起消失），不参与出表。
+    ///
+    /// 缺省为 true，由 `place()` 落位时置 false —— 这样「从未被布局访问到的实例」
+    /// 天然就是被删掉的，不必再单独遍历子树去标记。
+    pub dropped: bool,
 }
 
 impl CellInst {
@@ -198,6 +274,8 @@ impl CellInst {
             expand_value: JsonValue::Null,
             value: JsonValue::Null,
             value_expr: None,
+            evaluated: false,
+            evaluating: false,
             expand_index,
             descendants: BTreeMap::new(),
             row_start: 0,
@@ -208,6 +286,15 @@ impl CellInst {
             merge_down: 0,
             merge_to_end: false,
             format: None,
+            format_expr: None,
+            dict: None,
+            row_test_expr: None,
+            col_test_expr: None,
+            export_formula: false,
+            row_test_passed: true,
+            col_test_passed: true,
+            hidden: false,
+            dropped: true,
         }
     }
 }
@@ -224,6 +311,10 @@ pub struct GridCell {
     /// Excel 数字格式串（由 NumFmt 推导）；xlsx 导出时套到数值格上
     #[serde(skip_serializing_if = "Option::is_none")]
     pub num_format: Option<String>,
+    /// Excel 公式（仅 `export_formula` 且表达式可翻译时非空）。
+    /// xlsx 导出时用它替代静态值；HTML 预览仍用 `text`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formula: Option<String>,
 }
 
 /// 展开结果

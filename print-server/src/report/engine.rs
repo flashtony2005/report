@@ -6,9 +6,136 @@
 //! 2. 展开与求值分离：先 expand_value，再 value_expr
 //! 3. 层次坐标 `D3[B3:+0]` 中 `:+0` 表示「当前组」，不可省略（省略会解析为空集）
 
+use crate::report::expr::{self, BinOp, CmpOp, Coord, Expr, Prop};
 use crate::report::model::*;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
+
+/// 布局递归深度上限（防御异常模板导致的深递归）
+const MAX_LAYOUT_DEPTH: usize = 256;
+
+/// `A0` 是 NopReport 约定的「根单元格」——显式声明没有父格，不再套用缺省推断
+fn is_root_ref(p: &str) -> bool {
+    p.trim().eq_ignore_ascii_case("a0")
+}
+
+/// 缺省行父格：向左查找最近的**纵向**扩展格（NopReport 的缺省规则）
+fn default_row_parent(sheet: &SheetTpl, r: usize, c: usize) -> Option<String> {
+    if c == 0 {
+        return None;
+    }
+    for cc in (0..c).rev() {
+        let Some(cell) = sheet.rows.get(r).and_then(|row| row.cells.get(cc)) else {
+            continue;
+        };
+        if cell.model.as_ref().map_or(false, |m| m.is_row_expand()) {
+            return Some(cell.pos.clone().unwrap_or_else(|| cell_pos(r, cc)));
+        }
+    }
+    None
+}
+
+/// 缺省列父格：向上查找最近的**横向**扩展格
+fn default_col_parent(sheet: &SheetTpl, r: usize, c: usize) -> Option<String> {
+    if r == 0 {
+        return None;
+    }
+    for rr in (0..r).rev() {
+        let Some(cell) = sheet.rows.get(rr).and_then(|row| row.cells.get(c)) else {
+            continue;
+        };
+        if cell.model.as_ref().map_or(false, |m| m.is_col_expand()) {
+            return Some(cell.pos.clone().unwrap_or_else(|| cell_pos(rr, c)));
+        }
+    }
+    None
+}
+
+/// 表达式求值结果
+///
+/// `Set` 是 NopReport 的设计精髓：层次坐标返回的是**格集**，由使用场景决定
+/// 当集合遍历（`SUM(D3)`）还是取首格的值（参与四则运算 `C4 / C4[B4:-1]`）。
+/// 这样就不必引入润乾那套区分「单值 / 集合」的 `{}` 语法。
+#[derive(Debug, Clone)]
+enum Val {
+    Num(f64),
+    Str(String),
+    Bool(bool),
+    Null,
+    /// 层次坐标定位到的一组实例。
+    ///
+    /// `anchor` 是其中「对当前格可见」的那一个（同一主格下的兄弟格，或主格链上的祖格）。
+    /// 折叠成标量时优先取它——这是 NopReport `getNamedCells` 的可见性语义：
+    /// 写 `B2 / B2[A2:-1]` 时，裸 `B2` 必须是**当前行**的 B2，而不是全局第一个 B2。
+    Set { cells: Vec<usize>, anchor: Option<usize> },
+}
+
+impl Val {
+    fn from_json(v: JsonValue) -> Self {
+        match v {
+            JsonValue::Number(n) => Val::Num(n.as_f64().unwrap_or(f64::NAN)),
+            JsonValue::String(s) => Val::Str(s),
+            JsonValue::Bool(b) => Val::Bool(b),
+            _ => Val::Null,
+        }
+    }
+
+    /// 折叠成标量：格集优先取可见实例（anchor）的值，没有则退回首格
+    /// （对齐 NopReport 的 ExpandedCellSet.getValue）
+    fn scalar(self, e: &Engine) -> Val {
+        match self {
+            Val::Set { cells, anchor } => {
+                let pick = anchor.filter(|a| cells.contains(a)).or_else(|| cells.first().copied());
+                match pick {
+                    Some(i) => Val::from_json(e.insts[i].value.clone()),
+                    None => Val::Null,
+                }
+            }
+            other => other,
+        }
+    }
+
+    fn as_num(&self) -> Option<f64> {
+        match self {
+            Val::Num(n) => Some(*n),
+            Val::Str(s) => s.trim().parse::<f64>().ok(),
+            Val::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+            _ => None,
+        }
+    }
+
+    fn truthy(&self) -> bool {
+        match self {
+            Val::Bool(b) => *b,
+            Val::Num(n) => *n != 0.0,
+            Val::Str(s) => !s.is_empty(),
+            Val::Set { cells, .. } => !cells.is_empty(),
+            Val::Null => false,
+        }
+    }
+
+    /// 比较用的文本。非数值比较走这里：分组标签（"1月" / "华东"）之间比大小、
+    /// 数字与数字字符串混比（100 与 "100"）都靠它统一口径。
+    fn as_text(&self, e: &Engine) -> String {
+        match self.clone().scalar(e) {
+            Val::Num(n) => n.to_string(),
+            Val::Str(s) => s,
+            Val::Bool(b) => b.to_string(),
+            Val::Null => String::new(),
+            Val::Set { .. } => String::new(),
+        }
+    }
+
+    /// 落到单元格前先折叠成标量
+    fn into_json(self, e: &Engine) -> JsonValue {
+        match self.scalar(e) {
+            Val::Num(n) => JsonValue::from(n),
+            Val::Str(s) => JsonValue::from(s),
+            Val::Bool(b) => JsonValue::from(b),
+            _ => JsonValue::Null,
+        }
+    }
+}
 
 pub struct Engine {
     insts: Vec<CellInst>,
@@ -16,11 +143,34 @@ pub struct Engine {
     /// 已创建实例按位置名索引
     by_pos: BTreeMap<String, Vec<usize>>,
     roots: Vec<usize>,
+    /// 布局递归当前深度（见 MAX_LAYOUT_DEPTH）
+    layout_depth: usize,
+    /// 可疑但不必中断渲染的情况（父格查不到、表达式解析失败等）
+    ///
+    /// 这些问题的共同点是**静默产出错误数据**：既不报错也不崩溃，只是结果悄悄变少或变空，
+    /// 靠读输出很难发现。收集起来交给调用方，别让它们烂在渲染过程里。
+    warnings: Vec<String>,
+    /// 展示文本覆盖（与 insts 一一对应）：`formatExpr` / `dict` 的产出。
+    /// None 表示没配，按既有 `display()` 口径出文本。
+    fmt_text: Vec<Option<String>>,
 }
 
 impl Engine {
     pub fn new(ds: DataSet) -> Self {
-        Engine { insts: Vec::new(), ds, by_pos: BTreeMap::new(), roots: Vec::new() }
+        Engine {
+            insts: Vec::new(),
+            ds,
+            by_pos: BTreeMap::new(),
+            roots: Vec::new(),
+            layout_depth: 0,
+            warnings: Vec::new(),
+            fmt_text: Vec::new(),
+        }
+    }
+
+    /// 渲染过程中收集到的告警
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// 展开一个 sheet，返回输出网格
@@ -28,6 +178,8 @@ impl Engine {
         self.insts.clear();
         self.by_pos.clear();
         self.roots.clear();
+        self.warnings.clear();
+        self.layout_depth = 0;
 
         let all_rows: Vec<usize> = (0..self.ds.len()).collect();
 
@@ -41,19 +193,49 @@ impl Engine {
                 let pos = cell.pos.clone().unwrap_or_else(|| cell_pos(r, c));
                 let model = cell.model.clone().unwrap_or_default();
 
-                // 行主格实例列表（无 row_parent 时视为挂在根上）
-                let row_parents: Vec<Option<usize>> = match &model.row_parent {
-                    Some(p) => match self.by_pos.get(p) {
+                // 未显式声明父格时，按 NopReport 的缺省规则推断：
+                // 行父格向左查找最近的纵向扩展格，列父格向上查找最近的横向扩展格。
+                let row_ref = model
+                    .row_parent
+                    .as_deref()
+                    .filter(|p| !is_root_ref(p))
+                    .map(|s| s.to_string())
+                    .or_else(|| default_row_parent(sheet, r, c));
+                let col_ref = model
+                    .col_parent
+                    .as_deref()
+                    .filter(|p| !is_root_ref(p))
+                    .map(|s| s.to_string())
+                    .or_else(|| default_col_parent(sheet, r, c));
+
+                // 行主格实例列表
+                //
+                // 注意：`by_pos` 只含**已创建**的实例，所以父格下标必然小于子格——
+                // 主格树是按下标严格递减的 DAG，结构上不可能成环，无需环检测。
+                // 声明了父格却查不到：一定是模板写错了（父格必须写在子格之前），
+                // 退回挂根能保住数据不消失，但展开结果会静默变少，必须告警。
+                let row_parents: Vec<Option<usize>> = match &row_ref {
+                    Some(p) => match self.by_pos.get(p).cloned() {
                         Some(list) => list.iter().map(|i| Some(*i)).collect(),
-                        None => Vec::new(),
+                        None => {
+                            self.warnings.push(format!(
+                                "{pos} 声明的 row_parent \"{p}\" 不存在——父格必须先于子格创建，已退回挂根（该格不会跟随主格展开）"
+                            ));
+                            vec![None]
+                        }
                     },
                     None => vec![None],
                 };
                 // 列主格实例列表：与行主格做笛卡尔积，取数视图取两者交集（交叉表的本质）
-                let col_parents: Vec<Option<usize>> = match &model.col_parent {
-                    Some(p) => match self.by_pos.get(p) {
+                let col_parents: Vec<Option<usize>> = match &col_ref {
+                    Some(p) => match self.by_pos.get(p).cloned() {
                         Some(list) => list.iter().map(|i| Some(*i)).collect(),
-                        None => Vec::new(),
+                        None => {
+                            self.warnings.push(format!(
+                                "{pos} 声明的 col_parent \"{p}\" 不存在——父格必须先于子格创建，已退回挂根"
+                            ));
+                            vec![None]
+                        }
                     },
                     None => vec![None],
                 };
@@ -91,22 +273,26 @@ impl Engine {
             }
         }
 
-        // ---- 阶段 2：求值（聚合 -> 层次坐标，后者此时可用）----
+        // ---- 阶段 2：求值 + 测试表达式（惰性 + 依赖传播，见 ensure_value 注释）----
+        //
+        // 早期实现是按实例下标 0..n 单遍扫描，问题在于 value_expr 引用另一个
+        // value_expr 格时结果取决于创建顺序：被引用格下标更大就会读到 Null。
+        // 改为 ensure_value 后，被引用格会先被递归求值到位。
+        //
+        // 求值必须和 row/col_test 一起迭代到稳定：测试可以引用聚合结果
+        // （「小计为 0 的分组不显示」），而聚合又要跳过被测试删掉的格——
+        // 两者互相依赖，单遍算完再删就会留下「明细里没有、合计里还在」的脏数。
         let n = self.insts.len();
+        self.evaluate_to_fixpoint(n);
+
+        // ---- 阶段 2.5：展示文本（第三值阶段 formatExpr > dict > NumFmt）----
+        //
+        // 必须在全部 value 求值之后：format_expr 里的 `value` 读的是本格的最终值，
+        // 也可能用层次坐标引用别的格，那时坐标必须已经建好。
+        let n = self.insts.len();
+        self.fmt_text = vec![None; n];
         for i in 0..n {
-            // 交叉表数值格：对本实例覆盖的全部数据行做聚合
-            if let Some(agg) = self.insts[i].agg {
-                if let Some(v) = self.aggregate(i, agg) {
-                    self.insts[i].value = v;
-                    continue;
-                }
-            }
-            let expr = match self.insts[i].value_expr.clone() {
-                Some(e) => e,
-                None => continue,
-            };
-            let v = self.eval_expr(&expr, i);
-            self.insts[i].value = v;
+            self.compute_display(i);
         }
 
         // ---- 阶段 3：布局（行）----
@@ -120,11 +306,22 @@ impl Engine {
         // ---- 阶段 4：填充网格 ----
         let ncols = total_cols.max(1);
         let mut grid: Vec<Vec<Option<GridCell>>> = vec![vec![None; ncols]; total_rows];
-        for inst in self.insts.iter() {
-            if inst.row_start >= total_rows || inst.col_start >= ncols {
+        for (i, inst) in self.insts.iter().enumerate() {
+            if inst.dropped || inst.row_start >= total_rows || inst.col_start >= ncols {
                 continue;
             }
-            let (text, num) = display(inst.value.clone(), inst.format.as_ref());
+            let (mut text, num) = display(inst.value.clone(), inst.format.as_ref());
+            if let Some(Some(t)) = self.fmt_text.get(i) {
+                text = t.clone();
+            }
+            // export_formula：翻得出来就带公式（xlsx 里可继续算），翻不出来回落写值
+            let formula = if inst.export_formula { self.excel_formula(i) } else { None };
+            if inst.export_formula && formula.is_none() {
+                self.warnings.push(format!(
+                    "{} 声明了 export_formula，但 value_expr 无法翻译成 Excel 公式，已回落写值",
+                    inst.pos
+                ));
+            }
             // 合并规则：横向 = max(列子树跨度, merge_across+1) 或「铺到行尾」；
             // 纵向 = max(行子树跨度, merge_down+1)
             let colspan = if inst.merge_to_end {
@@ -139,6 +336,7 @@ impl Engine {
                 colspan,
                 raw_number: num,
                 num_format: inst.format.as_ref().and_then(excel_num_format),
+                formula,
             });
         }
 
@@ -193,10 +391,24 @@ impl Engine {
 
         // 行展开与列展开都是「按字段分组去重」，区别只在布局方向
         if model.is_row_expand() || model.is_col_expand() {
-            let groups: Vec<(JsonValue, Vec<usize>)> = match &model.field {
+            let mut groups: Vec<(JsonValue, Vec<usize>)> = match &model.field {
                 Some(f) => group_by_field(&self.ds, view, f),
                 None => view.iter().map(|r| (JsonValue::Null, vec![*r])).collect(),
             };
+            // 上限：只显示前 N 条
+            if let Some(max) = model.expand_max_count {
+                groups.truncate(max);
+            }
+            // 展开集为空时是否保留单元格（缺省删除，连带子格一起消失）
+            if groups.is_empty() && model.keep_expand_empty.unwrap_or(false) {
+                groups.push((JsonValue::Null, Vec::new()));
+            }
+            // 下限：补足到 N 条，用于「默认留 N 个空行」
+            if let Some(min) = model.expand_min_count {
+                while groups.len() < min {
+                    groups.push((JsonValue::Null, Vec::new()));
+                }
+            }
             for (gval, rows) in groups {
                 let mut inst = CellInst::new(pos.to_string(), tpl_row, tpl_col, parent, out.len());
                 inst.rows = rows;
@@ -209,6 +421,13 @@ impl Engine {
                 inst.merge_to_end = cell.merge_to_end;
                 inst.format = model.format.clone();
                 inst.value_expr = model.value_expr.clone();
+                // 展示值与测试表达式：**展开格这条分支同样要拷**。
+                // 只拷非展开分支的话，挂在分组格上的字典（编码 → 名称）会静默失效。
+                inst.format_expr = model.format_expr.clone();
+                inst.dict = model.dict.clone();
+                inst.row_test_expr = model.row_test_expr.clone();
+                inst.col_test_expr = model.col_test_expr.clone();
+                inst.export_formula = model.export_formula.unwrap_or(false);
                 inst.col_parent = col_parent;
                 inst.col_after = model.col_after.clone();
                 inst.col_expand = model.is_col_expand();
@@ -230,6 +449,11 @@ impl Engine {
             };
             inst.expand_value = inst.value.clone();
             inst.value_expr = model.value_expr.clone();
+            inst.format_expr = model.format_expr.clone();
+            inst.dict = model.dict.clone();
+            inst.row_test_expr = model.row_test_expr.clone();
+            inst.col_test_expr = model.col_test_expr.clone();
+            inst.export_formula = model.export_formula.unwrap_or(false);
             inst.col_parent = col_parent;
             inst.col_after = model.col_after.clone();
             out.push(self.insts.len());
@@ -257,15 +481,218 @@ impl Engine {
         }
     }
 
+    /// rowTestExpr / colTestExpr：返回假则整行 / 整列删除。
+    ///
+    /// 解析失败按**保留**处理并告警——静默删行比多留一行危险得多：
+    /// 前者是丢数据且无从察觉，后者只是排版难看。
+    fn test_result(&mut self, i: usize, expr: &Option<String>, kind: &str, warn: bool) -> bool {
+        let Some(e) = expr else { return true };
+        match expr::parse(e) {
+            Err(err) => {
+                if warn {
+                    let pos = self.insts[i].pos.clone();
+                    self.warnings.push(format!("{pos} 的 {kind} 无法解析（{err}），已保留该格"));
+                }
+                true
+            }
+            // 求值发生在全部 value 之后，层次坐标此时已建好可用
+            Ok(ast) => self.eval_ast(&ast, i, i).truthy(),
+        }
+    }
+
+    /// `value_expr` → Excel 公式（`export_formula` 用）。
+    ///
+    /// 思路：表达式里的层次坐标在**布局之后**已经能落成具体的格，
+    /// 于是把「求值」翻成「引用这些格」——`C2[A2:+0].sum()` 在 1 月组占 3 行时
+    /// 就是 `SUM(C3:C5)`。这样导出后在 Excel 里改明细，小计 / 合计会跟着重算。
+    ///
+    /// 翻不出来返回 `None`（调用方回落写值并告警）。刻意不做「尽力翻译」：
+    /// 半对不对的公式比静态值危险得多——它看起来能算，结果却是错的。
+    /// 目前不翻的：`PROPORTION` / `ACCSUM` / `RANK` / `NVL`（Excel 无同名函数，
+    /// 硬凑出来的等价式可读性极差）、`{}` 条件（格集过滤没有 Excel 对应物）、
+    /// `$` 与 `value`（依赖求值上下文）。
+    fn excel_formula(&self, i: usize) -> Option<String> {
+        let src = self.insts[i].value_expr.as_deref()?;
+        let ast = expr::parse(src).ok()?;
+        self.excel_of(&ast, i)
+    }
+
+    fn excel_of(&self, e: &Expr, cur: usize) -> Option<String> {
+        Some(match e {
+            Expr::Num(n) => format!("{n}"),
+            // 双引号要转义成两个，否则公式断掉
+            Expr::Str(s) => format!("\"{}\"", s.replace('"', "\"\"")),
+            Expr::Cell { target, coord, prop } => {
+                let cells = self.resolve(target, coord.as_ref(), cur);
+                if cells.is_empty() || cells.contains(&cur) {
+                    return None; // 解析不到引用目标 / 自引用 → 不翻
+                }
+                let refs = self.excel_refs(&cells)?;
+                match prop {
+                    None => refs,
+                    Some(Prop::Aggregate(f)) => match *f {
+                        "sum" => format!("SUM({refs})"),
+                        "count" => format!("COUNT({refs})"),
+                        "avg" => format!("AVERAGE({refs})"),
+                        "min" => format!("MIN({refs})"),
+                        "max" => format!("MAX({refs})"),
+                        _ => return None,
+                    },
+                    Some(Prop::ExpandIndex) => return None,
+                }
+            }
+            Expr::Neg(inner) => format!("-({})", self.excel_of(inner, cur)?),
+            Expr::Binary { op, lhs, rhs } => {
+                let a = self.excel_of(lhs, cur)?;
+                let b = self.excel_of(rhs, cur)?;
+                let o = match op {
+                    BinOp::Add => "+",
+                    BinOp::Sub => "-",
+                    BinOp::Mul => "*",
+                    BinOp::Div => "/",
+                };
+                format!("({a}){o}({b})")
+            }
+            Expr::Cmp { op, lhs, rhs } => {
+                let a = self.excel_of(lhs, cur)?;
+                let b = self.excel_of(rhs, cur)?;
+                let o = match op {
+                    CmpOp::Gt => ">",
+                    CmpOp::Ge => ">=",
+                    CmpOp::Lt => "<",
+                    CmpOp::Le => "<=",
+                    CmpOp::Eq => "=",
+                    CmpOp::Ne => "<>",
+                };
+                format!("({a}){o}({b})")
+            }
+            Expr::Call { name, args } => {
+                let up = name.to_uppercase();
+                if up != "IF" || args.len() != 3 {
+                    return None;
+                }
+                let parts: Option<Vec<String>> =
+                    args.iter().map(|a| self.excel_of(a, cur)).collect();
+                let parts = parts?;
+                format!("IF({},{},{})", parts[0], parts[1], parts[2])
+            }
+            Expr::SelfValue | Expr::Filter { .. } | Expr::Dollar(_) => return None,
+        })
+    }
+
+    /// 一组实例 → Excel 引用。连续的同行 / 同列折叠成区间，否则逐个逗号列出
+    fn excel_refs(&self, cells: &[usize]) -> Option<String> {
+        let mut pts: Vec<(usize, usize)> = cells
+            .iter()
+            .map(|&i| (self.insts[i].row_start, self.insts[i].col_start))
+            .collect();
+        pts.sort_unstable();
+        pts.dedup();
+        if pts.is_empty() {
+            return None;
+        }
+        let a = cell_pos(pts[0].0, pts[0].1);
+        if pts.len() == 1 {
+            return Some(a);
+        }
+        // 同列且行连续 → C3:C5；同行且列连续 → C3:E3；否则逐个列出
+        let rows_consecutive = pts.windows(2).all(|w| w[1].0 == w[0].0 + 1);
+        let cols_consecutive = pts.windows(2).all(|w| w[1].1 == w[0].1 + 1);
+        if (pts.iter().all(|p| p.1 == pts[0].1) && rows_consecutive)
+            || (pts.iter().all(|p| p.0 == pts[0].0) && cols_consecutive)
+        {
+            let last = pts[pts.len() - 1];
+            return Some(format!("{a}:{}", cell_pos(last.0, last.1)));
+        }
+        Some(pts.iter().map(|p| cell_pos(p.0, p.1)).collect::<Vec<_>>().join(","))
+    }
+
+    /// 求值 ↔ 测试 迭代到稳定（或到达轮次上限）
+    ///
+    /// 每轮：先按当前 hidden 集合求值，再重算测试。测试翻翻转了就清空
+    /// `evaluated` 重来一轮——因为上一轮的聚合里可能还含着刚被删掉的格。
+    /// 轮次上限是防御性的：业务上「删掉→合计变小→又有新的格不达标」这种
+    /// 级联通常一两轮就收敛，但不排除有人写了个会震荡的条件，不能让它转到底。
+    fn evaluate_to_fixpoint(&mut self, n: usize) {
+        const MAX_ROUNDS: usize = 4;
+        for round in 0..MAX_ROUNDS {
+            for i in 0..n {
+                self.ensure_value(i);
+            }
+            // 只在第一轮报解析失败，避免同一条告警重复 N 次
+            let changed = self.compute_tests(n, round == 0);
+            if !changed {
+                break;
+            }
+            // 第 0 轮的 changed 只是「首次定下谁被删」，属于正常流程；
+            // 第 1 轮起还在翻转，才说明条件依赖了会随删除而变化的聚合值
+            // （如「小计 < 阈值的分组不显示」），此时结果取决于最后一轮，值得提示。
+            if round >= 1 {
+                self.warnings.push(format!(
+                    "row/col_test 第 {} 轮仍在翻转：测试条件依赖了会随删除变化的聚合值，已按最后一轮结果出表",
+                    round + 1
+                ));
+            }
+            if round + 1 == MAX_ROUNDS {
+                break;
+            }
+            for inst in self.insts.iter_mut() {
+                inst.evaluated = false;
+                inst.evaluating = false;
+            }
+        }
+    }
+
+    /// 重算全部测试表达式，并把结果沿主格链传递成 `hidden`；返回是否有格翻转
+    fn compute_tests(&mut self, n: usize, warn: bool) -> bool {
+        for i in 0..n {
+            let row = self.insts[i].row_test_expr.clone();
+            let col = self.insts[i].col_test_expr.clone();
+            let row_ok = self.test_result(i, &row, "row_test_expr", warn);
+            let col_ok = self.test_result(i, &col, "col_test_expr", warn);
+            self.insts[i].row_test_passed = row_ok;
+            self.insts[i].col_test_passed = col_ok;
+        }
+        // 传递：主格被删 → 子格跟着删（整行 / 整列删除的语义）。
+        // 父格下标恒小于子格（见阶段 1 注释），单遍升序即可。
+        let mut hidden = vec![false; n];
+        for i in 0..n {
+            let own = !self.insts[i].row_test_passed || !self.insts[i].col_test_passed;
+            let inherited = self.insts[i].parent.is_some_and(|p| hidden[p])
+                || self.insts[i].col_parent.is_some_and(|p| hidden[p]);
+            hidden[i] = own || inherited;
+        }
+        let changed = self.insts.iter().zip(hidden.iter()).any(|(x, h)| x.hidden != *h);
+        for (inst, h) in self.insts.iter_mut().zip(hidden) {
+            inst.hidden = h;
+        }
+        changed
+    }
+
+    /// 整列删除时，挂在它下面的列子格要一起带走，否则会以默认列号 0 冒出来
+    fn mark_col_dropped(&mut self, i: usize) {
+        let kids = self.insts[i].col_children.clone();
+        for k in kids {
+            self.insts[k].dropped = true;
+            self.mark_col_dropped(k);
+        }
+    }
+
     /// 递归布局：返回该实例子树占用的物理行数
     fn place(&mut self, idx: usize, offset: usize) -> usize {
+        // 落位即视为未被删除（dropped 缺省为 true，见 CellInst::new）
+        self.insts[idx].dropped = false;
         self.insts[idx].row_start = offset;
         let children = self.insts[idx].children.clone();
-        if children.is_empty() {
+        // 深度上限是纯防御：主格树按下标严格递减、结构上无环，
+        // 但异常模板仍可能堆出很深的父子链，别把调用栈打爆。
+        if children.is_empty() || self.layout_depth >= MAX_LAYOUT_DEPTH {
             self.insts[idx].row_span = 1;
             return 1;
         }
+        self.layout_depth += 1;
         let used = self.layout_group(&children, offset).max(1);
+        self.layout_depth -= 1;
         self.insts[idx].row_span = used;
         used
     }
@@ -275,8 +702,16 @@ impl Engine {
     /// - 同一模板行内，不同列 → **共享**同一段行（小计行的 B4 与 D4 必须同行）
     /// - 同一模板行同一列 → 顺序占行（B3 展开出的 上海 / 杭州 / 南京）
     fn layout_group(&mut self, items: &[usize], offset: usize) -> usize {
+        // rowTestExpr：返回假则整行删除——本格不占位，子树因为不会被 place 到而一并消失。
+        // 这里读的是 `hidden`（阶段 2 已算好并沿主格链传递），不重新求值：
+        // 求值要用到最终 hidden 集合，布局必须跟它看到同一份结果。
+        let items: Vec<usize> = items.iter().copied().filter(|c| !self.insts[*c].hidden).collect();
+        if items.is_empty() {
+            return 0;
+        }
+
         let mut row_groups: Vec<(usize, Vec<usize>)> = Vec::new();
-        for c in items {
+        for c in &items {
             let tr = self.insts[*c].tpl_row;
             match row_groups.last_mut() {
                 Some((last, list)) if *last == tr => list.push(*c),
@@ -351,6 +786,11 @@ impl Engine {
             let mut cursor = self.insts[group[0]].tpl_col;
             let col_expand = self.insts[group[0]].col_expand;
             for g in &group {
+                if self.insts[*g].hidden {
+                    self.insts[*g].dropped = true;
+                    self.mark_col_dropped(*g);
+                    continue;
+                }
                 self.insts[*g].col_start = cursor;
                 self.assign_col(*g);
                 let span = self.insts[*g].col_span.max(1);
@@ -371,6 +811,11 @@ impl Engine {
                 }
             }
             for g in &group {
+                if self.insts[*g].hidden {
+                    self.insts[*g].dropped = true;
+                    self.mark_col_dropped(*g);
+                    continue;
+                }
                 self.insts[*g].col_start = after;
                 self.assign_col(*g);
                 let span = self.insts[*g].col_span.max(1);
@@ -414,56 +859,453 @@ impl Engine {
         self.insts[idx].col_span = span;
     }
 
-    // ---------------- 层次坐标求值 ----------------
+    // ---------------- 表达式求值 ----------------
 
-    fn eval_expr(&self, expr: &str, cur: usize) -> JsonValue {
-        let expr = expr.trim();
-        // 形式： POS | POS[COORD] | POS[COORD].func() | POS.func()
-        let cut = expr.find('[').or_else(|| expr.find('.')).unwrap_or(expr.len());
-        let (head, after) = expr.split_at(cut);
-        let target = head.trim().to_string();
-        let after = after.trim();
+    /// 确保第 i 个实例的 value 已求值。
+    ///
+    /// 惰性求值 + 依赖传播：先递归求值「本表达式引用到的实例」，再算自己。
+    /// 这样 `value_expr` 引用另一个 `value_expr` 格时不再依赖实例创建顺序——
+    /// 旧实现按 0..n 单遍扫描，被引用格下标更大时会读到尚未求值的 Null，
+    /// 既不报错也不崩溃，只在特定模板下静默算错。
+    ///
+    /// `evaluating` 同时充当循环引用检测：递归中再次进入同一实例说明成环，
+    /// 直接放弃求值（保留 Null），避免无限递归。
+    fn ensure_value(&mut self, i: usize) {
+        if self.insts[i].evaluated || self.insts[i].evaluating {
+            return;
+        }
+        self.insts[i].evaluating = true;
 
-        let mut coords: Option<Coord> = None;
-        let mut func = "value";
-        if let Some(s) = after.strip_prefix('[') {
-            if let Some(end) = s.find(']') {
-                let inner = s[..end].trim();
-                if !inner.is_empty() {
-                    coords = Some(Coord::parse(inner));
-                }
-                let tail = s[end + 1..].trim().trim_start_matches('.');
-                func = func_of(tail);
+        if let Some(agg) = self.insts[i].agg {
+            if let Some(v) = self.aggregate(i, agg) {
+                self.insts[i].value = v;
             }
-        } else if let Some(s) = after.strip_prefix('.') {
-            func = func_of(s);
+        } else if let Some(expr) = self.insts[i].value_expr.clone() {
+            // 解析失败保留展开值，不因一处坏表达式拖垮整张表——但要告警，
+            // 否则用户只看到一个空单元格，无从下手
+            match expr::parse(&expr) {
+                Err(e) => {
+                    let pos = self.insts[i].pos.clone();
+                    self.warnings
+                        .push(format!("{pos} 的 value_expr 无法解析（{e}），已保留展开值"));
+                }
+                Ok(ast) => {
+                    // 先把依赖格求值到位，再算自己
+                    for d in self.expr_deps(&ast, i) {
+                        self.ensure_value(d);
+                    }
+                    let v = self.eval_ast(&ast, i, i).into_json(self);
+                    self.insts[i].value = v;
+                }
+            }
         }
 
-        let tail_func = func;
+        self.insts[i].evaluating = false;
+        self.insts[i].evaluated = true;
+    }
 
-        let cells = self.resolve(&target, coords.as_ref(), cur);
-        let nums: Vec<f64> = cells
-            .iter()
-            .filter_map(|i| as_number(self.insts[*i].value.clone()))
-            .collect();
+    /// 计算展示文本，兜底顺序 `formatExpr` > `dict` > `NumFmt`（后者就是 `display()`）。
+    ///
+    /// 只覆盖文本，不动 `value`：xlsx 仍导出原始数值和数字格式串。所以字典把 1 显示成
+    /// 「是」时，Excel 里那个格子还是数字 1 —— 这是「展示值」语义的固有取舍，
+    /// 好处是导出后仍可再做透视/计算。
+    fn compute_display(&mut self, i: usize) {
+        if let Some(e) = self.insts[i].format_expr.clone() {
+            match expr::parse(&e) {
+                Err(err) => {
+                    let pos = self.insts[i].pos.clone();
+                    self.warnings.push(format!(
+                        "{pos} 的 format_expr 无法解析（{err}），已回落 dict / 数字格式"
+                    ));
+                }
+                Ok(ast) => {
+                    // format_expr 可能引用别的格，先把依赖求值到位
+                    for d in self.expr_deps(&ast, i) {
+                        self.ensure_value(d);
+                    }
+                    let v = self.eval_ast(&ast, i, i).into_json(self);
+                    let text = match v {
+                        JsonValue::Null => String::new(),
+                        JsonValue::String(s) => s,
+                        other => other.to_string(),
+                    };
+                    self.fmt_text[i] = Some(text);
+                    return;
+                }
+            }
+        }
 
-        match tail_func {
-            "sum" => JsonValue::from(nums.iter().sum::<f64>()),
-            "count" => JsonValue::from(nums.len() as i64),
-            "avg" if !nums.is_empty() => JsonValue::from(nums.iter().sum::<f64>() / nums.len() as f64),
-            "min" => nums.iter().cloned().fold(f64::NAN, f64::min).into(),
-            "max" => nums.iter().cloned().fold(f64::NAN, f64::max).into(),
-            _ => cells.first().map(|i| self.insts[*i].value.clone()).unwrap_or(JsonValue::Null),
+        if let Some(dict) = self.insts[i].dict.clone() {
+            // 键取**未套数字格式**的原始文本：配 {"1": "是"} 时不该被千分位/小数位干扰
+            let (base, _) = display(self.insts[i].value.clone(), None);
+            if let Some(mapped) = dict.get(&base) {
+                self.fmt_text[i] = Some(mapped.clone());
+            }
         }
     }
 
+    /// 收集表达式引用到的全部实例下标（依赖传播用）
+    fn expr_deps(&self, e: &Expr, cur: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.collect_deps(e, cur, &mut out);
+        out
+    }
+
+    fn collect_deps(&self, e: &Expr, cur: usize, out: &mut Vec<usize>) {
+        match e {
+            Expr::Cell { target, coord, .. } => out.extend(self.resolve(target, coord.as_ref(), cur)),
+            Expr::Call { args, .. } => {
+                for a in args {
+                    self.collect_deps(a, cur, out);
+                }
+            }
+            Expr::Binary { lhs, rhs, .. } | Expr::Cmp { lhs, rhs, .. } => {
+                self.collect_deps(lhs, cur, out);
+                self.collect_deps(rhs, cur, out);
+            }
+            Expr::Neg(inner) => self.collect_deps(inner, cur, out),
+            // `value` 是本格自身，不构成依赖；若在此递归 ensure_value(cur) 会自己等自己
+            Expr::Num(_) | Expr::Str(_) | Expr::SelfValue => {}
+            // 过滤条件的依赖按当前格收集（候选格是运行期才知道的，无法在此精确展开）
+            Expr::Filter { cell, cond } => {
+                self.collect_deps(cell, cur, out);
+                self.collect_deps(cond, cur, out);
+            }
+            Expr::Dollar(inner) => self.collect_deps(inner, cur, out),
+        }
+    }
+
+    /// 实例的层次坐标：从根主格到自己的 `pos:序号` 链，如 `A2:0,B3:2`
+    fn layer_coordinate(&self, i: usize) -> String {
+        let mut chain = vec![(self.insts[i].pos.clone(), self.insts[i].expand_index)];
+        let mut p = self.insts[i].parent;
+        while let Some(pi) = p {
+            chain.push((self.insts[pi].pos.clone(), self.insts[pi].expand_index));
+            p = self.insts[pi].parent;
+        }
+        chain.reverse();
+        chain.iter().map(|(pos, idx)| format!("{pos}:{idx}")).collect::<Vec<_>>().join(",")
+    }
+
+    /// 展开中间结果，用于排查扩展/求值问题（等价 NopReport 的 `dump=true`）
+    ///
+    /// 每行：`seq | pos | 文本 <- 层次坐标 | 行父 | 列父`
+    pub fn dump_text(&self) -> String {
+        let mut out = String::from("seq | pos | text <- 层次坐标 | 行父 | 列父\n");
+        if !self.warnings.is_empty() {
+            out.push_str(&format!("!! 告警 {} 条:\n", self.warnings.len()));
+            for w in &self.warnings {
+                out.push_str(&format!("!!   {w}\n"));
+            }
+        }
+        let link = |p: Option<usize>| match p {
+            Some(i) => format!("{}#{}", self.insts[i].pos, self.insts[i].expand_index),
+            None => "-".to_string(),
+        };
+        for (seq, inst) in self.insts.iter().enumerate() {
+            if inst.dropped {
+                continue;
+            }
+            // 与出表一致的展示文本（含 formatExpr / dict 覆盖），否则 dump 和实际结果对不上
+            let mut text = display(inst.value.clone(), inst.format.as_ref()).0;
+            if let Some(Some(t)) = self.fmt_text.get(seq) {
+                text = t.clone();
+            }
+            out.push_str(&format!(
+                "{} | {} | {} <- {} | 行父:{} | 列父:{}\n",
+                seq,
+                inst.pos,
+                if text.is_empty() { "(空)" } else { &text },
+                self.layer_coordinate(seq),
+                link(inst.parent),
+                link(inst.col_parent),
+            ));
+        }
+        out
+    }
+
+    /// 找到「对当前格可见」的位置名为 target 的实例：
+    /// 1. 自己；2. 沿主格链向上的祖格；3. 同一主格下的兄弟格；4. 列主格链
+    ///
+    /// 第 3 条是关键：`ACCSUM(B2)` / `B2 / B2[A2:-1]` 写在 C2 上时，
+    /// B2 与 C2 是同一父格下的兄弟，不是祖孙关系。
+    fn anchor_instance(&self, target: &str, cur: usize) -> Option<usize> {
+        if self.insts[cur].pos == target {
+            return Some(cur);
+        }
+        let mut p = self.insts[cur].parent;
+        while let Some(pi) = p {
+            if self.insts[pi].pos == target {
+                return Some(pi);
+            }
+            p = self.insts[pi].parent;
+        }
+        // 兄弟格：与 cur 挂在同一父格下的那个 target 实例
+        let parent = self.insts[cur].parent;
+        if let Some(list) = self.by_pos.get(target) {
+            if let Some(hit) = list.iter().find(|i| self.insts[**i].parent == parent) {
+                return Some(*hit);
+            }
+        }
+        let mut cp = self.insts[cur].col_parent;
+        while let Some(ci) = cp {
+            if self.insts[ci].pos == target {
+                return Some(ci);
+            }
+            cp = self.insts[ci].col_parent;
+        }
+        None
+    }
+
+    fn eval_ast(&self, e: &Expr, cur: usize, outer: usize) -> Val {
+        match e {
+            Expr::Num(n) => Val::Num(*n),
+            Expr::Str(s) => Val::Str(s.clone()),
+            Expr::Neg(inner) => match self.eval_ast(inner, cur, outer).scalar(self) {
+                Val::Num(n) => Val::Num(-n),
+                _ => Val::Null,
+            },
+            Expr::Cell { target, coord, prop } => {
+                let cells = self.resolve(target, coord.as_ref(), cur);
+                match prop {
+                    Some(Prop::Aggregate(f)) => Val::Num(self.aggregate_cells(&cells, f)),
+                    // `B4.expandIndex`：等价润乾的 `&B4`
+                    Some(Prop::ExpandIndex) => match self.anchor_instance(target, cur) {
+                        Some(a) => Val::Num(self.insts[a].expand_index as f64),
+                        None => Val::Null,
+                    },
+                    // 无后缀：返回格集本身，由使用场景决定取可见值（anchor）还是遍历全部
+                    None => {
+                        let anchor = self.anchor_instance(target, cur);
+                        Val::Set { cells, anchor }
+                    }
+                }
+            }
+            Expr::Binary { op, lhs, rhs } => self.eval_binary(*op, lhs, rhs, cur, outer),
+            Expr::Cmp { op, lhs, rhs } => self.eval_cmp(*op, lhs, rhs, cur, outer),
+            Expr::Call { name, args } => self.eval_call(name, args, cur, outer),
+            // 本格自身的值。value_expr 里出现会自引用：此时 evaluating=true、
+            // value 还是 Null，取出来就是 Null，不会递归下去。
+            Expr::SelfValue => Val::from_json(self.insts[cur].value.clone()),
+
+            // 格集过滤：条件以**候选格**为上下文求值（裸 B2 = 候选格的主格），
+            // 于是 `outer` 传当前格，`$B2` 才能回到当前格的主格。
+            Expr::Filter { cell, cond } => {
+                let cells = match self.eval_ast(cell, cur, outer) {
+                    Val::Set { cells, .. } => cells,
+                    // 过滤只能作用在格集上；单值原样返回
+                    other => return other,
+                };
+                let kept: Vec<usize> = cells
+                    .into_iter()
+                    .filter(|&cand| self.eval_ast(cond, cand, cur).truthy())
+                    .collect();
+                Val::Set { cells: kept.clone(), anchor: kept.first().copied() }
+            }
+            Expr::Dollar(inner) => self.eval_ast(inner, outer, outer),
+        }
+    }
+
+    fn eval_binary(&self, op: BinOp, lhs: &Expr, rhs: &Expr, cur: usize, outer: usize) -> Val {
+        let a = self.eval_ast(lhs, cur, outer).scalar(self);
+        let b = self.eval_ast(rhs, cur, outer).scalar(self);
+        let (x, y) = match (a.as_num(), b.as_num()) {
+            (Some(x), Some(y)) => (x, y),
+            _ => return Val::Null,
+        };
+        Val::Num(match op {
+            BinOp::Add => x + y,
+            BinOp::Sub => x - y,
+            BinOp::Mul => x * y,
+            BinOp::Div if y != 0.0 => x / y,
+            BinOp::Div => return Val::Null,
+        })
+    }
+
+    fn eval_cmp(&self, op: CmpOp, lhs: &Expr, rhs: &Expr, cur: usize, outer: usize) -> Val {
+        let a = self.eval_ast(lhs, cur, outer).scalar(self);
+        let b = self.eval_ast(rhs, cur, outer).scalar(self);
+        let r = match (a.as_num(), b.as_num()) {
+            (Some(x), Some(y)) => match op {
+                CmpOp::Gt => x > y,
+                CmpOp::Ge => x >= y,
+                CmpOp::Lt => x < y,
+                CmpOp::Le => x <= y,
+                CmpOp::Eq => x == y,
+                CmpOp::Ne => x != y,
+            },
+            // 至少一方不是数字 → 按文本比。
+            // 条件表达式大量用于比对分组标签（"1月" / "华东"），只支持数字等于不可用。
+            _ => {
+                let (sa, sb) = (a.as_text(self), b.as_text(self));
+                match op {
+                    CmpOp::Eq => sa == sb,
+                    CmpOp::Ne => sa != sb,
+                    CmpOp::Gt => sa > sb,
+                    CmpOp::Ge => sa >= sb,
+                    CmpOp::Lt => sa < sb,
+                    CmpOp::Le => sa <= sb,
+                }
+            }
+        };
+        Val::Bool(r)
+    }
+
+    /// 把参数摊平成数字序列：格集取全部成员，标量取自身
+    fn arg_numbers(&self, args: &[Expr], cur: usize, outer: usize) -> Vec<f64> {
+        let mut out = Vec::new();
+        for a in args {
+            match self.eval_ast(a, cur, outer) {
+                Val::Set { cells, .. } => {
+                    out.extend(cells.iter().filter_map(|i| as_number(self.insts[*i].value.clone())))
+                }
+                v => {
+                    if let Some(n) = v.scalar(self).as_num() {
+                        out.push(n)
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn aggregate_cells(&self, cells: &[usize], func: &str) -> f64 {
+        let nums: Vec<f64> =
+            cells.iter().filter_map(|i| as_number(self.insts[*i].value.clone())).collect();
+        match func {
+            "count" => nums.len() as f64,
+            "avg" if !nums.is_empty() => nums.iter().sum::<f64>() / nums.len() as f64,
+            "min" => nums.iter().cloned().fold(f64::NAN, f64::min),
+            "max" => nums.iter().cloned().fold(f64::NAN, f64::max),
+            _ => nums.iter().sum::<f64>(),
+        }
+    }
+
+    fn eval_call(&self, name: &str, args: &[Expr], cur: usize, outer: usize) -> Val {
+        match name {
+            "IF" if args.len() == 3 => {
+                let c = self.eval_ast(&args[0], cur, outer).scalar(self);
+                let branch = if c.truthy() { &args[1] } else { &args[2] };
+                self.eval_ast(branch, cur, outer).scalar(self)
+            }
+            "NVL" if args.len() == 2 => {
+                let v = self.eval_ast(&args[0], cur, outer).scalar(self);
+                if matches!(v, Val::Null) {
+                    self.eval_ast(&args[1], cur, outer).scalar(self)
+                } else {
+                    v
+                }
+            }
+            "PRODUCT" => Val::Num(self.arg_numbers(args, cur, outer).iter().product::<f64>()),
+            // COUNTA 数的是非空单元格，与 COUNT（只数数字）不同
+            "COUNTA" => {
+                let mut n = 0usize;
+                for a in args {
+                    match self.eval_ast(a, cur, outer) {
+                        Val::Set { cells, .. } => {
+                            n += cells.iter().filter(|i| !self.insts[**i].value.is_null()).count()
+                        }
+                        v => {
+                            if !matches!(v.scalar(self), Val::Null) {
+                                n += 1
+                            }
+                        }
+                    }
+                }
+                Val::Num(n as f64)
+            }
+            // 排名：当前值在一组里的降序名次（1 起）
+            "RANK" if args.len() == 1 => {
+                let nums = self.arg_numbers(args, cur, outer);
+                let v = self.eval_ast(&args[0], cur, outer).scalar(self).as_num();
+                match v {
+                    Some(x) => Val::Num(1.0 + nums.iter().filter(|n| **n > x).count() as f64),
+                    None => Val::Null,
+                }
+            }
+            "SUM" | "COUNT" | "AVG" | "MIN" | "MAX" => {
+                let nums = self.arg_numbers(args, cur, outer);
+                let f = match name {
+                    "COUNT" => "count",
+                    "AVG" => "avg",
+                    "MIN" => "min",
+                    "MAX" => "max",
+                    _ => "sum",
+                };
+                // 复用聚合口径：COUNT 数的是数字个数，MIN/MAX 空集为 NaN
+                Val::Num(match f {
+                    "count" => nums.len() as f64,
+                    "avg" if !nums.is_empty() => nums.iter().sum::<f64>() / nums.len() as f64,
+                    "min" => nums.iter().cloned().fold(f64::NAN, f64::min),
+                    "max" => nums.iter().cloned().fold(f64::NAN, f64::max),
+                    _ => nums.iter().sum::<f64>(),
+                })
+            }
+            // 占比：当前行的值 / 同范围（带层次坐标则为其界定的范围）之和
+            "PROPORTION" if args.len() == 1 => {
+                let (num, total) = match &args[0] {
+                    Expr::Cell { target, coord, .. } => {
+                        let cells = self.resolve(target, coord.as_ref(), cur);
+                        let anchor = self
+                            .anchor_instance(target, cur)
+                            .filter(|a| cells.contains(a))
+                            .or_else(|| cells.first().copied());
+                        let n = anchor.and_then(|i| as_number(self.insts[i].value.clone()));
+                        (n, self.aggregate_cells(&cells, "sum"))
+                    }
+                    _ => {
+                        let n = self.eval_ast(&args[0], cur, outer).scalar(self).as_num();
+                        (n, self.arg_numbers(args, cur, outer).iter().sum::<f64>())
+                    }
+                };
+                match num {
+                    Some(x) if total != 0.0 => Val::Num(x / total),
+                    _ => Val::Null,
+                }
+            }
+            // 累计汇总：从第一个实例累加到当前实例所在位置
+            "ACCSUM" if args.len() == 1 => match &args[0] {
+                Expr::Cell { target, coord, .. } => {
+                    let cells = self.resolve(target, coord.as_ref(), cur);
+                    let upto = match self.anchor_instance(target, cur) {
+                        Some(a) => cells.iter().position(|c| *c == a).map(|p| p + 1),
+                        None => None,
+                    };
+                    let n = upto.unwrap_or(cells.len()).min(cells.len());
+                    Val::Num(
+                        cells[..n].iter().filter_map(|i| as_number(self.insts[*i].value.clone())).sum(),
+                    )
+                }
+                _ => Val::Null,
+            },
+            _ => Val::Null,
+        }
+    }
+
+    /// 层次坐标 → 实例下标集合。
+    ///
+    /// 被测试表达式删掉的格不出现在结果里：它们既不出表，也不该进合计。
     fn resolve(&self, target: &str, coord: Option<&Coord>, cur: usize) -> Vec<usize> {
+        self.resolve_raw(target, coord, cur)
+            .into_iter()
+            .filter(|&i| !self.insts[i].hidden)
+            .collect()
+    }
+
+    fn resolve_raw(&self, target: &str, coord: Option<&Coord>, cur: usize) -> Vec<usize> {
         match coord {
             None => self.by_pos.get(target).cloned().unwrap_or_default(),
             Some(cd) => {
-                // 沿父链找到最近的 coord 主格实例：先走行主格链，再走列主格链
+                // 找 coord 主格实例：先认自己，再沿行主格链，最后走列主格链。
+                //
+                // 「先认自己」是后补的：分组格写 `C1[B1:+0] >= 0`（小计为 0 的组不显示）
+                // 时，B1 不在**自己**的祖先链上，旧实现一律返回空集，条件恒假、
+                // 整行被静默删光。自己就是自己最近的同名主格，认了才说得通。
                 let mut anc: Option<usize> = None;
-                let mut p = self.insts[cur].parent;
+                if self.insts[cur].pos == cd.pos {
+                    anc = Some(cur);
+                }
+                let mut p = if anc.is_some() { None } else { self.insts[cur].parent };
                 while let Some(pi) = p {
                     if self.insts[pi].pos == cd.pos {
                         anc = Some(pi);
@@ -521,50 +1363,6 @@ impl Engine {
                 self.insts[anchor].descendants.get(target).cloned().unwrap_or_default()
             }
         }
-    }
-}
-
-#[derive(Debug)]
-struct Coord {
-    pos: String,
-    position: Option<i64>,
-    relative: bool,
-    reverse: bool,
-}
-
-impl Coord {
-    /// 解析 `B3` / `B3:1` / `B3:+0` / `B3:-1`
-    fn parse(s: &str) -> Self {
-        let mut parts = s.splitn(2, ':');
-        let pos = parts.next().unwrap_or("").trim().to_string();
-        let mut c = Coord { pos, position: None, relative: false, reverse: false };
-        if let Some(p) = parts.next() {
-            let p = p.trim();
-            let (rel, body) = if let Some(rest) = p.strip_prefix('+') {
-                (true, rest)
-            } else {
-                (false, p)
-            };
-            if let Ok(n) = body.parse::<i64>() {
-                c.position = Some(n);
-                c.relative = rel || n < 0;
-                c.reverse = n < 0;
-            }
-        }
-        c
-    }
-}
-
-/// 从 `.sum()` 这类尾部取出函数名
-fn func_of(s: &str) -> &'static str {
-    let name: String = s.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-    match name.as_str() {
-        "sum" => "sum",
-        "count" => "count",
-        "avg" => "avg",
-        "min" => "min",
-        "max" => "max",
-        _ => "value",
     }
 }
 
@@ -740,5 +1538,6 @@ fn empty_cell() -> GridCell {
         colspan: 1,
         raw_number: None,
         num_format: None,
+        formula: None,
     }
 }

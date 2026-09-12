@@ -76,6 +76,20 @@ pub fn to_xlsx(sheets: &[RenderedSheet]) -> Result<Vec<u8>, String> {
                 if rs > 1 || cs > 1 {
                     ws.merge_range(r0, c0, r0 + rs as u32 - 1, c0 + cs as u16 - 1, &cell.text, &center)
                         .map_err(|e| e.to_string())?;
+                } else if let Some(f) = &cell.formula {
+                    // export_formula：写公式而不是值，导出后在 Excel 里改明细会自动重算。
+                    // 数字格式照常套上（公式的结果是数字，格式仍然有效）。
+                    match &cell.num_format {
+                        Some(nf) => ws
+                            .write_formula_with_format(
+                                r0,
+                                c0,
+                                f.as_str(),
+                                &Format::new().set_num_format(nf),
+                            )
+                            .map_err(|e| e.to_string())?,
+                        None => ws.write_formula(r0, c0, f.as_str()).map_err(|e| e.to_string())?,
+                    };
                 } else {
                     match cell.raw_number {
                         Some(n) => match &cell.num_format {
@@ -140,6 +154,7 @@ mod tests {
             colspan,
             raw_number: num,
             num_format: None,
+            formula: None,
         }
     }
 
