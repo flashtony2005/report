@@ -6,10 +6,12 @@
 //! - 纸盒：DeviceCapabilitiesW(DC_BINNAMES)
 //! - 全部失败时返回空列表（ok:true, count:0），前端有安全默认（defaultDpi 300）
 //!
-//! 平台：枚举实现依赖 winspool，仅 Windows 有效。macOS / Linux 上 `list_printers()`
-//! 返回空列表——`/printers` 仍然 200 且 `count:0`，健康检查照常工作，
-//! 这样报表引擎的渲染 / 导出接口可以在非 Windows 上开发调试。
-//! （曾因此处未做 cfg 隔离，macOS 链接阶段报 `Undefined symbols: _DeviceCapabilitiesW`；
+//! 平台：两路实现
+//! - Windows：EnumPrintersW / DeviceCapabilitiesW（winspool）
+//! - macOS / Linux：CUPS 命令行（`lpstat` / `lpoptions`）
+//!
+//! 两路都失败时返回空列表（ok:true, count:0），前端有安全默认（defaultDpi 300）。
+//! （曾因 winspool 未做 cfg 隔离，macOS 链接阶段报 `Undefined symbols: _DeviceCapabilitiesW`；
 //!   `cargo test` 测不出来，因为测试 harness 替换了 main，路由不可达导致函数被死代码消除。）
 
 use crate::AppState;
@@ -64,10 +66,338 @@ pub fn list_printers() -> Result<Vec<PrinterInfo>, String> {
     unsafe { enum_printers_level2() }
 }
 
-/// 非 Windows：无 winspool 可调，返回空列表（前端有安全默认 defaultDpi 300）
+/// 非 Windows：走 CUPS 命令行枚举
 #[cfg(not(target_os = "windows"))]
 pub fn list_printers() -> Result<Vec<PrinterInfo>, String> {
-    Ok(Vec::new())
+    cups_list_printers()
+}
+
+// ───────── 以下为 CUPS 实现，仅 macOS / Linux 参与编译 ─────────
+
+/// 跑一条 CUPS 命令，取 stdout。
+///
+/// 不检查退出码：`lpstat -a` 在没有配任何队列时会退出 1 并把提示打到 stderr，
+/// 这不是错误，只是「没有打印机」，交给解析函数返回空列表即可。
+#[cfg(not(target_os = "windows"))]
+fn run_cups(prog: &str, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new(prog)
+        .args(args)
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .output()
+        .map_err(|e| format!("执行 {} {:?} 失败: {}", prog, args, e))?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// `lpstat -a` → [(队列名, 是否接受任务)]
+///
+/// 形如 `HP_LaserJet accepting requests since Thu 01 Jan 2026 10:00:00 AM`，
+/// 暂停队列是 `rejecting requests`。其它行（错误提示 / 续行）一律忽略。
+#[cfg(not(target_os = "windows"))]
+fn parse_lpstat_a(out: &str) -> Vec<(String, bool)> {
+    let mut v = Vec::new();
+    for line in out.lines() {
+        let mut it = line.split_whitespace();
+        let name = match it.next() {
+            Some(n) => n,
+            None => continue,
+        };
+        match it.next() {
+            Some("accepting") => v.push((name.to_string(), true)),
+            Some("rejecting") => v.push((name.to_string(), false)),
+            _ => {}
+        }
+    }
+    v
+}
+
+/// `lpstat -d` → 系统默认队列名；没有默认队列时返回 None
+#[cfg(not(target_os = "windows"))]
+fn parse_lpstat_d(out: &str) -> Option<String> {
+    let line = out.lines().next()?.trim();
+    let rest = line.strip_prefix("system default destination:")?;
+    let name = rest.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// `lpstat -l -p` → 队列名 → (状态, 描述)
+///
+/// 状态行形如 `printer Foo is idle.  enabled since ...` / `printer Foo disabled since ...`
+/// / `printer Foo now printing Foo-42.  enabled since ...`；
+/// 随后的 `Description: xxx` 是缩进续行（可能没有）。
+#[cfg(not(target_os = "windows"))]
+fn parse_lpstat_l_p(out: &str) -> std::collections::BTreeMap<String, (String, String)> {
+    use std::collections::BTreeMap;
+    let mut m: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut cur: Option<String> = None;
+    for line in out.lines() {
+        if let Some(rest) = line.strip_prefix("printer ") {
+            let mut it = rest.split_whitespace();
+            let name = it.next().unwrap_or("").to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let tail = it.collect::<Vec<_>>().join(" ").to_lowercase();
+            let status = if tail.contains("disabled") {
+                "error"
+            } else if tail.contains("printing") {
+                "busy"
+            } else {
+                "idle"
+            };
+            m.insert(name.clone(), (status.to_string(), String::new()));
+            cur = Some(name);
+            continue;
+        }
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("Description:") {
+            let d = rest.trim().to_string();
+            if !d.is_empty() {
+                if let Some(entry) = cur.as_ref().and_then(|k| m.get_mut(k)) {
+                    entry.1 = d;
+                }
+            }
+        }
+    }
+    m
+}
+
+/// `lpoptions -p NAME -l` 解析出的能力
+#[cfg(not(target_os = "windows"))]
+#[derive(Debug, Default, PartialEq)]
+struct CupsCaps {
+    supports_color: bool,
+    supports_duplex: bool,
+    trays: Vec<String>,
+    default_dpi: i64,
+    max_dpi: i64,
+}
+
+/// `lpoptions -p NAME -l` → 能力。
+///
+/// 每行形如 `Duplex/Double-Sided Printing: *None DuplexNoTumble DuplexTumble`。
+/// 列出的选项即打印机支持的值，所以「支持」判断看有没有该项，而不是看默认选中哪个；
+/// 默认选中的那个带 `*` 前缀，用来定 default_dpi。
+#[cfg(not(target_os = "windows"))]
+fn parse_lpoptions_l(out: &str) -> CupsCaps {
+    let mut caps = CupsCaps {
+        default_dpi: 300,
+        ..Default::default()
+    };
+    for line in out.lines() {
+        let (label, choices) = match line.split_once(':') {
+            Some((a, b)) => (a, b),
+            None => continue,
+        };
+        let label_l = label.to_lowercase();
+        let choices: Vec<&str> = choices.split_whitespace().collect();
+        let bare = |c: &&str| c.trim_start_matches('*').to_lowercase();
+
+        if label_l.contains("duplex") {
+            caps.supports_duplex = choices
+                .iter()
+                .map(bare)
+                .any(|c| c.contains("duplextumble") || c.contains("duplexnotumble"));
+        } else if label_l.contains("colormodel") || label_l.contains("color model") {
+            caps.supports_color = choices
+                .iter()
+                .map(bare)
+                .any(|c| c.contains("rgb") || c.contains("cmyk") || c.contains("color"));
+        } else if label_l.contains("inputslot")
+            || label_l.contains("media source")
+            || label_l.contains("mediasource")
+        {
+            // 纸盒名是给用户看的，保留原始大小写（bare() 只用于比较）
+            caps.trays = choices
+                .iter()
+                .map(|c| c.trim_start_matches('*').to_string())
+                .collect();
+        } else if label_l.contains("resolution") {
+            let nums: Vec<i64> = choices
+                .iter()
+                .map(bare)
+                .filter_map(|c| {
+                    c.chars()
+                        .take_while(|ch| ch.is_ascii_digit())
+                        .collect::<String>()
+                        .parse::<i64>()
+                        .ok()
+                })
+                .collect();
+            if let Some(&mx) = nums.iter().max() {
+                caps.max_dpi = mx;
+            }
+            // 默认选中的（带 `*`）那条作为 default_dpi
+            let starred = choices
+                .iter()
+                .find(|c| c.starts_with('*'))
+                .and_then(|c| {
+                    c.trim_start_matches('*')
+                        .chars()
+                        .take_while(|ch| ch.is_ascii_digit())
+                        .collect::<String>()
+                        .parse::<i64>()
+                        .ok()
+                })
+                .filter(|&n| n > 0);
+            if let Some(n) = starred {
+                caps.default_dpi = n;
+            }
+        }
+    }
+    caps
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cups_list_printers() -> Result<Vec<PrinterInfo>, String> {
+    // lpstat 不存在（精简容器 / 未装 CUPS）→ Err → 调用方降级为空列表
+    let list = parse_lpstat_a(&run_cups("lpstat", &["-a"])?);
+    if list.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let default_name = run_cups("lpstat", &["-d"])
+        .ok()
+        .and_then(|s| parse_lpstat_d(&s));
+    let statuses = run_cups("lpstat", &["-l", "-p"])
+        .ok()
+        .map(|s| parse_lpstat_l_p(&s))
+        .unwrap_or_default();
+
+    let mut out = Vec::with_capacity(list.len());
+    for (name, accepting) in list {
+        let (st, desc) = statuses
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| (String::from("idle"), String::new()));
+        let status: &'static str = if !accepting || st == "error" {
+            "error"
+        } else if st == "busy" {
+            "busy"
+        } else {
+            "idle"
+        };
+        let caps = run_cups("lpoptions", &["-p", &name, "-l"])
+            .ok()
+            .map(|s| parse_lpoptions_l(&s))
+            .unwrap_or_default();
+
+        out.push(PrinterInfo {
+            kind: classify_kind(&name),
+            is_default: default_name.as_deref() == Some(name.as_str()),
+            is_online: status != "error",
+            status,
+            default_dpi: caps.default_dpi,
+            max_dpi: caps.max_dpi,
+            supports_color: caps.supports_color,
+            supports_duplex: caps.supports_duplex,
+            trays: caps.trays,
+            driver: if desc.is_empty() { "cups".to_string() } else { desc },
+            name,
+        });
+    }
+    Ok(out)
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod cups_tests {
+    use super::*;
+
+    #[test]
+    fn parses_lpstat_a() {
+        let out = "\
+HP_LaserJet accepting requests since Thu 01 Jan 2026 10:00:00 AM
+Brother_QL rejecting requests since Thu 01 Jan 2026 10:00:00 AM
+	Reason: Paused
+";
+        assert_eq!(
+            parse_lpstat_a(out),
+            vec![
+                ("HP_LaserJet".to_string(), true),
+                ("Brother_QL".to_string(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_lpstat_a_empty_when_no_destination() {
+        // 没配队列时 lpstat 把提示打到 stderr，stdout 为空
+        assert!(parse_lpstat_a("").is_empty());
+        // 万一提示混进 stdout，也不能当成一台打印机
+        assert!(parse_lpstat_a("lpstat: No destinations added.\n").is_empty());
+    }
+
+    #[test]
+    fn parses_lpstat_d() {
+        assert_eq!(
+            parse_lpstat_d("system default destination: HP_LaserJet\n"),
+            Some("HP_LaserJet".to_string())
+        );
+        assert_eq!(parse_lpstat_d("no system default destination\n"), None);
+        assert_eq!(parse_lpstat_d(""), None);
+    }
+
+    #[test]
+    fn parses_lpstat_l_p() {
+        let out = "\
+printer HP_LaserJet is idle.  enabled since Thu 01 Jan 2026
+	Form mounted:
+	Content types: any
+	Description: HP LaserJet Pro MFP M428
+printer Brother_QL disabled since Thu 01 Jan 2026 -
+	Reason: offline
+printer Kyocera now printing Kyocera-42.  enabled since Thu 01 Jan 2026
+";
+        let m = parse_lpstat_l_p(out);
+        assert_eq!(m["HP_LaserJet"].0, "idle");
+        assert_eq!(m["HP_LaserJet"].1, "HP LaserJet Pro MFP M428");
+        assert_eq!(m["Brother_QL"].0, "error");
+        assert_eq!(m["Brother_QL"].1, "");
+        assert_eq!(m["Kyocera"].0, "busy");
+    }
+
+    #[test]
+    fn parses_lpoptions_l() {
+        let out = "\
+PageSize/Page Size: *Letter A4 Legal
+Duplex/Double-Sided Printing: None DuplexNoTumble *DuplexTumble
+ColorModel/Color Mode: Gray *RGB
+InputSlot/Media Source: *Auto Tray1 Manual
+Resolution/Output Resolution: 300dpi *600dpi 1200dpi
+";
+        let c = parse_lpoptions_l(out);
+        assert!(c.supports_duplex);
+        assert!(c.supports_color);
+        assert_eq!(c.trays, vec!["Auto", "Tray1", "Manual"]);
+        assert_eq!(c.default_dpi, 600);
+        assert_eq!(c.max_dpi, 1200);
+    }
+
+    #[test]
+    fn parses_lpoptions_l_mono_simplex() {
+        let out = "\
+Duplex/Double-Sided Printing: *None
+ColorModel/Color Mode: *Gray
+";
+        let c = parse_lpoptions_l(out);
+        assert!(!c.supports_duplex);
+        assert!(!c.supports_color);
+        assert_eq!(c.default_dpi, 300); // 没有 Resolution 行时的安全默认
+        assert_eq!(c.max_dpi, 0);
+    }
+
+    /// 本机没配队列时 /printers 依然是 200 + 空列表，不能 500
+    #[test]
+    fn list_printers_degrades_to_empty() {
+        match list_printers() {
+            Ok(v) => assert!(v.is_empty(), "本机未配置 CUPS 队列，应返回空列表"),
+            Err(e) => panic!("未配置队列不算错误: {}", e),
+        }
+    }
 }
 
 // ───────── 以下为 winspool 实现，仅 Windows 参与编译 ─────────
@@ -263,7 +593,7 @@ unsafe fn bin_names(name: &str, port: &str) -> Vec<String> {
         .collect()
 }
 
-#[cfg(target_os = "windows")]
+/// 按队列名猜打印机类型（Windows / CUPS 共用）
 fn classify_kind(name: &str) -> &'static str {
     let n = name.to_lowercase();
     if ["pdf", "xps", "onenote", "fax", "传真", "虚拟", "image writer"]
