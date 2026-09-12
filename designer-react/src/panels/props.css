@@ -1,0 +1,94 @@
+/*
+ * 面板层共享样式 —— 从 Vue 版 CommonProps.vue 的全局 <style> 段平移。
+ * 类名与 Vue 版完全一致（props-section / props-title / props-row / props-label / props-tip），
+ * 保证两端视觉行为对齐；变量回退值与 Vue 版 --brand-* 缺省一致。
+ */
+.props-section {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--brand-border, #e5e7eb);
+}
+.props-title {
+  font-size: 12px;
+  color: var(--brand-text-3, #6b7280);
+  margin-bottom: 8px;
+  text-transform: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.props-title-tip {
+  font-size: 11px;
+  font-weight: normal;
+  color: var(--brand-primary, #3b82f6);
+  opacity: 0.85;
+}
+.props-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.props-label {
+  font-size: 12px;
+  color: var(--brand-text-2, #374151);
+  flex-shrink: 0;
+  min-width: 28px;
+}
+.props-tip {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--brand-text-3, #6b7280);
+  margin: -2px 0 8px;
+}
+/* 签名预览（来自 SignatureProps.vue scoped style，作用面一致故并入共享文件） */
+.signature-preview {
+  width: 100%;
+  min-height: 70px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  background: #fff;
+  border: 1px dashed var(--brand-border, #e5e7eb);
+  border-radius: 8px;
+}
+.signature-preview img {
+  max-width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+}
+.color-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid var(--brand-border, #e5e7eb);
+}
+
+/* P4.2 ChartProps / ShapeProps / LabelGridProps */
+.chart-series {
+  border: 1px dashed var(--brand-border, rgba(127, 127, 127, 0.35));
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  background: var(--brand-surface, rgba(127, 127, 127, 0.04));
+}
+.chart-props-series-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.props-sub {
+  margin: 4px 0 8px;
+}
+
+/* P4.3 RichTextProps */
+.props-hint {
+  font-size: 11px;
+  color: var(--brand-text-3, rgba(127, 127, 127, 0.8));
+  margin-bottom: 6px;
+}
+.props-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}

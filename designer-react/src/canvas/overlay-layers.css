@@ -1,0 +1,120 @@
+/* ==========================================================================
+   画布 HTML/SVG 覆盖层（方案 A）—— 全局样式
+
+   Vue 端 ChartViewLayer / MathViewLayer / TableViewLayer 用的是 `<style scoped>`，
+   有 SFC 编译期作用域隔离；React 没有这层隔离，因此样式统一提升为全局，
+   靠 `op-*` 前缀避免撞名（与项目其它面板 CSS 的做法一致）。
+
+   来源：openprint/src/design/canvas/{ChartViewLayer,MathViewLayer,TableViewLayer}.vue
+   改动本文件时请同步 Vue 端 —— 两端画布必须视觉一致。
+   ========================================================================== */
+
+/* ------------------------------ 整层通用 ------------------------------ */
+
+/* 平时完全透明于鼠标：所有交互照旧落到 Fabric（选中 / 拖拽 / 缩放不受影响） */
+.op-chart-overlay,
+.op-math-overlay,
+.op-table-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* 表格层：与打印产物同名的边框色变量，供 tableCss 注入的规则取用 */
+.op-table-overlay {
+  --op-table-border: #333333;
+}
+
+/* ------------------------------ 单项通用 ------------------------------ */
+
+.op-chart-overlay__item,
+.op-math-overlay__item,
+.op-table-overlay__item {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+
+/* ------------------------------ 图表 ------------------------------ */
+
+.op-chart-overlay__item {
+  overflow: hidden;
+}
+
+/* SVG 填满宿主框，矢量随容器缩放清晰 */
+.op-chart-overlay__item svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ------------------------------ 公式 ------------------------------ */
+
+.op-math-overlay__item {
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.op-math-overlay__item svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ------------------------------ 表格 ------------------------------ */
+
+/* 不裁剪表格内容：行高可能被内容（如窄列里的"本页合计/大写金额"标签换行）撑得比
+   控制框高度高，裁剪会把末尾行藏掉（看不见、拉大控制框才出现）。溢出显示保证
+   画布所见 = 渲染所得；非编辑态 pointer-events:none，不挡 Fabric 交互。 */
+.op-table-overlay {
+  overflow: visible;
+}
+
+.op-table-overlay__item {
+  overflow: visible;
+}
+
+.op-table-overlay__item table {
+  margin: 0;
+}
+
+/* 编辑态：仅该表接收指针（其余表照旧透传给 Fabric） */
+.op-table-overlay__item.is-editing {
+  pointer-events: auto;
+  outline: 1px solid var(--brand-primary, #1677ff);
+  outline-offset: 1px;
+  overflow: visible;
+}
+
+/* 编辑态放开占位符的单行截断（nowrap/ellipsis 是设计态展示用），允许换行输入 */
+.op-table-overlay__item.is-editing td {
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+
+.op-table-overlay__item.is-editing td:focus {
+  outline: 2px solid var(--brand-primary, #1677ff);
+  outline-offset: -2px;
+  background-color: rgba(22, 119, 255, 0.06);
+}
+
+/* 双击编辑时，首列左侧的行角色名标签（标题行/数据行/本页合计行/总计行/大写金额行） */
+.op-row-label {
+  position: absolute;
+  transform: translateX(calc(-100% - 6px));
+  pointer-events: none;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--brand-primary, #1677ff);
+  background: rgba(22, 119, 255, 0.1);
+  border: 1px solid var(--brand-primary, #1677ff);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  z-index: 29;
+}

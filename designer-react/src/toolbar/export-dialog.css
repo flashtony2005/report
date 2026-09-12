@@ -1,0 +1,41 @@
+/* ExportDialog —— 导出文档弹窗 */
+
+.export-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 0;
+  color: var(--brand-text-1);
+}
+
+.export-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.export-row-label {
+  flex: none;
+  width: 64px;
+  font-size: 13px;
+  color: var(--brand-text-2);
+}
+
+.export-hint {
+  font-size: 12px;
+  color: var(--brand-text-2);
+}
+
+.export-hint-block {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--brand-text-2);
+}
+
+.export-hint-block code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--brand-bg);
+  padding: 0 4px;
+  border-radius: 3px;
+}

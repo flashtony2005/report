@@ -1,0 +1,18 @@
+{
+  "connections": [
+    {
+      "id": "conn1",
+      "engine": "sqlite",
+      "path": "F:\\project\\admin\\data.db"
+    },
+    {
+      "id": "report-demo",
+      "engine": "sqlite",
+      "label": "报表演示库",
+      "path": "F:\\project\\_nop\\report-demo.db"
+    }
+  ],
+  "scanDirs": [
+    "."
+  ]
+}

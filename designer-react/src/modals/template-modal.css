@@ -1,0 +1,80 @@
+/* TemplateModal —— 模板管理器 */
+
+.template-modal-head {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.template-modal-error {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(255, 77, 79, 0.08);
+  color: #e5484d;
+  font-size: 13px;
+}
+
+.template-modal-empty {
+  padding: 32px 0;
+}
+
+.template-modal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 56vh;
+  overflow-y: auto;
+}
+
+.template-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--brand-border);
+  border-radius: 8px;
+  transition: border-color 0.15s;
+}
+
+.template-row:hover {
+  border-color: var(--brand-primary);
+}
+
+.template-row-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.template-row-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.template-name-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--brand-text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.template-row-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--brand-text-3);
+}
+
+.template-row-updated {
+  margin-left: 8px;
+}
+
+.template-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}

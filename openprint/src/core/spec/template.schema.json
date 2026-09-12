@@ -1,0 +1,273 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://open-print.dev/template.schema.json",
+  "title": "OpenPrint Template",
+  "description": "OpenPrint 模板协议（《设计方案》§5）：Document → Page → Section → Component",
+  "type": "object",
+  "required": ["version", "document"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "string" },
+    "document": {
+      "type": "object",
+      "required": ["type", "page", "sections"],
+      "properties": {
+        "type": { "const": "report" },
+        "page": {
+          "type": "object",
+          "required": ["width", "height", "unit", "orientation", "margin"],
+          "properties": {
+            "width": { "type": "number", "exclusiveMinimum": 0 },
+            "height": { "type": "number", "exclusiveMinimum": 0 },
+            "unit": { "enum": ["mm", "in", "pt"] },
+            "orientation": { "enum": ["portrait", "landscape"] },
+            "backgroundColor": { "type": "string" },
+            "minPages": { "type": "integer", "minimum": 0 },
+            "watermark": {
+              "type": "object",
+              "required": ["enabled", "text", "color", "fontSize", "rotation", "tile"],
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "text": { "type": "string" },
+                "color": { "type": "string" },
+                "fontSize": { "type": "number", "exclusiveMinimum": 0 },
+                "rotation": { "type": "number" },
+                "tile": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            },
+            "margin": {
+              "type": "object",
+              "required": ["top", "bottom", "left", "right"],
+              "properties": {
+                "top": { "type": "number", "minimum": 0 },
+                "bottom": { "type": "number", "minimum": 0 },
+                "left": { "type": "number", "minimum": 0 },
+                "right": { "type": "number", "minimum": 0 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/section" }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "definitions": {
+    "section": {
+      "type": "object",
+      "required": ["type", "components"],
+      "properties": {
+        "type": { "enum": ["header", "body", "footer"] },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "repeat": { "type": "boolean" },
+        "components": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/component" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "component": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": {
+          "enum": ["text", "image", "table", "barcode", "qrcode", "richtext", "rect", "line", "chart", "math", "signature", "zone", "labelgrid"]
+        },
+        "left": { "type": "number" },
+        "top": { "type": "number" },
+        "width": { "type": "number" },
+        "height": { "type": "number" },
+        "angle": { "type": "number" },
+        "printable": { "type": "boolean" },
+        "visibleIf": { "type": "string" },
+        "locked": { "type": "boolean" },
+        "name": { "type": "string" },
+        "binding": { "type": "string" },
+        "expression": { "type": "string" },
+        "contentType": { "enum": ["fixed", "variable", "expression"] },
+        "value": {},
+        "style": {
+          "type": "object",
+          "properties": {
+            "fontSize": { "type": "number", "exclusiveMinimum": 0 },
+            "fill": { "type": "string" },
+            "fontFamily": { "type": "string" },
+            "fontWeight": { "enum": ["normal", "bold"] },
+            "fontStyle": { "enum": ["normal", "italic"] },
+            "textDecoration": { "enum": ["none", "underline"] },
+            "textAlign": { "enum": ["left", "center", "right"] },
+            "lineHeight": { "type": "number", "exclusiveMinimum": 0 },
+            "letterSpacing": { "type": "number" }
+          },
+          "additionalProperties": true
+        },
+        "dataSource": { "type": "string" },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["title", "width"],
+            "properties": {
+              "title": { "type": "string" },
+              "field": { "type": "string" },
+              "expression": { "type": "string" },
+              "width": { "type": "number", "exclusiveMinimum": 0 },
+              "align": { "enum": ["left", "center", "right"] },
+              "headerAlign": { "enum": ["left", "center", "right"] },
+              "cellBackgroundColor": { "type": "string" },
+              "headerBackgroundColor": { "type": "string" },
+              "cellPadding": { "type": "number", "minimum": 0 }
+            },
+            "additionalProperties": true
+          }
+        },
+        "options": {
+          "type": "object",
+          "properties": {
+            "repeatHeader": { "type": "boolean" },
+            "repeatFooter": { "type": "boolean" },
+            "pageRows": { "anyOf": [{ "type": "number", "minimum": 1 }, { "const": "auto" }] },
+            "rowHeightMode": { "enum": ["auto", "fixed"] },
+            "rowHeight": { "type": "number", "exclusiveMinimum": 0 },
+            "keepTogether": { "type": "boolean" },
+            "skipEmptyRows": { "type": "boolean" },
+            "mergeSheets": { "type": "boolean" },
+            "striped": { "type": "boolean" },
+            "verticalAlign": { "enum": ["top", "middle", "bottom"] },
+            "borders": { "enum": ["all", "none", "horizontal", "outline", "three-line"] },
+            "tableStyle": {
+              "enum": [
+                "none", "header", "header-dark", "header-green",
+                "zebra", "zebra-blue", "zebra-gray",
+                "three-segment", "banded-cols",
+                "grid", "minimal", "report", "timetable"
+              ]
+            },
+            "defaultCellStyle": {
+              "type": "object",
+              "properties": {
+                "fontSize": { "type": "number", "exclusiveMinimum": 0 },
+                "fontFamily": { "type": "string" },
+                "bold": { "type": "boolean" },
+                "italic": { "type": "boolean" },
+                "underline": { "type": "boolean" },
+                "color": { "type": "string" },
+                "align": { "enum": ["left", "center", "right"] },
+                "valign": { "enum": ["top", "middle", "bottom"] },
+                "backgroundColor": { "type": "string" },
+                "diagonal": { "enum": ["none", "down", "up"] }
+              },
+              "additionalProperties": true
+            },
+            "summaryRow": {
+              "type": "object",
+              "required": ["type"],
+              "properties": {
+                "type": { "enum": ["sum", "count", "custom"] },
+                "fields": { "type": "array", "items": { "type": "string" } },
+                "label": { "type": "string" },
+                "expression": { "type": "string" },
+                "expressions": { "type": "object", "additionalProperties": { "type": "string" } },
+                "subtotalLabel": { "type": "string" },
+                "subtotalStyle": {
+                  "type": "object",
+                  "properties": {
+                    "fontSize": { "type": "number", "exclusiveMinimum": 0 },
+                    "fontFamily": { "type": "string" },
+                    "bold": { "type": "boolean" },
+                    "italic": { "type": "boolean" },
+                    "underline": { "type": "boolean" },
+                    "color": { "type": "string" },
+                    "align": { "enum": ["left", "center", "right"] },
+                    "valign": { "enum": ["top", "middle", "bottom"] },
+                    "backgroundColor": { "type": "string" },
+                    "diagonal": { "enum": ["none", "down", "up"] }
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "format": { "type": "string" },
+        "showText": { "type": "boolean" },
+        "errorLevel": { "enum": ["L", "M", "Q", "H"] },
+        "fit": { "enum": ["contain", "cover", "fill", "none"] },
+        "cornerRadius": { "type": "number", "minimum": 0 },
+        "cornerRadiusTL": { "type": "number", "minimum": 0 },
+        "cornerRadiusTR": { "type": "number", "minimum": 0 },
+        "cornerRadiusBR": { "type": "number", "minimum": 0 },
+        "cornerRadiusBL": { "type": "number", "minimum": 0 },
+        "fill": { "type": "string" },
+        "stroke": { "type": "string" },
+        "strokeWidth": { "type": "number", "minimum": 0 },
+        "strokeDashArray": { "type": "array", "items": { "type": "number" } },
+        "groupBy": { "type": "string" },
+        "summary": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "enum": ["sum", "count"] },
+              "field": { "type": "string" },
+              "label": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "cells": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "contentType": { "enum": ["fixed", "variable", "expression"] },
+                "text": { "type": "string" },
+                "field": { "type": "string" },
+                "expression": { "type": "string" },
+                "colSpan": { "type": "integer", "minimum": 1 },
+                "rowSpan": { "type": "integer", "minimum": 1 }
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "headerRows": { "type": "integer", "minimum": 0 },
+        "staticRows": { "type": "integer", "minimum": 0 },
+        "designRows": { "type": "integer", "minimum": 0 },
+        "kind": { "enum": ["bar", "line", "pie"] },
+        "latex": { "type": "string" },
+        "displayMode": { "type": "boolean" },
+        "src": { "type": "string" },
+        "penWidth": { "type": "number", "minimum": 1 },
+        "color": { "type": "string" },
+        "categories": { "type": "array", "items": { "type": "string" } },
+        "series": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "data": { "type": "array", "items": { "type": "number" } },
+              "color": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

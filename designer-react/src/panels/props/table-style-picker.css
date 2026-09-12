@@ -1,0 +1,71 @@
+/* TableStylePickerModal React 版样式 —— 与 Vue 版 scoped 样式对齐（P4.2） */
+.ts-gallery {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  max-height: 62vh;
+  overflow: auto;
+  padding: 2px;
+}
+.style-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #e5e6eb;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.05s;
+}
+.style-card:hover {
+  border-color: #2f54eb;
+  box-shadow: 0 2px 10px rgba(47, 84, 235, 0.12);
+}
+.style-card:active {
+  transform: translateY(1px);
+}
+.style-card.is-selected {
+  border: 2px solid #2f54eb;
+  background: #f5f8ff;
+  padding: 7px;
+}
+.style-preview {
+  border: 1px solid #eee;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #fff;
+}
+.style-preview .op-table {
+  width: 100%;
+  font-size: 9px;
+}
+.style-preview .op-table td {
+  padding: 2px 4px;
+}
+.style-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.style-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.style-check {
+  font-size: 15px;
+  color: #2f54eb;
+  opacity: 0;
+}
+.style-card.is-selected .style-check {
+  opacity: 1;
+}
+.style-desc {
+  font-size: 11px;
+  color: #8a8f99;
+  line-height: 1.3;
+}

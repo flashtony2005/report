@@ -1,0 +1,30 @@
+/* LeftPanel —— tab 头固定、内容区内部滚动（对齐 Vue 版 :deep 修正） */
+.left-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--brand-surface, rgba(127, 127, 127, 0.04));
+}
+/* 让 Tabs 内容容器成为可收缩弹性子项（tab 头固定、内容区内部滚动） */
+.left-panel-tabs {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 8px;
+}
+.left-panel-tabs > .ant-tabs-nav {
+  margin-bottom: 8px;
+}
+.left-panel-tabs > .ant-tabs-content-holder {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.left-panel-tabs .ant-tabs-content {
+  height: 100%;
+}
+.left-panel-tabs .ant-tabs-tabpane {
+  height: 100%;
+  overflow-y: auto;
+}

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>类 Excel 非线性报表 · 开源方案调研</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#16181d; --ink2:#5a6070; --ink3:#8b91a1;
+    --line:#e6e8ee; --line2:#f0f2f6;
+    --blue:#2f6fed; --blue-bg:#eef4ff; --green:#1a9b6c; --green-bg:#e9f7f1;
+    --amber:#c47f0a; --amber-bg:#fdf5e6; --red:#cf3b3b; --red-bg:#fdeeee;
+    --gray:#6b7280; --gray-bg:#f2f3f6;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.65;font-size:15px}
+  .wrap{max-width:1020px;margin:0 auto;padding:48px 24px 72px}
+  header{border-bottom:2px solid var(--ink);padding-bottom:20px;margin-bottom:32px}
+  .kicker{font-size:12.5px;letter-spacing:.14em;color:var(--ink3);text-transform:uppercase;margin:0 0 10px}
+  h1{font-size:29px;line-height:1.3;margin:0 0 10px;font-weight:700;letter-spacing:-.01em}
+  .sub{color:var(--ink2);font-size:14px;margin:0}
+  h2{font-size:19px;margin:44px 0 14px;font-weight:650;letter-spacing:-.01em;
+     padding-left:12px;border-left:3px solid var(--blue)}
+  h3{font-size:15.5px;margin:24px 0 8px;font-weight:650}
+  p{margin:10px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin:16px 0}
+  .verdict{background:var(--blue-bg);border:1px solid #cfe0ff;border-left:4px solid var(--blue)}
+  .verdict .big{font-size:17px;font-weight:650;margin:0 0 12px;color:#123a86}
+  .verdict ul{margin:0;padding-left:20px}
+  .verdict li{margin:7px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:14px 0}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fafbfd;font-weight:650;color:var(--ink2);font-size:12.5px;white-space:nowrap;
+     border-bottom:1px solid var(--line)}
+  tbody tr:hover{background:#fbfcfe}
+  td.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;font-family:var(--mono);font-size:12.5px}
+  code,.mono{font-family:var(--mono);font-size:12.5px;background:#f3f4f8;padding:1.5px 5px;border-radius:4px}
+  .tag{display:inline-block;font-size:11.5px;padding:1.5px 7px;border-radius:20px;white-space:nowrap;
+       font-weight:500;border:1px solid transparent}
+  .t-ok{background:var(--green-bg);color:#0d6b4a;border-color:#c6e8d9}
+  .t-warn{background:var(--amber-bg);color:#8a5a05;border-color:#f0dcb4}
+  .t-bad{background:var(--red-bg);color:#a02a2a;border-color:#f3cfcf}
+  .t-info{background:var(--blue-bg);color:#1e4fa8;border-color:#cfe0ff}
+  .t-gray{background:var(--gray-bg);color:#565b66;border-color:#e2e4ea}
+  .bar{display:inline-block;height:9px;border-radius:3px;background:var(--blue);vertical-align:middle;
+       margin-right:7px;opacity:.85}
+  .star{display:flex;align-items:center;gap:0}
+  .star .bar{flex:none}
+  .star span{font-family:var(--mono);font-size:12px;color:var(--ink2)}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+  @media(max-width:760px){.cols{grid-template-columns:1fr}}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .box h3{margin:0 0 8px;font-size:14.5px}
+  .box ul{margin:6px 0 0;padding-left:18px;font-size:13.5px;color:var(--ink2)}
+  .box li{margin:5px 0}
+  .gap{border-left:4px solid var(--amber);background:var(--amber-bg);border-color:#f0dcb4}
+  .gap .big{color:#7a4f04;font-weight:650;font-size:16px;margin:0 0 8px}
+  ol.steps{counter-reset:s;list-style:none;padding:0;margin:16px 0}
+  ol.steps>li{counter-increment:s;position:relative;padding:14px 18px 14px 58px;
+    background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:10px}
+  ol.steps>li::before{content:counter(s);position:absolute;left:18px;top:14px;width:24px;height:24px;
+    border-radius:50%;background:var(--ink);color:#fff;font-size:13px;font-weight:650;
+    display:flex;align-items:center;justify-content:center}
+  ol.steps .st{font-weight:650;display:block;margin-bottom:3px}
+  .muted{color:var(--ink3);font-size:12.5px}
+  footer{margin-top:48px;padding-top:18px;border-top:1px solid var(--line);color:var(--ink3);font-size:12.5px}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13.5px;margin:10px 0}
+  .kv dt{color:var(--ink2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="kicker">OpenPrint · 技术选型调研</p>
+  <h1>类 Excel 非线性报表：GitHub 开源方案盘点</h1>
+  <p class="sub">调研对象：润乾式「单元格扩展模型 / 主格树 / 层次坐标」报表引擎。数据取自 GitHub API 实时查询（2026-09-12），star 数与最近推送时间为当日实值。</p>
+</header>
+
+<div class="card verdict">
+  <p class="big">结论：同类方案有一批，但全部在服务端；浏览器侧（JS/TS）没有任何开源实现。</p>
+  <ul>
+    <li><b>服务端开源有 6 个</b>可用选择：积木报表、UReport2、NopReport、CellReport、SpringReport、Luck-Report。除 UReport2 已停更外，其余均活跃。</li>
+    <li><b>前端只做"表格编辑器"</b>：Univer / Luckysheet / FortuneSheet 都是网格 UI 组件，<b>不含</b>主格树、递归扩展、层次坐标——这些算法一个都没实现。</li>
+    <li><b>对 OpenPrint 的含义</b>：没有可搬运的 JS 引擎，新增 grid 模式仍需自研；但算法有现成参照，其中 <b>NopReport 的核心仅约 3000 行</b>，是最值得先读的源码。</li>
+  </ul>
+</div>
+
+<h2>一、按"有没有目标算法"分类</h2>
+<p>判断标准很关键：<b>不能按"是否叫报表"分类，要按"是否实现单元格扩展"分类</b>。很多高星项目名字里带 report，但走的是完全不同的技术路线（带状版式或模板填充），无法用来支撑类 Excel 报表。</p>
+
+<table>
+  <thead>
+    <tr><th>类别</th><th>代表项目</th><th>扩展模型</th><th>能否直接借鉴</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>服务端开源<br>（中式报表引擎）</b></td>
+      <td>UReport2 · Luck-Report · SpringReport · CellReport · NopReport · 积木报表</td>
+      <td><span class="tag t-ok">有</span> 主格/附属格 + 迭代扩展 + 层次坐标</td>
+      <td><span class="tag t-ok">算法可照抄</span> 语言不同，需重写为 TS</td>
+    </tr>
+    <tr>
+      <td><b>前端表格组件</b></td>
+      <td>Univer · Luckysheet · FortuneSheet · x-spreadsheet</td>
+      <td><span class="tag t-bad">无</span> 只有单元格网格 + 公式</td>
+      <td><span class="tag t-info">只可借 UI</span> 可作设计器界面底座</td>
+    </tr>
+    <tr>
+      <td><b>JS 报表服务<br>（模板式）</b></td>
+      <td>jsreport · Carbone 等</td>
+      <td><span class="tag t-bad">无</span> handlebars/jsrender 模板渲染</td>
+      <td><span class="tag t-gray">不适用</span> 路线完全不同</td>
+    </tr>
+    <tr>
+      <td><b>商业闭源</b></td>
+      <td>润乾报表 · 帆软 FineReport · ActiveReportsJS · Stimulsoft Reports.JS</td>
+      <td><span class="tag t-ok">有</span>（前两者）</td>
+      <td><span class="tag t-gray">仅作对照</span> 不可参考源码</td>
+    </tr>
+    <tr>
+      <td><b>BI 可视化</b></td>
+      <td>Metabase · Superset · DataEase · datart</td>
+      <td><span class="tag t-bad">无</span> 拖拽图表/看板</td>
+      <td><span class="tag t-gray">不同品类</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>二、服务端开源引擎明细</h2>
+<p>按 star 排序。star 条形按本表最大值等比绘制。</p>
+
+<table>
+  <thead>
+    <tr><th>项目</th><th style="width:170px">Star</th><th>技术栈</th><th>协议</th><th>最近推送</th><th>评价</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>jeecgboot / jimureport</b><br><span class="muted">积木报表</span></td>
+      <td><div class="star"><i class="bar" style="width:106px"></i><span>8,417</span></div></td>
+      <td>Java · Vue</td>
+      <td>GPL-3.0 <sup>*</sup></td>
+      <td>2026-09-08</td>
+      <td>生态最大，报表+大屏+填报+AI 一站式；类 Excel 在线设计器</td>
+    </tr>
+    <tr>
+      <td><b>youseries / ureport</b><br><span class="muted">UReport2</span></td>
+      <td><div class="star"><i class="bar" style="width:27px"></i><span>2,167</span></div></td>
+      <td>Java（Spring）</td>
+      <td>Apache-2.0</td>
+      <td><span class="tag t-bad">2023-02 停更</span></td>
+      <td>单元格迭代模型的开山之作，最经典、可读性强；205 个未处理 issue</td>
+    </tr>
+    <tr>
+      <td><b>entropy-cloud / nop-entropy</b><br><span class="muted">含 NopReport</span></td>
+      <td><div class="star"><i class="bar" style="width:9px"></i><span>696</span></div></td>
+      <td>Java</td>
+      <td>Apache-2.0</td>
+      <td>2026-09-08</td>
+      <td><b>最值得先读</b>：核心约 3000 行；用 Excel 批注当设计器；层次坐标只以几十行扩展表达式解析器实现</td>
+    </tr>
+    <tr>
+      <td><b>NoneDay / CellReport</b></td>
+      <td><div class="star"><i class="bar" style="width:6px"></i><span>506</span></div></td>
+      <td>.NET6 · Vue</td>
+      <td>Apache-2.0</td>
+      <td>2025-09-24</td>
+      <td>README 明确写"单元格扩展、引用""多源、分片"；前端用 Luckysheet</td>
+    </tr>
+    <tr>
+      <td><b>springreport / springreport</b></td>
+      <td><div class="star"><i class="bar" style="width:6px"></i><span>449</span></div></td>
+      <td>SpringBoot · Vue</td>
+      <td>Apache-2.0</td>
+      <td>2026-07-31</td>
+      <td>报表+Word+PPT+协同文档+大屏；前端 luckysheet、canvas-editor、PPTist</td>
+    </tr>
+    <tr>
+      <td><b>LuckyPools / luck-report</b><br><span class="muted">Gitee 为主</span></td>
+      <td><div class="star"><i class="bar" style="width:2px"></i><span>~47</span></div></td>
+      <td>SpringBoot · Vue</td>
+      <td>Apache-2.0</td>
+      <td>活跃（日更）</td>
+      <td>UReport2 的现代化重构（SpringBoot+Vue），修掉原版部分缺陷；体量小</td>
+    </tr>
+  </tbody>
+</table>
+<p class="muted"><sup>*</sup> 积木报表 GitHub 仓库标注 GPL-3.0，但官方材料称"功能免费、可商用"。商用前请自行确认授权边界，勿以本表为准。</p>
+
+<h3>前端表格组件（只作设计器 UI 参考）</h3>
+<table>
+  <thead>
+    <tr><th>项目</th><th style="width:170px">Star</th><th>技术栈</th><th>协议</th><th>状态</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>dream-num / univer</b></td>
+      <td><div class="star"><i class="bar" style="width:106px"></i><span>14,345</span></div></td>
+      <td>TypeScript</td>
+      <td>Apache-2.0</td>
+      <td><span class="tag t-ok">活跃</span> Luckysheet 继任者，表格+文档+幻灯片框架</td>
+    </tr>
+    <tr>
+      <td><b>dream-num / Luckysheet</b></td>
+      <td><div class="star"><i class="bar" style="width:106px"></i><span>16,643</span></div></td>
+      <td>JavaScript</td>
+      <td>MIT</td>
+      <td><span class="tag t-bad">已归档</span> 官方引导迁移至 Univer</td>
+    </tr>
+    <tr>
+      <td><b>ruilisi / fortune-sheet</b></td>
+      <td><div class="star"><i class="bar" style="width:24px"></i><span>3,719</span></div></td>
+      <td>TypeScript</td>
+      <td>MIT</td>
+      <td>Luckysheet 的 TS 重写，提供 React / Vue 组件，去 jQuery、支持多实例</td>
+    </tr>
+    <tr>
+      <td><b>myliang / x-spreadsheet</b></td>
+      <td><div class="star"><i class="bar" style="width:93px"></i><span>14,587</span></div></td>
+      <td>JavaScript</td>
+      <td>MIT</td>
+      <td><span class="tag t-warn">已迁移</span> 作者转往 <code>@wolf-table/table</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>三、为什么浏览器侧没有开源实现</h2>
+<div class="card gap">
+  <p class="big">「纯前端开源 · 单元格扩展引擎」：未找到</p>
+  <p style="margin:0">开源界对这套算法的实现无一例外落在服务端（Java / .NET），原因有三层：</p>
+  <ul style="margin:8px 0 0">
+    <li><b>历史原因</b>：该算法诞生于 Java 报表软件时代（润乾 → 帆软 → UReport2/CellReport），生态、文档、教程全在服务端；前端只被当作"渲染结果的容器"。</li>
+    <li><b>工程惯例</b>：这类引擎天然要吃 JDBC 数据集、连多个库、扛大数据量，服务端是更自然的落点；前端组件因此只需实现网格交互。</li>
+    <li><b>算法难点被低估</b>：真正难的不是网格，而是<b>递归扩展 + 主格拉伸（合并）+ 层次坐标求值</b>。开源前端库都停在"网格 + 公式"这一层，从未跨过去。</li>
+  </ul>
+</div>
+
+<h2>四、对 OpenPrint 的三条可行动建议</h2>
+
+<ol class="steps">
+  <li>
+    <span class="st">先读 NopReport 的 3000 行核心，再下手写</span>
+    Apache-2.0 授权、代码极简、且它<b>把层次坐标只做成"表达式解析器上的几十行扩展"</b>——这与 OpenPrint 现有 <code>layout-engine/expression.ts</code>（896 行，已有 tokenize / parse / eval 骨架）的思路高度接近，移植成本最低。次级参考是 UReport2 的 <code>ReportDefinition</code> 与单元格父子格模型，最经典、可读性最好。
+  </li>
+  <li>
+    <span class="st">设计器 UI 不要自研网格，选 Univer 或 FortuneSheet</span>
+    两者都是活跃的 TS/MIT-Apache 项目，可直接装进 React 工程。<b>不要选 Luckysheet</b>（已归档）与 x-spreadsheet（已迁移）。这能把工作量集中在扩展算法本身，而不是网格交互。
+  </li>
+  <li>
+    <span class="st">本地起一个对照基准，而不是只读源码</span>
+    NopReport 与 UReport2 都能独立跑起来。先跑通"分组汇总"和"交叉表"两个样例，把输出结果当作自研引擎的<b>验收基准</b>；这样后面写 P1 算法原型时，正确性有客观参照，不必靠感觉判断。
+  </li>
+</ol>
+
+<div class="cols">
+  <div class="box">
+    <h3>本次调研确认的事实</h3>
+    <ul>
+      <li>服务端开源选择充足，不必自研"完整平台"</li>
+      <li>但 OpenPrint 是浏览器侧引擎，与服务端方案<b>无法直接复用</b></li>
+      <li>算法可参考；工程量仍在 OpenPrint 自己这一侧</li>
+    </ul>
+  </div>
+  <div class="box">
+    <h3>与上一轮架构评估一致</h3>
+    <ul>
+      <li>仍建议新增独立 <code>document.type:'grid'</code> + <code>grid-engine</code>，而非改造现有表格控件</li>
+      <li>渲染 / 导出 / 打印 / 数据源可全部复用现有管线</li>
+      <li>先做 P1 算法原型（主格树 + 递归扩展 + 层次坐标），跑通再定 UI</li>
+    </ul>
+  </div>
+</div>
+
+<h2>五、数据来源</h2>
+<dl class="kv">
+  <dt>查询方式</dt><dd>GitHub REST API <code>/repos/{owner}/{repo}</code>，逐仓库核实 star / fork / license / pushed_at / archived</dd>
+  <dt>查询时间</dt><dd>2026-09-12（star 数为当日实值，会随时间变化）</dd>
+  <dt>补充来源</dt><dd>各项目官方 README / 文档、DeepWiki 源码结构解析、国内技术社区选型对比文章</dd>
+  <dt>未核实项</dt><dd>Luck-Report 以 Gitee 为主站（star 数取自 Gitee 页面，仅供参考）；积木报表的商用授权边界</dd>
+</dl>
+
+<footer>
+  本报告由 OpenPrint 项目组调研整理，仅覆盖「单元格扩展模型」这一技术路线；同名"报表"但路线不同的项目已在第一节按类别排除。
+</footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,187 @@
+/* PreviewPanel —— 打印预览弹窗（与 Vue 版样式对齐，走 brand.css 语义变量） */
+
+.preview-shell {
+  display: flex;
+  flex-direction: column;
+  /* 与 Vue 版一致：880 宽（弹窗已清 container 内边距）/ 88vh 高 */
+  width: 100%;
+  height: 88vh;
+  max-height: 780px;
+  overflow: hidden;
+  border-radius: 10px;
+}
+
+.preview-bar {
+  display: flex;
+  height: 44px;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--brand-border);
+  padding: 0 4px;
+  color: var(--brand-text-1);
+}
+
+.preview-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.preview-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.preview-subtitle {
+  font-size: 12px;
+  color: var(--brand-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.bar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--brand-border);
+}
+
+.preview-page-indicator {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.preview-body {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  background: var(--brand-bg);
+}
+
+.preview-spin,
+.preview-spin .ant-spin-container {
+  height: 100%;
+}
+
+.preview-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.preview-error {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--brand-text-2);
+  text-align: center;
+  padding: 0 24px;
+}
+
+.preview-error-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.preview-error-msg {
+  font-size: 12px;
+  opacity: 0.7;
+  max-width: 560px;
+  word-break: break-all;
+}
+
+/* 右下角缩放控件（适应宽度 / − / 百分比 / +） */
+.preview-zoom {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--brand-surface);
+  border: 1px solid var(--brand-border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.zoom-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--brand-text-2);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.zoom-btn:hover {
+  background: var(--brand-bg-hover);
+  color: var(--brand-text-1);
+}
+
+.zoom-value {
+  min-width: 48px;
+  padding: 0 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--brand-text-1);
+  text-align: center;
+  user-select: none;
+}
+
+/* 告警列表 */
+.warn-list {
+  display: flex;
+  max-height: 320px;
+  max-width: 460px;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+
+.warn-item {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.warn-code {
+  flex: none;
+  border-radius: 4px;
+  background: rgba(240, 160, 32, 0.16);
+  padding: 0 6px;
+  color: #e08a00;
+}
+
+.warn-msg {
+  color: var(--brand-text-2);
+  word-break: break-all;
+}

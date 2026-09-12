@@ -1,0 +1,10 @@
+allowBuilds:
+  canvas: true
+  core-js: true
+  esbuild: true
+  vue-demi: true
+onlyBuiltDependencies:
+  - canvas
+  - core-js
+  - esbuild
+  - vue-demi

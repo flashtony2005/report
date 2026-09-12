@@ -1,0 +1,40 @@
+/* LongPressMenu —— 触屏长按上下文菜单 */
+.lpm-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgb(0 0 0 / 12%);
+}
+
+.lpm-menu {
+  position: fixed;
+  min-width: 120px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--brand-surface, #ffffff);
+  border: 1px solid var(--brand-border, #e5e7eb);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 22%);
+  display: flex;
+  flex-direction: column;
+}
+
+.lpm-item {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--brand-text, #1f2329);
+  min-height: 40px;
+}
+
+.lpm-item:hover,
+.lpm-item:active {
+  background: rgb(0 0 0 / 6%);
+}
+
+.lpm-item.is-danger {
+  color: #e5484d;
+}

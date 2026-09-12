@@ -1,0 +1,41 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+dist-sdk/
+dist-sdk.zip
+dist-ssr/
+coverage/
+.verify-dist/
+*.tsbuildinfo
+
+# 本地验证转储（CDP 截图 / 测试输出 dump）
+designer-react/.shots/
+
+# Rust 构建产物
+print-server/target/
+print-server/tgt/
+
+# 日志
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 本地环境
+*.local
+.env
+.env.*
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# 项目记忆（不入公开仓库）
+.workbuddy/

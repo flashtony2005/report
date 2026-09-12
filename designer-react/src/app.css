@@ -1,0 +1,140 @@
+/* App 三栏布局壳（对齐 Vue 版 App.vue 的布局类） */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family:
+    Inter,
+    'Source Han Sans CN',
+    'PingFang SC',
+    'Microsoft YaHei',
+    system-ui,
+    -apple-system,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--brand-bg);
+  color: var(--brand-text-1);
+  overflow: hidden;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.app-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 左栏 250px：组件库 / 数据源 / 图层 */
+.app-left {
+  width: 250px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--brand-border);
+  background: var(--brand-surface);
+}
+
+/* 中央画布 */
+.app-canvas {
+  flex: 1;
+  min-width: 0;
+  background: var(--brand-bg);
+}
+
+/* 右栏 300px：属性面板 */
+.app-right {
+  width: 300px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--brand-border);
+  background: var(--brand-surface);
+}
+
+/* ---------- P6.2 移动端适配（≤900px） ---------- */
+
+/* 画布区浮动唤起按钮：左右各一枚，贴边垂直居中 */
+.app-fab {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 30;
+  border: 1px solid var(--brand-border);
+  background: var(--brand-surface, #fff);
+  color: var(--brand-text-1, #1f2329);
+  font-size: 12px;
+  line-height: 1;
+  padding: 10px 6px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 18%);
+  cursor: pointer;
+  writing-mode: vertical-rl;
+  letter-spacing: 2px;
+}
+
+.app-fab:active {
+  background: var(--brand-primary-weak, #e6f4ff);
+}
+
+.app-fab-left {
+  left: 6px;
+}
+
+.app-fab-right {
+  right: 6px;
+}
+
+.app-canvas {
+  position: relative;
+}
+
+/* 抽屉体：去掉内边距，让面板全高滚动 */
+.app-drawer-body {
+  padding: 0 !important;
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* 窄屏通用收缩：标记 data-narrow-hide 的次要控件隐藏 */
+.is-narrow [data-narrow-hide] {
+  display: none !important;
+}
+
+.is-narrow .toolbar-center {
+  display: none;
+}
+
+.is-narrow .status-name {
+  max-width: 120px;
+}
+
+.is-narrow .status-item {
+  display: none;
+}
+
+.is-narrow .status-toggle,
+.is-narrow .status-zoom {
+  font-size: 11px;
+}
+
+/* ---------- P6.3 移动端二期 ---------- */
+
+/* 弹窗宽度兜底：固定宽 Modal（预览 880 等）在窄屏不溢出 */
+.ant-modal {
+  max-width: calc(100vw - 16px) !important;
+}
+
+/* FAB 触控目标加高（≥44px 推荐值） */
+.app-fab {
+  min-height: 44px;
+  font-size: 13px;
+}

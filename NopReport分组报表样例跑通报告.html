@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>NopReport 分组报表样例 · 跑通报告</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff; --line:#e3e6eb; --text:#1f2329;
+    --muted:#646a73; --brand:#2b5cff; --ok:#0f9960; --warn:#d9822b;
+    --code-bg:#f5f6f8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.7}
+  .wrap{max-width:1000px;margin:0 auto;padding:32px 24px 64px}
+  h1{font-size:26px;margin:0 0 6px}
+  h2{font-size:19px;margin:34px 0 12px;padding-left:10px;border-left:4px solid var(--brand)}
+  h3{font-size:15px;margin:20px 0 8px;color:var(--muted)}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:24px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .kpi .v{font-size:22px;font-weight:600;color:var(--brand)}
+  .kpi .k{font-size:12px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left}
+  th{background:#f0f2f5;font-weight:600}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr.subtotal td{background:#f7f9ff}
+  tr.total td{background:#eef4ff;font-weight:600}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  code{font-family:"Cascadia Code",Consolas,monospace}
+  .tag{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:20px;
+       background:#e8efff;color:var(--brand);margin-right:6px}
+  .ok{color:var(--ok);font-weight:600}
+  .warn{color:var(--warn);font-weight:600}
+  ul{margin:8px 0 8px 20px;padding:0}
+  li{margin:4px 0}
+  .note{background:#fff8e6;border:1px solid #ffe0a3;border-radius:8px;padding:12px 14px;font-size:13px}
+  footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>NopReport 分组报表样例 · 跑通报告</h1>
+<div class="sub">2026-09-12 · 源码 entropy-cloud/nop-entropy（master @ 59e73c1）· 本地编译 nop-report-core 后实际运行</div>
+
+<div class="grid">
+  <div class="kpi"><div class="v">51</div><div class="k">编译通过的 Maven 模块</div></div>
+  <div class="kpi"><div class="v">1 / 1</div><div class="k">样例测试通过</div></div>
+  <div class="kpi"><div class="v">116,400</div><div class="k">总计金额（校验一致）</div></div>
+  <div class="kpi"><div class="v">3 级</div><div class="k">地区 / 城市 / 销售员 嵌套</div></div>
+</div>
+
+<h2>一、结果：分组报表已实际跑通</h2>
+<div class="card">
+  <p>用 NopReport 的 <b>xpt.xml</b> 报表模板（Excel 语义的 DSL）定义了「地区 → 城市 → 销售员」三级分组，
+  经 <code>ReportEngine</code> 展开计算后同时输出 <b>HTML</b> 与 <b>XLSX</b>，各级小计与总计全部正确：</p>
+  <table>
+    <tr><th>地区</th><th>城市</th><th>销售员</th><th class="num">销售金额（元）</th></tr>
+    <tr><td>华东</td><td>上海</td><td>张三</td><td class="num">12,000.00</td></tr>
+    <tr><td></td><td></td><td>李四</td><td class="num">8,600.00</td></tr>
+    <tr class="subtotal"><td></td><td>城市小计</td><td></td><td class="num">20,600.00</td></tr>
+    <tr><td></td><td>杭州</td><td>王五</td><td class="num">9,900.00</td></tr>
+    <tr class="subtotal"><td></td><td>城市小计</td><td></td><td class="num">9,900.00</td></tr>
+    <tr><td></td><td>南京</td><td>赵六</td><td class="num">7,400.00</td></tr>
+    <tr class="subtotal"><td></td><td>城市小计</td><td></td><td class="num">7,400.00</td></tr>
+    <tr class="total"><td></td><td>地区合计</td><td></td><td class="num">37,900.00</td></tr>
+    <tr><td>华南</td><td>广州</td><td>孙七 / 周八</td><td class="num">15,300.00 / 6,200.00</td></tr>
+    <tr class="subtotal"><td></td><td>城市小计</td><td></td><td class="num">21,500.00</td></tr>
+    <tr><td></td><td>深圳</td><td>吴九</td><td class="num">18,700.00</td></tr>
+    <tr class="subtotal"><td></td><td>城市小计</td><td></td><td class="num">18,700.00</td></tr>
+    <tr class="total"><td></td><td>地区合计</td><td></td><td class="num">40,200.00</td></tr>
+    <tr><td>华北</td><td>北京</td><td>郑十 / 冯一</td><td class="num">21,400.00 / 9,800.00</td></tr>
+    <tr class="subtotal"><td></td><td>城市小计</td><td></td><td class="num">31,200.00</td></tr>
+    <tr><td></td><td>天津</td><td>陈二</td><td class="num">7,100.00</td></tr>
+    <tr class="subtotal"><td></td><td>城市小计</td><td></td><td class="num">7,100.00</td></tr>
+    <tr class="total"><td></td><td>地区合计</td><td></td><td class="num">38,300.00</td></tr>
+    <tr class="total"><td></td><td>总　计</td><td></td><td class="num">116,400.00</td></tr>
+  </table>
+  <p class="ok">✓ 37,900 + 40,200 + 38,300 = 116,400，与总计吻合——跨层汇总链路真实生效。</p>
+</div>
+
+<h2>二、环境是怎么搭起来的（含坑）</h2>
+<div class="card">
+  <table>
+    <tr><th style="width:120px">环节</th><th>情况与处理</th></tr>
+    <tr><td>JDK</td><td>本机只有 JRE 1.8，NopReport 需 <b>JDK 17</b> → 下载 Temurin 17（182MB）到托管目录，未污染系统</td></tr>
+    <tr><td>Maven</td><td>choco 装的 3.9.11 存在，但 <code>mvn</code> 启动脚本坏（classworlds 主类找不到）→ 直接用 <code>java -cp plexus-classworlds.jar org.codehaus.plexus.classworlds.launcher.Launcher</code> 启动</td></tr>
+    <tr><td>源码下载</td><td><code>git clone</code> 前 1 次成功、后续直连 github.com 超时 → 改用 <b>codeload zip</b> 一次性下载（167MB / 25s）</td></tr>
+    <tr><td>依赖下载</td><td>Maven Central 只有 ~220KB/s → 切 <b>阿里云镜像</b>（4MB/s，快 20 倍），本地仓库落在 F 盘</td></tr>
+    <tr><td>依赖形态</td><td>中央仓库只有 <code>nop-cli</code>，其余构件不存在 → 必须源码构建，<code>-pl nop-report/nop-report-core -am</code> 连带编出 <b>51 个模块</b>（BUILD SUCCESS）</td></tr>
+  </table>
+  <div class="note">可复用命令已落在 <code>F:\project\_nop\mvn17.sh</code>（JDK17 + 阿里镜像 + 跳过静态检查的一键启动器）。</div>
+</div>
+
+<h2>三、报表模板长什么样</h2>
+<div class="card">
+  <p>NopReport 的模板既可以是 Excel（xpt.xlsx），也可以是等价的 <b>xpt.xml</b> DSL。本次用 XML 手写，关键片段：</p>
+  <pre><code>&lt;!-- 数据集：展开前执行的脚本 --&gt;
+&lt;model removeHiddenCell="true"&gt;
+  &lt;beforeExpand&gt;xptRt.makeDs("ds1", rows)&lt;/beforeExpand&gt;
+&lt;/model&gt;
+
+&lt;!-- 三级主格：ds + field + expandType="r" 即「按字段分组纵向展开」 --&gt;
+&lt;cell&gt;&lt;model ds="ds1" field="region"   expandType="r"/&gt;&lt;/cell&gt;          &lt;!-- A3 地区 --&gt;
+&lt;cell&gt;&lt;model ds="ds1" field="city"     expandType="r" rowParent="A3"/&gt;&lt;/cell&gt; &lt;!-- B3 城市 --&gt;
+&lt;cell&gt;&lt;model ds="ds1" field="salesman" expandType="r" rowParent="B3"/&gt;&lt;/cell&gt; &lt;!-- C3 销售员 --&gt;
+&lt;cell&gt;&lt;model ds="ds1" field="amount"                rowParent="C3"/&gt;&lt;/cell&gt; &lt;!-- D3 金额 --&gt;
+
+&lt;!-- 小计：挂在 B3 之下，用层次坐标取「当前城市组」内的 D3 求和 --&gt;
+&lt;cell&gt;&lt;model rowParent="B3"&gt;&lt;valueExpr&gt;D3[B3:+0].sum()&lt;/valueExpr&gt;&lt;/model&gt;&lt;/cell&gt;
+&lt;!-- 地区合计 --&gt;
+&lt;cell&gt;&lt;model rowParent="A3"&gt;&lt;valueExpr&gt;D3[A3:+0].sum()&lt;/valueExpr&gt;&lt;/model&gt;&lt;/cell&gt;
+&lt;!-- 总计 --&gt;
+&lt;cell&gt;&lt;model&gt;&lt;valueExpr&gt;SUM(D3)&lt;/valueExpr&gt;&lt;/model&gt;&lt;/cell&gt;</code></pre>
+</div>
+
+<h2>四、引擎机制（拆开看）</h2>
+<div class="card">
+  <svg viewBox="0 0 900 330" style="width:100%;height:auto">
+    <defs>
+      <marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L6,3 L0,6 z" fill="#2b5cff"/>
+      </marker>
+    </defs>
+    <rect x="0" y="0" width="900" height="330" fill="#ffffff"/>
+    <!-- 阶段 1 -->
+    <rect x="20" y="26" width="250" height="120" rx="10" fill="#eef4ff" stroke="#2b5cff"/>
+    <text x="145" y="50" text-anchor="middle" font-size="14" font-weight="600" fill="#2b5cff">① 构建主格树</text>
+    <text x="40" y="76" font-size="12.5" fill="#1f2329">rowParent 声明父子：A3 ← B3 ← C3 ← D3</text>
+    <text x="40" y="98" font-size="12.5" fill="#1f2329">expandType = r（行）/ c（列）</text>
+    <text x="40" y="120" font-size="12.5" fill="#1f2329">ds + field → 自动分组去重</text>
+    <!-- 阶段 2 -->
+    <rect x="325" y="26" width="250" height="120" rx="10" fill="#eafaf1" stroke="#0f9960"/>
+    <text x="450" y="50" text-anchor="middle" font-size="14" font-weight="600" fill="#0f9960">② 递归展开</text>
+    <text x="345" y="76" font-size="12.5" fill="#1f2329">每个主格实例复制其子格</text>
+    <text x="345" y="98" font-size="12.5" fill="#1f2329">addRowChild 向祖格链逐级注册</text>
+    <text x="345" y="120" font-size="12.5" fill="#1f2329">→ 祖格可直查任意后代格</text>
+    <!-- 阶段 3 -->
+    <rect x="630" y="26" width="250" height="120" rx="10" fill="#fff8e6" stroke="#d9822b"/>
+    <text x="755" y="50" text-anchor="middle" font-size="14" font-weight="600" fill="#d9822b">③ 求值 / 汇总</text>
+    <text x="650" y="76" font-size="12.5" fill="#1f2329">层次坐标 D3[B3:+0] 定位集合</text>
+    <text x="650" y="98" font-size="12.5" fill="#1f2329">.sum() / SUM / AVG / COUNT…</text>
+    <text x="650" y="120" font-size="12.5" fill="#1f2329">exportFormula → 回写 Excel 公式</text>
+
+    <line x1="272" y1="86" x2="322" y2="86" stroke="#2b5cff" stroke-width="2" marker-end="url(#a)"/>
+    <line x1="577" y1="86" x2="627" y2="86" stroke="#2b5cff" stroke-width="2" marker-end="url(#a)"/>
+
+    <!-- 展开示意 -->
+    <text x="20" y="185" font-size="13" font-weight="600" fill="#1f2329">展开结果的父子关系（本例实际输出）</text>
+    <g font-size="12" fill="#1f2329">
+      <rect x="20" y="200" width="120" height="30" rx="6" fill="#eef4ff" stroke="#2b5cff"/>
+      <text x="80" y="219" text-anchor="middle">华东（A3）</text>
+      <rect x="170" y="200" width="120" height="30" rx="6" fill="#f3f8ff" stroke="#7aa2ff"/>
+      <text x="230" y="219" text-anchor="middle">上海（B3）</text>
+      <rect x="320" y="200" width="110" height="30" rx="6" fill="#ffffff" stroke="#c6d4f5"/>
+      <text x="375" y="219" text-anchor="middle">张三 12000</text>
+      <rect x="320" y="238" width="110" height="30" rx="6" fill="#ffffff" stroke="#c6d4f5"/>
+      <text x="375" y="257" text-anchor="middle">李四 8600</text>
+      <rect x="170" y="276" width="120" height="30" rx="6" fill="#eafaf1" stroke="#0f9960"/>
+      <text x="230" y="295" text-anchor="middle">小计 20600</text>
+      <line x1="140" y1="215" x2="168" y2="215" stroke="#8c9bb5" stroke-width="1.5"/>
+      <line x1="290" y1="215" x2="318" y2="215" stroke="#8c9bb5" stroke-width="1.5"/>
+      <line x1="290" y1="215" x2="290" y2="253" stroke="#8c9bb5" stroke-width="1.5"/>
+      <line x1="290" y1="253" x2="318" y2="253" stroke="#8c9bb5" stroke-width="1.5"/>
+      <line x1="230" y1="230" x2="230" y2="274" stroke="#0f9960" stroke-width="1.5" stroke-dasharray="4 3"/>
+    </g>
+    <text x="470" y="219" font-size="12" fill="#646a73">← 城市小计由 B3 的子树（含孙层 D3）汇总而来</text>
+  </svg>
+</div>
+
+<h2>五、踩到的两个真坑（值得记）</h2>
+<div class="card">
+  <ul>
+    <li><b>层次坐标必须带位置。</b>写 <code>D3[B3]</code> 静默返回空集合、小计全 0（不报错！）。源码里 <code>pos</code> 缺省为 0，而只有 <code>pos &gt; 0</code> 或相对坐标分支才会解析成功。取「当前组」要写 <span class="tag">D3[B3:+0]</span>。</li>
+    <li><b>SUM 拿到的是单元格不是数值。</b>坐标表达式返回 <code>ExpandedCellSet</code>，直接 <code>SUM(...)</code> 会因非 Number 被逐个跳过 → 0。要用 <code>.sum()</code>（或先 <code>.value</code>）。</li>
+  </ul>
+</div>
+
+<h2>六、对 openprint 网格报表的启示</h2>
+<div class="card">
+  <p>结论：<b>可行，且算法规模不大</b>。NopReport 整个展开核心（<code>engine/expand/*</code> + <code>ExpandedSheetGenerator</code> + <code>coordinate/*</code>）约 <b>1100 行</b>，做的是同一件事：主格树 → 递归复制 → 层次坐标求值。要在 openprint 落地，照这四块建 <code>grid-engine</code> 即可：</p>
+  <table>
+    <tr><th style="width:150px">模块</th><th>要做的</th><th>NopReport 对应</th></tr>
+    <tr><td>主格树</td><td>单元格声明 rowParent / colParent，构建父子链</td><td>XptCellModel.rowParent</td></tr>
+    <tr><td>展开器</td><td>按 expandExpr + field 复制子格，并向祖格链<b>逐级注册后代</b>（跨层汇总的前提）</td><td>CellRowExpander / addRowChild</td></tr>
+    <tr><td>层次坐标</td><td>解析 <code>D3[B3:+0]</code>：绝对位置、相对偏移、反向索引三类</td><td>CellCoordinateHelper</td></tr>
+    <tr><td>聚合</td><td>sum/avg/count/min/max + 占比/排名/累计，返回集合而非单元格</td><td>ReportFunctions</td></tr>
+  </table>
+  <p style="margin-top:10px">建议路线：先做 <b>P1 纯函数原型</b>（分组展开 + 层次坐标 + sum，配单测跑通本文这张表），再接渲染层；不要一开始就做 Excel 双向导入导出。</p>
+</div>
+
+<h2>七、产物清单</h2>
+<div class="card">
+  <ul>
+    <li><code>NopReport分组报表-模板.xpt.xml</code> — 本次样例的报表模板（可直接改数据复用）</li>
+    <li><code>NopReport分组报表-销售汇总.html</code> — 引擎渲染出的 HTML（结果如上表）</li>
+    <li><code>NopReport分组报表-销售汇总.xlsx</code> — 同一份数据导出的 Excel</li>
+    <li><code>F:\project\nop-src\nop-entropy-master</code> — 完整源码（376MB，已编译好，可直接继续实验）</li>
+    <li><code>F:\project\_nop\mvn17.sh</code> — JDK17 + 阿里镜像的 Maven 一键启动器</li>
+  </ul>
+</div>
+
+<footer>由 WorkBuddy 生成 · 所有数字均来自本地实际运行结果</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="rAvoPhGmWEHJDYmdwzg4Ck">
+<head data-page-node-id="MzocS6hmMxzEJPrbCEWCOo">
+<meta charset="UTF-8" data-page-node-id="REygyAOQgoHLUe0RUhiBBE">
+<meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="rSDzHw5bE2WVIi1a1ANdC8">
+<title>OpenPrint SDK 测试台</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --border: #e3e6ea;
+    --text-1: #1f2328;
+    --text-2: #57606a;
+    --text-3: #8b949e;
+    --accent: #1f6feb;
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --err: #cf222e;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text-1);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 20px; background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0; }
+  header .hint { font-size: 12px; color: var(--text-3); }
+  #ready { margin-left: auto; font-size: 12px; color: var(--text-2); }
+
+  main { display: grid; grid-template-columns: 380px 1fr; height: calc(100% - 53px); }
+  aside {
+    background: var(--surface); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 16px;
+  }
+  .field { margin-bottom: 16px; }
+  .field > label {
+    display: block; font-size: 12px; font-weight: 600;
+    color: var(--text-2); margin-bottom: 6px;
+  }
+  textarea {
+    width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 8px; resize: vertical; color: var(--text-1); background: #fbfcfd;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); background: #fff; }
+  select, input[type="number"] {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 5px 8px; font-size: 13px; background: #fff; color: var(--text-1);
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .row.tight { gap: 6px; align-items: center; }
+  button {
+    border: 1px solid var(--border); background: #fff; color: var(--text-1);
+    border-radius: var(--radius); padding: 7px 12px; font-size: 13px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { color: #fff; filter: brightness(1.08); }
+
+  .meta {
+    font-size: 12px; color: var(--text-2); background: #fbfcfd;
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px;
+    margin-bottom: 12px;
+  }
+  .meta b { color: var(--text-1); font-weight: 600; }
+  #log {
+    font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #fbfcfd; border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 10px; height: 220px; overflow-y: auto; white-space: pre-wrap;
+    color: var(--text-2);
+  }
+  #log .ok { color: var(--ok); }
+  #log .warn { color: var(--warn); }
+  #log .err { color: var(--err); }
+  #log .dim { color: var(--text-3); }
+
+  .preview-wrap { padding: 16px; overflow: auto; background: var(--bg); }
+  iframe {
+    width: 100%; height: 100%; border: 1px solid var(--border);
+    border-radius: var(--radius); background: #fff;
+  }
+  .empty {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%; color: var(--text-3); font-size: 13px;
+  }
+</style>
+</head>
+<body data-page-node-id="Zkq1rgxBToJCNWyrewGewc">
+
+<header data-page-node-id="heGFioge0wfMhNy1AZiaWC">
+  <h1 data-page-node-id="TWaJ17gfitPiZVe6ohAlfY">OpenPrint SDK 测试台</h1>
+  <span class="hint" data-page-node-id="BCrc41HSxSmKaCx558VVAN">渲染 · 导出 PDF / JPG / SVG · 静默打印</span>
+  <span id="ready" data-page-node-id="PK13mBvujsOeftvb8KtQZc">正在加载 SDK…</span>
+</header>
+
+<main data-page-node-id="8jVei64GUteSev7Xp3AM5e">
+  <aside data-page-node-id="eVAFnhorNDaSfisOvdAh4j">
+    <div class="meta" id="meta" data-page-node-id="fdQ96Ve8p8snBAEbgGsAeY">尚未渲染</div>
+
+    <div class="field" data-page-node-id="BxjWZ59G5TvwId2wXsVf1z">
+      <label data-page-node-id="eWNtMZzgS38f9alWZwrF4r">模板</label>
+      <div class="row tight" data-page-node-id="iSSchzr5iGzpt4tisBdQ90">
+        <select id="tplSource" style="flex:1" data-page-node-id="xxRPckRDBZkphVQVKAjV0p">
+          <option value="demo" data-page-node-id="VtSumrYupweMQBcCtcWjEa">内置：销售出库单（含条码 / 表格）</option>
+          <option value="paste" data-page-node-id="6SmhHB24tL8Fxtv1swF30t">自定义 JSON…</option>
+        </select>
+        <button id="btnReloadTpl" title="重新拉取模板 JSON" data-page-node-id="pMWWEdWg2ruKCEcDdSvL8T">重载</button>
+      </div>
+      <textarea id="template" rows="4" spellcheck="false" style="margin-top:8px;display:none"
+        placeholder="粘贴模板 JSON"></textarea>
+    </div>
+
+    <div class="field" data-page-node-id="p79u4wIy3IgBpOoNiM9Bww">
+      <label data-page-node-id="ZSrVsAjAm4yDUBVVdz8dMJ">数据</label>
+      <textarea id="data" rows="16" spellcheck="false"></textarea>
+    </div>
+
+    <div class="field" data-page-node-id="VmLRNtt2NYBaoT1hQLo6Sa">
+      <label data-page-node-id="1FD96RKCvGzA1XMR96kOqc">操作</label>
+      <div class="row" data-page-node-id="EFHMbCkOHmvLuK23r3FLDx">
+        <button class="primary" id="btnRender" data-page-node-id="z6mYo2JHZ1pcCA9FbTzd09">渲染预览</button>
+        <button id="btnPdf" data-page-node-id="pQSN9K9KqX5bAvyGZg2txn">导出 PDF</button>
+      </div>
+      <div class="row" style="margin-top:8px" data-page-node-id="zzNj8k4Aa9NOi18fDVsJj0">
+        <button id="btnJpg" data-page-node-id="v06He9GJ3iOzeNmO9mzeSi">导出 JPG</button>
+        <button id="btnSvg" data-page-node-id="okn6RWC4cRRFvXIdRnJRGZ">导出 SVG</button>
+        <button id="btnPrint" data-page-node-id="Le3GHOKm5M74XX7bLwg9g1">浏览器打印</button>
+      </div>
+      <div class="row" style="margin-top:8px" data-page-node-id="Qrkc3MdnjK2ZkN8xY3Rf0k">
+        <button id="btnPrintPreview" style="flex:1" data-page-node-id="ELDdWoABiptsEdsz2yVz0x">打印态预览（推送载荷基准）</button>
+      </div>
+      <div class="row tight" style="margin-top:8px" data-page-node-id="uO6HO83lVu6FdTgaMfNchQ">
+        <span style="font-size:12px;color:var(--text-3)" data-page-node-id="7bm7v70AYJ3DRWBskw4TsK">清晰度</span>
+        <select id="qualityExport" data-page-node-id="M39zpUhR7WMDz4ulTBXYiN">
+          <option value="low" data-page-node-id="TfF8oV7guxsTrF4ZbpyCT8">低（96dpi，体积小）</option>
+          <option value="medium" selected data-page-node-id="bURuJNXfg15hDe40Eeonjs">中（192dpi，均衡）</option>
+          <option value="high" data-page-node-id="5uEMLUfhbghbasTUHgQ0N5">高（288dpi，最清晰但大）</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field" data-page-node-id="9rVo5h2E1rHgiBrKse8ABk">
+      <label data-page-node-id="pozdL7UpMPtlJOJa4HYu9C">本地静默打印（C++ 客户端）</label>
+      <div class="row tight" data-page-node-id="lBepCGvrIFSQUya6dxJL0x">
+        <input id="printerUrl" value="http://127.0.0.1:18888" style="flex:1" placeholder="打印机客户端地址（可填局域网）" data-page-node-id="xeBpwBZILMMrJ136PwRcrP">
+      </div>
+      <div class="row tight" style="margin-top:8px" data-page-node-id="yGV6b60P13NbBfxqQLXLvM">
+        <select id="printer" style="flex:1" data-page-node-id="tnKmUL9qrwS3YFIlGb0Q1j"><option value="" data-page-node-id="iRCwZWrl8Z6sNGh7hhqDQB">— 未检测 —</option></select>
+        <button id="btnProbe" data-page-node-id="45OllNeo3X8dn8R1wNf9Tq">检测</button>
+      </div>
+      <div class="row tight" style="margin-top:8px" data-page-node-id="K9hq7pI7Dc23eeP9pu0fGw">
+        <span class="hint" style="font-size:12px;color:var(--text-3)" data-page-node-id="fswA50oC21zBFrPzOTBUiE">清晰度</span>
+        <select id="qualityPrint" data-page-node-id="nkAYRUwVwDHruPxWwLSpFY">
+          <option value="" data-page-node-id="u5Yq8uGjqKI3WBDoUrB1SV">自适应（读打印机 defaultDpi）</option>
+          <option value="low" data-page-node-id="0AT7hoCAWosn9dc77AfaPu">低（96dpi）</option>
+          <option value="medium" selected data-page-node-id="JXpawtH1GyaRcYLo0pVOm7">中（192dpi）</option>
+          <option value="high" data-page-node-id="3saM8bcOa3rSi220s7s4Bz">高（288dpi）</option>
+        </select>
+      </div>
+      <div class="row tight" style="margin-top:8px" data-page-node-id="BxgB9apNwe7uCatQYdbyhO">
+        <span class="hint" style="font-size:12px;color:var(--text-3)" data-page-node-id="R1NcCtJzQrsVGonWOaIP7e">载荷</span>
+        <select id="payloadMode" data-page-node-id="K5Wc7Y8VzMJVQRcgNyFlDf">
+          <option value="html" selected data-page-node-id="VG0dckK7y48d2sbD6ZEcif">HTML（矢量，QWebEngine）</option>
+          <option value="pdf" data-page-node-id="rZXDRAhQCgCezsQnS08NgM">PDF（位图，QPrinter 直打）</option>
+          <option value="esc" data-page-node-id="v5jPqilooBsIXobEBYR73F">ESC/POS（净化后画布 JSON → 客户端翻译指令）</option>
+          <option value="tsc" data-page-node-id="zGhJnXVApcGT34k97uM1hq">TSC/TSPL（净化后画布 JSON → 客户端翻译指令）</option>
+          <option value="zpl" data-page-node-id="tj3zWIbrhdqSe4KP6BRBfL">ZPL（净化后画布 JSON → 客户端翻译指令）</option>
+        </select>
+      </div>
+      <div class="row tight" style="margin-top:8px" data-page-node-id="48oMWWxikHrpad01f2cmjP">
+        <label class="hint" style="font-size:12px;color:var(--text-3);display:flex;align-items:center;gap:6px;cursor:pointer" data-page-node-id="NUJRs3ptMBIH80fcGRPhhV">
+          <input type="checkbox" id="embedFonts" data-page-node-id="KuB2vKTUbaMVs5bhQtWmc1">
+          内联字体（默认关 · 体积最小，客户端回退系统字体）
+        </label>
+      </div>
+      <div class="row tight" style="margin-top:8px" data-page-node-id="bQmXVIv9lOMaYr8PXp6POj">
+        <span class="hint" style="font-size:12px;color:var(--text-3)" data-page-node-id="8tJF6qiD2lubRIgvFzCdx5">份数</span>
+        <input type="number" id="copies" value="1" min="1" max="99" style="width:60px" data-page-node-id="CxNLNNQHDZiMrL8Mku3zTW">
+        <button id="btnSilent" style="flex:1" data-page-node-id="QADStF7tn7Cw8N3T5pf8p8">静默打印</button>
+      </div>
+    </div>
+
+    <div class="field" data-page-node-id="K1Y5BHMCM5aqNt0jZ4LKJf">
+      <label data-page-node-id="VTGecFuIbIeEyRT1wCqHfW">日志</label>
+      <div id="log" data-page-node-id="BH5rSIrJWlq9mJ1oB0zn8d"></div>
+      <button id="btnClearLog" style="margin-top:8px;font-size:12px" data-page-node-id="0uw94eElM9PVOJwBRhqP0r">清空日志</button>
+    </div>
+  </aside>
+
+  <section class="preview-wrap" data-page-node-id="1SrMunvzHuPA6W09YhmLaD">
+    <iframe id="preview" title="预览" data-page-node-id="kqpi88oI4ga5txPPTY3qqF"></iframe>
+  </section>
+</main>
+
+<script type="module">
+import {
+  render,
+  createHeadless,
+  checkHealth,
+  listPrinters,
+  submitPrintJob,
+  buildPrintPayload,
+  DEFAULT_PRINTER_BASE_URL,
+} from '../dist-sdk/sdk.js'
+
+/**
+ * 示例数据与模板一样放在外部文件，改数据只需编辑 demo-data.json，
+ * 不必动页面。Node 端验证脚本也复用同一份，保证两边测的是同一组数据。
+ */
+const DEFAULT_DATA_URL = './demo-data.json'
+
+const $ = (id) => document.getElementById(id)
+const el = {
+  ready: $('ready'), meta: $('meta'), log: $('log'), preview: $('preview'),
+  tplSource: $('tplSource'), template: $('template'), data: $('data'),
+  printer: $('printer'), copies: $('copies'),
+  printerUrl: $('printerUrl'), qualityExport: $('qualityExport'), qualityPrint: $('qualityPrint'),
+  payloadMode: $('payloadMode'), embedFonts: $('embedFonts'),
+}
+
+let builtinTemplate = null
+let lastRequest = null
+
+/* ------------------------------- 日志 ------------------------------- */
+function log(msg, kind = '') {
+  const t = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+  const line = document.createElement('div')
+  if (kind) line.className = kind
+  line.textContent = `[${t}] ${msg}`
+  el.log.appendChild(line)
+  el.log.scrollTop = el.log.scrollHeight
+}
+function logErr(e) {
+  log(`✗ ${e?.message ?? e}`, 'err')
+  if (e?.stack) console.error(e)
+}
+
+/* --------------------------- 按需加载观测 --------------------------- */
+/**
+ * 列出本次会话加载过的 SDK 按需 chunk。
+ * 这是「动态 import 真的生效」最直观的证据：
+ * 没画条码就不该出现 bwip-js，没导出就不该出现 jspdf。
+ */
+function loadedChunks() {
+  return performance
+    .getEntriesByType('resource')
+    .filter((e) => e.name.includes('/chunks/'))
+    .map((e) => {
+      const n = e.name.split('/').pop()
+      return n.replace(/-[A-Za-z0-9_-]{8}\.js$/, '')
+    })
+}
+function dumpChunks(label) {
+  const names = [...new Set(loadedChunks())]
+  log(`${label} → 按需模块：${names.length ? names.join(', ') : '（无）'}`, 'dim')
+}
+
+/* ------------------------------ 模板/数据 ------------------------------ */
+async function loadTemplate() {
+  const src = el.tplSource.value
+  if (src === 'paste') {
+    el.template.style.display = 'block'
+    return JSON.parse(el.template.value)
+  }
+  el.template.style.display = 'none'
+  if (!builtinTemplate) {
+    const res = await fetch('./demo-template.json')
+    if (!res.ok) throw new Error(`模板加载失败 HTTP ${res.status}`)
+    builtinTemplate = await res.json()
+    log(`已加载内置模板（${JSON.stringify(builtinTemplate).length} 字节）`, 'dim')
+  }
+  return builtinTemplate
+}
+
+function readData() {
+  try {
+    return JSON.parse(el.data.value)
+  } catch (e) {
+    throw new Error(`数据 JSON 解析失败：${e.message}`)
+  }
+}
+
+function buildRequest() {
+  return { template: lastRequest.template, data: readData() }
+}
+
+/* ------------------------------- 渲染 ------------------------------- */
+async function doRender() {
+  const template = await loadTemplate()
+  const data = readData()
+  lastRequest = { template, data }
+
+  const t0 = performance.now()
+  const { html, pages, warnings } = await render({ template, data })
+  const ms = Math.round(performance.now() - t0)
+
+  el.preview.srcdoc = html
+  el.meta.innerHTML =
+    `<b>${pages}</b> 页 · 渲染 <b>${ms}</b> ms · HTML <b>${html.length}</b> 字节` +
+    (warnings.length ? ` · <span style="color:var(--warn)">${warnings.length} 条告警</span>` : ' · 无告警')
+  log(`渲染完成：${pages} 页 / ${ms} ms`, 'ok')
+  warnings.forEach((w) => log(`⚠ [${w.code}] ${w.message}`, 'warn'))
+  dumpChunks('渲染后')
+}
+
+/* ------------------------------- 导出 ------------------------------- */
+function download(blob, filename) {
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = filename
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+}
+
+// ↓ 清晰度语义档，与 src/core/quality.ts QUALITY_DPI 单一真相源保持一致（SDK 未作为值导出，此处局部映射）
+const QUALITY_TO_DPI = { low: 96, medium: 192, high: 288 }
+
+async function doExport(format) {
+  const req = buildRequest()
+  // 默认 high（288dpi，与 export-engine/index.ts L75 fallback=3 / export-pdf.ts L135 fallback=3 对齐）
+  const quality = el.qualityExport.value || 'high'
+  const h = createHeadless()
+  try {
+    const t0 = performance.now()
+    const fn = { pdf: 'exportPdf', jpg: 'exportJpg', svg: 'exportSvg' }[format]
+
+    // 走 HeadlessExportOptions.quality（接口已声明，见 src/core/headless/createHeadless.ts L57）；
+    // 不传 scale，避免 export-engine L75「scale 优先」覆盖 quality（现实现 scale ?? qualityToScale(q) ?? 3）
+    const opts = {
+      quality,
+      filename: `openprint-${format}-${Date.now()}`,
+    }
+    const out = await h[fn](req, opts)
+
+    const ms = Math.round(performance.now() - t0)
+    const total = out.blobs.reduce((s, b) => s + b.size, 0)
+    const mb = total / 1024 / 1024
+    out.blobs.forEach((b, i) => download(b, out.filenames[i]))
+
+    // SVG 为矢量，清晰度参数不生效（export-engine/index.ts L89-L93 不消费 scale/quality），显式提示
+    const isVector = format === 'svg'
+    const tag = isVector
+      ? `SVG 矢量（清晰度不生效 · 任意缩放锐利）`
+      : `${quality}（${QUALITY_TO_DPI[quality]} dpi）`
+    log(
+      `导出 ${format.toUpperCase()}：${out.blobs.length} 个文件 / ` +
+      `${mb >= 1 ? mb.toFixed(2) + ' MB' : (total / 1024).toFixed(1) + ' KB'} / ${ms} ms（${tag}）`,
+      'ok',
+    )
+    if (!isVector && mb > 5) log(`⚠ 产物偏大：位图底图为 PNG 无损，high 档 A4 可达数十 MB，可降为 medium`, 'warn')
+    window.__op.lastExport = out
+    dumpChunks(`导出 ${format.toUpperCase()} 后`)
+  } finally {
+    h.dispose()
+  }
+}
+
+/* ------------------------------- 打印 ------------------------------- */
+/**
+ * 打印态预览：直接渲染「将要推送给客户端的那份 HTML 载荷」（screen:false + 字体内联）。
+ * 这是所见即所得的基准 —— 客户端 QWebEngine printToPdf 渲染的就是同一份字节流，
+ * 预览 = 打印，不再有"设计器一个样、打印另一个样"。
+ */
+async function doPrintPreview() {
+  const req = buildRequest()
+  const embed = el.embedFonts.checked
+  log(`构建打印态 HTML（与推送载荷完全一致，内联字体=${embed}）…`, 'dim')
+  const payload = await buildPrintPayload(req, { mode: 'html', embedFonts: embed })
+  el.preview.srcdoc = payload.content
+  log(`打印态预览已更新：${payload.pages} 页 / ${(payload.bytes / 1024).toFixed(1)} KB（此 HTML 即 POST /print 的 content）`, 'ok')
+}
+
+async function doBrowserPrint() {
+  const h = createHeadless()
+  try {
+    await h.print(buildRequest())
+    log('已唤起浏览器打印对话框', 'ok')
+  } finally {
+    h.dispose()
+  }
+}
+
+async function probePrinter() {
+  const baseUrl = el.printerUrl.value.trim() || DEFAULT_PRINTER_BASE_URL
+  try {
+    const health = await checkHealth(baseUrl)
+    if (!health?.ok) throw new Error(`客户端返回 ok=false（${JSON.stringify(health)}）`)
+    const list = await listPrinters(baseUrl)
+
+    const printers = list ?? []
+    el.printer.innerHTML = printers.length
+      ? printers.map((p) => `<option value="${p.name}">${p.name}${p.defaultDpi ? ` · ${p.defaultDpi}dpi` : ''}</option>`).join('')
+      : '<option value="">（客户端无打印机）</option>'
+    log(`打印客户端在线（${baseUrl}）：${printers.length} 台打印机`, 'ok')
+    printers.forEach((p) => log(`  · ${p.name}（${p.state ?? '未知状态'}，默认 ${p.defaultDpi ?? '?'}dpi）`, 'dim'))
+  } catch (e) {
+    el.printer.innerHTML = '<option value="">— 未连接 —</option>'
+    log(`打印客户端不可达（${baseUrl}）：${e.message}`, 'warn')
+    log('→ 需先启动 C++ 打印客户端；局域网打印把地址改成 http://IP:18888', 'dim')
+  }
+}
+
+async function doSilentPrint() {
+  const req = buildRequest()
+  const baseUrl = el.printerUrl.value.trim() || DEFAULT_PRINTER_BASE_URL
+  const copies = Math.max(1, Number(el.copies.value) || 1)
+  // '' = 自适应（不传 quality → payload pdf 模式用 defaultDpi/300dpi，html 模式忽略）
+  const qualityPref = el.qualityPrint.value || ''
+  const mode = el.payloadMode.value
+  const embedFonts = el.embedFonts.checked
+
+  log(`提交打印（${baseUrl} · ${mode} · 内联字体=${embedFonts}）…`, 'dim')
+
+  try {
+    // BuildPrintPayloadOptions 接口已声明 quality（见 src/core/print-client/payload.ts L95）：
+    //   pdf 模式：quality → QUALITY_DPI[q] → dpi → 栅格化 scale；html/esc/tsc/zpl 模式下安全忽略
+    // 同时补上 pdf 专用的 imageType（与设计器一致，默认 png 无损）
+    const payload = await buildPrintPayload(req, {
+      mode,
+      embedFonts,
+      ...(qualityPref ? { quality: qualityPref } : {}),
+      ...(mode === 'pdf' ? { imageType: 'png' } : {}),
+    })
+
+    log(`载荷已构建：${(payload.bytes / 1024).toFixed(1)} KB，${payload.pages} 页 · ${payload.format.toUpperCase()} · ${payload.width}×${payload.height}mm`, 'dim')
+
+    // PrintJobRequest（严格按 src/core/print-client/types.ts L92-L129）：
+    //   - format/encoding 直接取自 payload（避免 esc/tsc/zpl 被错误写成 'html'，encoding 不再缺失）
+    //   - pages/width/height 供 Qt 客户端设置纸张（缺了会落默认 A4 → 内容拉伸变形）
+    //   - orientation：跟随模板实际宽高（横/纵向），与打印弹窗 resolvePrintOrientation 口径一致
+    //   - 移除接口中不存在的字段：mode、quality
+    const orientation = payload.width > payload.height ? 'landscape' : 'portrait'
+    const jobDpi = (mode === 'pdf' && qualityPref)
+      ? QUALITY_TO_DPI[qualityPref] ?? undefined
+      : undefined
+
+    const res = await submitPrintJob(
+      {
+        jobId: `print-${Date.now()}`,
+        taskName: 'OpenPrint 静默打印任务',
+        printer: el.printer.value || '',
+        format: payload.format,
+        encoding: payload.encoding,
+        content: payload.content,
+        pages: payload.pages,
+        width: payload.width,
+        height: payload.height,
+        unit: 'mm',
+        copies,
+        orientation,
+        duplex: false,
+        color: true,
+        ...(jobDpi ? { dpi: jobDpi } : {}),
+      },
+      baseUrl,
+      30000,
+      (pct) => {
+        if (pct % 25 === 0) log(`  进度 ${pct}%`, 'dim')
+      }
+    )
+
+    const qTag = mode === 'pdf'
+      ? `清晰度=${qualityPref ? `${qualityPref}(${jobDpi}dpi)` : '自适应（打印机 defaultDpi）'}`
+      : mode === 'html'
+        ? '矢量 HTML · 清晰度与 DPI 无关'
+        : `指令模式 ${mode.toUpperCase()} · Web 端零渲染`
+    log(`✅ 打印任务已提交：${res?.jobId}（${copies} 份 · ${payload.format.toUpperCase()} · ${orientation} · ${qTag}）`, 'ok')
+    dumpChunks('静默打印后')
+  } catch (e) {
+    logErr(e)
+  }
+}
+/* ------------------------------- 绑定 ------------------------------- */
+$('btnRender').onclick = () => doRender().catch(logErr)
+$('btnPdf').onclick = () => doExport('pdf').catch(logErr)
+$('btnJpg').onclick = () => doExport('jpg').catch(logErr)
+$('btnSvg').onclick = () => doExport('svg').catch(logErr)
+$('btnPrint').onclick = () => doBrowserPrint().catch(logErr)
+$('btnPrintPreview').onclick = () => doPrintPreview().catch(logErr)
+$('btnProbe').onclick = () => probePrinter().catch(logErr)
+$('btnSilent').onclick = () => doSilentPrint().catch(logErr)
+$('btnReloadTpl').onclick = () => {
+  builtinTemplate = null
+  log('已清空模板缓存，下次渲染将重新拉取', 'dim')
+}
+$('btnClearLog').onclick = () => { el.log.innerHTML = '' }
+el.tplSource.onchange = () => {
+  el.template.style.display = el.tplSource.value === 'paste' ? 'block' : 'none'
+}
+
+/* ---------------------------- 控制台调试钩子 ---------------------------- */
+/**
+ * 便于在浏览器控制台直接调 SDK 做验证，不用依赖按钮：
+ *   const out = await __op.exportPdf()          // 拿导出结果（含 blobs）
+ *   await __op.head()                            // 读 PDF 文件头，确认是合法 PDF
+ */
+window.__op = {
+  render,
+  createHeadless,
+  getRequest: () => buildRequest(),
+  async exportPdf(scale = Number($('scale').value) || 2) {
+    const h = createHeadless()
+    try {
+      const out = await h.exportPdf(buildRequest(), { scale })
+      window.__op.lastExport = out
+      return out
+    } finally {
+      h.dispose()
+    }
+  },
+  /** 读最近一次导出产物的前 5 字节，确认真的是 PDF / JPEG / SVG */
+  async head(bytes = 5) {
+    const out = window.__op.lastExport
+    if (!out?.blobs?.length) return '尚无导出产物'
+    const buf = new Uint8Array(await out.blobs[0].slice(0, bytes).arrayBuffer())
+    return `${String.fromCharCode(...buf)} …（共 ${out.blobs[0].size} 字节，type=${out.blobs[0].type}）`
+  },
+}
+
+/* ------------------------------- 启动 ------------------------------- */
+async function boot() {
+  try {
+    const res = await fetch(DEFAULT_DATA_URL)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    el.data.value = JSON.stringify(data, null, 2)
+    log('已载入示例数据 demo-data.json', 'ok')
+  } catch (e) {
+    // file:// 直开时 fetch 会被 CORS 拦；此时保留空数据由用户手填，不阻塞主流程
+    log(`示例数据载入失败（${e.message}），可手动粘贴 JSON`, 'warn')
+  }
+
+  el.ready.textContent = 'SDK 已就绪'
+  el.ready.style.color = 'var(--ok)'
+  log('SDK 加载完成（ESM，来自 ../dist-sdk/sdk.js）', 'ok')
+  log('提示：本页需经 HTTP 访问（PDF 字体走 /fonts/ 同源加载）', 'dim')
+
+  // 首屏自动渲染一次，省得手动点
+  await doRender()
+  probePrinter()
+}
+
+boot().catch(logErr)
+</script>
+
+</body>
+</html>

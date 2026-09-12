@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>核心渲染引擎体检报告 · OpenPrint</title>
+<style>
+  :root { --bg:#f7f8fa; --card:#fff; --line:#e5e7eb; --text:#1f2328; --sub:#5b6472;
+          --ok:#1a7f37; --okbg:#eaf6ec; --warn:#9a6700; --warnbg:#fff8e5; --info:#0b62a4; --infobg:#eaf3fa; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:32px 20px; background:var(--bg); color:var(--text);
+         font:14px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  .meta { color:var(--sub); font-size:13px; margin-bottom:24px; }
+  h2 { font-size:17px; margin:32px 0 12px; padding-left:10px; border-left:3px solid var(--info); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin-bottom:12px; }
+  .card.fixed { border-left:4px solid var(--ok); }
+  .card.todo { border-left:4px solid var(--warn); }
+  .title { font-weight:600; font-size:15px; margin-bottom:4px; }
+  .tag { display:inline-block; font-size:12px; padding:1px 8px; border-radius:10px; margin-left:8px; vertical-align:2px; }
+  .t-ok { background:var(--okbg); color:var(--ok); }
+  .t-warn { background:var(--warnbg); color:var(--warn); }
+  .t-info { background:var(--infobg); color:var(--info); }
+  code { background:#f2f3f5; padding:1px 5px; border-radius:4px; font-size:12.5px; }
+  .kv { color:var(--sub); font-size:13px; margin-top:6px; }
+  .kv b { color:var(--text); font-weight:600; }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:top; }
+  th { background:#f2f4f7; font-weight:600; }
+  tr:last-child td { border-bottom:none; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:16px 0 8px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .stat .n { font-size:22px; font-weight:600; }
+  .stat .l { color:var(--sub); font-size:12.5px; }
+  ul { margin:8px 0 0 18px; padding:0; }
+  li { margin:4px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>核心渲染引擎体检报告</h1>
+  <div class="meta">OpenPrint 设计器 · 设计画布引擎（CanvasDesigner / SmartGuides）+ 排版导出管线（layout-engine / export-engine） · 2026-09-10</div>
+
+  <div class="grid">
+    <div class="stat"><div class="n">11</div><div class="l">定位到的改进点</div></div>
+    <div class="stat"><div class="n" style="color:var(--ok)">5</div><div class="l">本轮已修复并回归</div></div>
+    <div class="stat"><div class="n" style="color:var(--warn)">6</div><div class="l">待办（需基线后动）</div></div>
+  </div>
+
+  <h2>一、本轮已修复（全部通过双端回归）</h2>
+
+  <div class="card fixed">
+    <div class="title">1. 非 A4 页面的边距吸附线错位<span class="tag t-ok">正确性缺陷</span></div>
+    <div class="kv">证据：<code>SmartGuides.ts:199-202</code> 右/下边距内边界写死 <code>(210 - margin.right)</code> / <code>(297 - margin.bottom)</code>，而页面宽高取自 <code>getPage()</code>。</div>
+    <div class="kv">影响：100×150mm 标签、241×140mm 快递单等非 A4 页面，右边距吸附线跑到 202mm 处（页面外），拖拽吸附到错误位置。</div>
+    <div class="kv">改法：抽纯函数 <code>guides/margin-snap.ts::computeMarginSnapLines(pageW, pageH, margin)</code>，从页面尺寸推导；新增 4 条单测（A4 / 非 A4 / 零边距 / 中心）。</div>
+  </div>
+
+  <div class="card fixed">
+    <div class="title">2. 字体 data-URI 每页重复加载与 base64<span class="tag t-ok">导出性能</span></div>
+    <div class="kv">证据：<code>export-engine/fonts.ts</code> 的 <code>fetchFontDataUri</code> 无任何缓存；<code>export-pdf.ts:116</code> 每页调用 <code>embedFontsInSvg(svg, PDF_FONTS)</code>（思源宋体 10MB+）。</div>
+    <div class="kv">影响：N 页导出 = N 次网络读取 + N 次 base64（约 13MB/页）+ N 份副本写进 SVG，20 页可达数百 MB 瞬时占用。</div>
+    <div class="kv">改法：模块级双层缓存（按 src 缓存 data-URI Promise、按内容签名缓存 def→URI）；失败不留坏缓存，可重试。新增 5 条单测验证「3 页只 fetch 1 次」。</div>
+  </div>
+
+  <div class="card fixed">
+    <div class="title">3. 文本度量缓存「满 5000 全清」<span class="tag t-ok">大表分页</span></div>
+    <div class="kv">证据：<code>layout-engine/measure.ts</code> 两处 <code>if (this.cache.size > 5000) this.cache.clear()</code>。</div>
+    <div class="kv">影响：500 行 × 20 列 = 1 万唯一 key，越过阈值整体清空 → 命中率归零，每次重排 1 万次 <code>getBoundingClientRect()</code> 强制同步布局。</div>
+    <div class="kv">改法：抽出 <code>measure-cache.ts</code>——命中刷新 LRU、上限 20000、超限只淘汰最旧 25%。<b>模拟实测：1 万 key 两轮访问命中率 0% → 50%，第二轮重排回流次数 1 万 → 0。</b></div>
+  </div>
+
+  <div class="card fixed">
+    <div class="title">4. 临时 window 监听未纳入 dispose<span class="tag t-ok">内存泄漏</span></div>
+    <div class="kv">证据：<code>CanvasDesigner.ts</code> 长按取消（touchmove/touchend）与空格平移（mousemove/mouseup）只在自身回调里移除。</div>
+    <div class="kv">影响：手势中途 dispose（切模板 / 组件卸载）→ 监听残留并持有 canvas 闭包。</div>
+    <div class="kv">改法：新增 <code>addTempListener()</code> 注册器，注册即进 cleanup 链，off 幂等。</div>
+  </div>
+
+  <div class="card fixed">
+    <div class="title">5. ResizeObserver 重复重绘 + viewport 双发<span class="tag t-ok">渲染抖动</span></div>
+    <div class="kv">证据：<code>CanvasDesigner.ts:142-151</code> 回调里 <code>fitToContainer()</code>（内部已 requestRenderAll + emitViewport）之后又重复一次。</div>
+    <div class="kv">影响：每次容器尺寸变化双发 viewport，React / Vue 两端各多一轮状态栏与面板重渲染。</div>
+    <div class="kv">改法：适配成功时不再重复；仅用户已手动缩放（跳过 fit）的分支保留重绘与广播。</div>
+  </div>
+
+  <h2>二、已定位、建议下一步再动（改动会影响像素结果，需先建基线）</h2>
+
+  <table>
+    <tr><th style="width:22%">问题</th><th style="width:26%">证据</th><th>影响与建议</th></tr>
+    <tr>
+      <td>每次增删控件都全量 <code>rebuildPages</code></td>
+      <td><code>CanvasDesigner.ts:627/773</code> → <code>refreshPages()</code>；逐个 <code>bringObjectToFront</code> 为 O(N·M)</td>
+      <td>loadTemplate 对 N 个控件逐个 add → 近似 O(N²)；属性面板拖滑块每个中间值重建一次。<b>建议</b>：beginBatch/endBatch 批处理 + 页数未变时差量改 top/visible。</td>
+    </tr>
+    <tr>
+      <td>表格 overlay 每帧重建 HTML</td>
+      <td><code>TableViewLayer.vue:67-100</code> 依赖 <code>canvasTick</code>；moving/scaling 每事件都 bump</td>
+      <td>拖任意控件都会重跑全部表格的 buildDesignGrid + 逐格样式。<b>建议</b>：内容 HTML 与几何 transform 分离 + memo，canvasTick 用 rAF 节流。</td>
+    </tr>
+    <tr>
+      <td>逐格强制同步布局</td>
+      <td><code>measure.ts:95-134</code> 每格写 6 个 style 再读 rect</td>
+      <td>500×20 约 1 万次回流。<b>建议</b>：单行快速判定（估算宽度足够则跳过 DOM 测量）、按列分组批量测量。</td>
+    </tr>
+    <tr>
+      <td>CSS 每页重算 + KaTeX 无条件注入</td>
+      <td><code>rasterize.ts:294</code>；<code>css-generator.ts:215</code> <code>hasMath ?? true</code>（约 24KB）</td>
+      <td><b>建议</b>：generateCss 按 metrics+screen+hasMath 记忆化，hasMath 显式传入。零像素风险，可优先做。</td>
+    </tr>
+    <tr>
+      <td>行高算法双实现</td>
+      <td><code>table-cells.ts:229</code>（设计期） vs <code>table-engine.ts:367</code>（运行期）</td>
+      <td>常量内联复制，改一处即漂；会导致画布包围盒与打印结果分叉。<b>建议</b>：常量收口到 types.ts，设计期直接复用运行期算法。</td>
+    </tr>
+    <tr>
+      <td>导出并发两极</td>
+      <td>PDF 严格串行 <code>export-pdf.ts:141</code>；JPG 无界 <code>Promise.all</code></td>
+      <td><b>建议</b>：统一并发池（2-3），兼顾速度与 OOM 风险。</td>
+    </tr>
+  </table>
+
+  <h2>三、建议的下一步顺序</h2>
+  <div class="card">
+    <ul>
+      <li><b>先建像素基线</b>：把现有模板的 renderHtml 产物 + 每页行高数组存为金标准（<code>renderer-html.spec.ts</code> 可作载体），任何排版改动先跑 diff。这是动排版引擎的前提。</li>
+      <li><b>再做零风险项</b>：CSS 记忆化 + 导出并发池（不改变任何输出文本，纯去重复计算）。</li>
+      <li><b>最后动结构项</b>：rebuildPages 批处理、表格 overlay memo、测量批量化——三者都要先加耗时埋点做实机基准（500×20 表）确认收益排序。</li>
+    </ul>
+  </div>
+
+  <h2>四、验证结果</h2>
+  <div class="card">
+    <ul>
+      <li>Vue 源项目：<b>599/599</b> 通过（+13 新增用例）</li>
+      <li>React 重写版：<b>178/178</b> 通过（共享引擎改动，双端同步受益）</li>
+      <li>类型检查：我修改的文件零错误（仓库既有的 contracts 相关报错与本轮无关，未改动）</li>
+      <li>构建：React <code>vite build</code> 通过</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>

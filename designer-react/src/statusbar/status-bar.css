@@ -1,0 +1,66 @@
+/* StatusBar —— 底部状态栏 */
+.status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 26px;
+  padding: 0 12px;
+  flex-shrink: 0;
+  font-size: 12px;
+  background: var(--brand-surface, #ffffff);
+  border-top: 1px solid var(--brand-border, #e5e7eb);
+  color: var(--brand-text-secondary, #6b7280);
+  user-select: none;
+}
+
+.status-left,
+.status-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.status-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--brand-text, #1f2329);
+}
+
+.status-dirty {
+  color: #faad14;
+  font-size: 10px;
+  line-height: 1;
+  margin-left: -6px;
+}
+
+.status-item {
+  white-space: nowrap;
+}
+
+.status-toggle {
+  border: none;
+  background: transparent;
+  padding: 0 6px;
+  height: 20px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--brand-text-secondary, #6b7280);
+}
+
+.status-toggle:hover {
+  background: rgb(0 0 0 / 6%);
+}
+
+.status-toggle.is-on {
+  color: var(--brand-primary, #1677ff);
+}
+
+.status-zoom {
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

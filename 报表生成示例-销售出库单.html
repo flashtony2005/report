@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OpenPrint</title>
+<style>/* ============ OpenPrint 渲染样式（自动生成，勿手改） ============ */
+:root {
+  --op-page-w: 210mm;
+  --op-page-h: 297mm;
+  --op-scale: 1;
+  --op-table-border: #333333;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #ffffff;
+  /* 让底色/斑马纹在打印时不被浏览器"省墨"策略抹掉 */
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.op-doc {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  
+}
+
+/* 缩放外壳：transform 不占布局空间，靠外壳撑出滚动区域 */
+.op-page-wrap {
+  width: calc(var(--op-page-w) * var(--op-scale));
+  height: calc(var(--op-page-h) * var(--op-scale));
+  flex: none;
+}
+
+.op-page {
+  position: relative;
+  width: var(--op-page-w);
+  height: var(--op-page-h);
+  overflow: hidden;
+  background: #ffffff;
+  transform: scale(var(--op-scale));
+  transform-origin: top left;
+  
+}
+
+/* 水印装饰层：绝对铺满页面、不拦截事件、置于内容之下 */
+.op-watermark {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+.op-watermark.op-wm-single {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.op-wm-single > span {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+}
+
+/* 整页相对坐标：正文控件直接相对物理页 0,0 定位；边距仅作可视化参考线，不参与渲染偏移 */
+.op-content {
+  position: absolute;
+  left: 0mm;
+  top: 0mm;
+  width: 210mm;
+  /* 正文区 = 整页：控件可落在任意位置（含原边距带），所见即所得 */
+  height: 297mm;
+}
+
+.op-section {
+  position: absolute;
+  width: 210mm;
+  /* 不裁剪：边距只作设计辅助参考线，渲染时边距内/外内容均可见（所见即所得） */
+  overflow: visible;
+}
+/* 页眉/页脚：直接挂在 .op-page 上，整页相对（左右贴物理页边） */
+.op-header { top: 0mm; left: 0mm; height: 24mm; }
+.op-footer { bottom: 0mm; left: 0mm; height: 12mm; }
+/* 正文：填满 .op-content（整页），不再叠加边距偏移 */
+.op-body { top: 0mm; left: 0mm; width: 100%; height: 100%; }
+
+/* -------------------------------- 控件 -------------------------------- */
+
+.op-node {
+  position: absolute;
+  transform-origin: left top;
+}
+
+/* 标签网格参考线：与 .op-node 同一坐标原点（.op-content 左上角），
+   若无 position:absolute 会按文档流竖排成一列，造成「网格线挤成一列」的视觉 bug */
+.op-gridlines {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.op-gridline {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.op-text {
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  font-family: "Source Han Sans CN", "PingFang SC", sans-serif;
+  font-size: 12pt;
+  line-height: 1.16;
+  color: #000000;
+}
+
+.op-richtext {
+  overflow: hidden;
+  font-family: "Source Han Sans CN", "PingFang SC", sans-serif;
+  font-size: 12pt;
+  line-height: 1.5;
+  color: #000000;
+}
+.op-richtext > *:first-child { margin-top: 0; }
+.op-richtext > *:last-child { margin-bottom: 0; }
+.op-richtext img { max-width: 100%; }
+
+.op-image { display: block; }
+.op-image > img { display: block; width: 100%; height: 100%; }
+
+/* 条码 / 二维码：SVG 矢量填满控件框（宽高独立，所见即所得）。
+   条码的 preserveAspectRatio="none" 由 data-binder 注入 SVG 自身（自然尺寸≈控件尺寸，拉伸量≈1）；
+   二维码保留默认 contain（100%×100% meet）居中。 */
+.op-code > svg { display: block; width: 100%; height: 100%; }
+
+.op-line > span {
+  position: absolute;
+  display: block;
+}
+
+/* 解析失败占位：必须看得见，避免用户拿到"少了一块"的单据而不自知 */
+.op-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed #c0c4cc;
+  color: #a8abb2;
+  font-family: "Source Han Sans CN", "PingFang SC", sans-serif;
+  font-size: 8pt;
+  overflow: hidden;
+}
+
+/* -------------------------------- 表格 -------------------------------- */
+
+.op-table {
+  /* 用 separate + border-spacing:0 + box-sizing:border-box，让外框落在表格盒"内"侧：
+     collapse 模式下外框横跨边缘，被 overlay 的 overflow:hidden 切掉右/下边，
+     表现为"需拖一下才看得到边框"；separate 方案使四边始终完整可见（设计/打印一致）。 */
+  border-collapse: separate;
+  border-spacing: 0;
+  box-sizing: border-box;
+  table-layout: fixed;
+  /* 字体三件套必须与 DomMeasurer 完全一致，否则分页高度会失真 */
+  font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", sans-serif;
+  font-size: 9pt;
+  line-height: 1.35;
+  color: #1f2329;
+}
+
+.op-table td,
+.op-table th {
+  padding: 1.2mm 2mm;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  font-weight: normal;
+  text-align: left;
+  vertical-align: middle;
+}
+
+/* 垂直对齐：vertical-align 不可继承，只能按表加类下发到每个 td */
+.op-table.va-top td { vertical-align: top; }
+.op-table.va-middle td { vertical-align: middle; }
+.op-table.va-bottom td { vertical-align: bottom; }
+
+.op-table tr.is-header td { font-weight: bold; }
+.op-table tr.is-group td { background: #F5F7FA; font-weight: bold; }
+.op-table tr.is-subtotal td,
+.op-table tr.is-summary td { font-weight: bold; }
+.op-table tr.is-striped td { background: #DCE6F4; }
+/* 静态行（布局网格正文 / 数据表备注尾行）：默认无强调样式，
+   单元格视觉以内联样式为准（与设计期 overlay 同一套 resolveCellStyleFor 取值） */
+.op-table tr.is-static td { /* 占位：保持类名与设计期对齐，避免样式遗漏 */ }
+
+/* ---------- 表格样式预设（Excel 式快速切换；class 由渲染端挂在 table 元素上） ---------- */
+/* 默认（none）：仅表头加粗，无任何背景色（含标题行）。无需规则，class 仅作占位。 */
+
+/* 表头高亮：表头浅灰底 */
+.op-table.ts-header tr.is-header td { background: #F5F7FA; }
+
+/* 斑马纹（单双变色条纹，浅蓝交替，对比更明显） */
+.op-table.ts-zebra tr.is-header td { background: #F5F7FA; }
+.op-table.ts-zebra tbody tr:not(.is-header):nth-child(even) td { background: #DCE6F4; }
+
+/* 斑马纹·蓝（交替行更深蓝） */
+.op-table.ts-zebra-blue tr.is-header td { background: #F5F7FA; }
+.op-table.ts-zebra-blue tbody tr:not(.is-header):nth-child(even) td { background: #C2D4EE; }
+
+/* 斑马纹·灰（中性灰交替） */
+.op-table.ts-zebra-gray tr.is-header td { background: #F5F7FA; }
+.op-table.ts-zebra-gray tbody tr:not(.is-header):nth-child(even) td { background: #E4E7EB; }
+
+/* 绿色表头（绿底白字） */
+.op-table.ts-header-green tr.is-header td { background: #1F9D57; color: #ffffff; }
+
+/* 隔列着色（奇偶列交替底） */
+.op-table.ts-banded-cols tr > *:nth-child(even) { background: #EEF2F8; }
+
+/* 三段式：表头高亮 + 合计 / 总计行强调底（设计期聚合尾行已对齐 is-subtotal/is-summary 类） */
+.op-table.ts-three-segment tr.is-header td { background: #F5F7FA; }
+.op-table.ts-three-segment tr.is-subtotal td,
+.op-table.ts-three-segment tr.is-summary td { background: #EBF2FF; }
+
+/* 深底表头：深蓝底白字 */
+.op-table.ts-header-dark tr.is-header td { background: #2F54EB; color: #ffffff; }
+
+/* 课表：全网格 + 表头淡底高亮（角标斜线由单元格 diagonal 控制） */
+.op-table.ts-timetable tr.is-header td { background: #F5F7FA; }
+
+/* 边框模式：每格画上/左边框，末行补下、末列补右 → 外框落在盒内、不被裁切 */
+.op-table.b-all td { border-top: 0.2mm solid var(--op-table-border); border-left: 0.2mm solid var(--op-table-border); }
+.op-table.b-all tr:last-child td { border-bottom: 0.2mm solid var(--op-table-border); }
+.op-table.b-all td:last-child { border-right: 0.2mm solid var(--op-table-border); }
+.op-table.b-horizontal td { border-top: 0.2mm solid var(--op-table-border); }
+.op-table.b-horizontal tr:last-child td { border-bottom: 0.2mm solid var(--op-table-border); }
+.op-table.b-outline { border: 0.2mm solid var(--op-table-border); }
+.op-table.b-none td { border: 0; }
+/* 三线表：顶线 + 表头底线 + 底线，无内部横线、无竖线（建模报告 / 财务报表常用） */
+.op-table.b-three-line { border-top: 0.2mm solid var(--op-table-border); border-bottom: 0.2mm solid var(--op-table-border); }
+.op-table.b-three-line tr.is-header:last-child td { border-bottom: 0.2mm solid var(--op-table-border); }
+
+
+/* ------------------------------ 数学公式（KaTeX） ------------------------------ */
+/* 样式规则（不含 @font-face）：预览 + 导出栅格化共用，使公式布局正确。
+   字体由预览（KATEX_FONT_CSS 同源加载）/ 导出（embedFontsInSvg 转 data-URI）分别注入。
+   按需注入：模板里没有公式控件时整段省略（约 24 kB），避免为用不到的功能付固定成本。 */
+
+
+/* ------------------------------ 打印覆盖 ------------------------------ */
+
+@page {
+  size: 210mm 297mm;
+  margin: 0;
+}
+
+@media print {
+  html, body { background: #ffffff; }
+  .op-doc { gap: 0; padding: 0; }
+  .op-page-wrap { width: auto; height: auto; }
+  .op-page {
+    transform: none;
+    box-shadow: none;
+    break-after: page;
+    page-break-after: always;
+  }
+  /* 末页不再换页，否则会多打一张空白纸 */
+  .op-page-wrap:last-child .op-page {
+    break-after: auto;
+    page-break-after: auto;
+  }
+}</style>
+</head>
+<body>
+<div class="op-doc"><div class="op-page-wrap"><div class="op-page" data-page="1"><div class="op-section op-header"><div class="op-node op-text" data-id="hd-company" style="left:12mm;top:0mm;width:100mm;height:6mm;font-size:10pt;color:#333333;font-family:&quot;Source Han Sans CN&quot;, &quot;PingFang SC&quot;, sans-serif;font-weight:bold;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">深圳某某科技有限公司</div><div class="op-node op-text" data-id="hd-title" style="left:12mm;top:7mm;width:186mm;height:11mm;font-size:18pt;color:#000000;font-family:&quot;Source Han Sans CN&quot;, &quot;PingFang SC&quot;, sans-serif;font-weight:bold;font-style:normal;text-decoration:none;text-align:center;line-height:1.16">销售出库单</div><div class="op-node op-code" data-id="hd-barcode" style="left:152mm;top:0mm;width:46mm;height:12mm"><svg class="op-barcode-svg" preserveAspectRatio="none" width="100%" height="100%" viewBox="0 0 174 42" xmlns="http://www.w3.org/2000/svg">
+<path stroke="#000000" stroke-width="2" d="M1 42L1 0M12 42L12 0M30 42L30 0M36 42L36 0M55 42L55 0M73 42L73 0M76 42L76 0M87 42L87 0M111 42L111 0M130 42L130 0M133 42L133 0M137 42L137 0M145 42L145 0M162 42L162 0M173 42L173 0" />
+<path stroke="#000000" stroke-width="1" d="M3.50 42L3.50 0M6.50 42L6.50 0M18.50 42L18.50 0M22.50 42L22.50 0M33.50 42L33.50 0M43.50 42L43.50 0M58.50 42L58.50 0M70.50 42L70.50 0M80.50 42L80.50 0M83.50 42L83.50 0M91.50 42L91.50 0M94.50 42L94.50 0M97.50 42L97.50 0M108.50 42L108.50 0M119.50 42L119.50 0M140.50 42L140.50 0M149.50 42L149.50 0M151.50 42L151.50 0M170.50 42L170.50 0" />
+<path stroke="#000000" stroke-width="3" d="M15.50 42L15.50 0M27.50 42L27.50 0M40.50 42L40.50 0M46.50 42L46.50 0M62.50 42L62.50 0M66.50 42L66.50 0M105.50 42L105.50 0M115.50 42L115.50 0M122.50 42L122.50 0M154.50 42L154.50 0M168.50 42L168.50 0" />
+<path stroke="#000000" stroke-width="4" d="M51 42L51 0M101 42L101 0M126 42L126 0M158 42L158 0" />
+</svg>
+</div><div class="op-node op-line" data-id="hd-rule" style="left:12mm;top:21mm;width:186mm;height:0mm"><span style="left:0;right:0;top:50%;transform:translateY(-50%);border-top:1px solid #333333"></span></div></div><div class="op-content"><div class="op-section op-body"><table class="op-node op-table b-all va-middle ts-none" data-id="bd-table" style="left:12mm;top:35mm;width:186mm"><colgroup><col style="width:14mm"><col style="width:26mm"><col style="width:58mm"><col style="width:34mm"><col style="width:12mm"><col style="width:12mm"><col style="width:14mm"><col style="width:16mm"></colgroup><tbody><tr class="is-header" style="height:6.686mm"><td style="text-align:center;font-weight:bold">序号</td><td style="text-align:center;font-weight:bold">商品编码</td><td style="text-align:center;font-weight:bold">商品名称</td><td style="text-align:center;font-weight:bold">规格型号</td><td style="text-align:center;font-weight:bold">单位</td><td style="text-align:center;font-weight:bold">数量</td><td style="text-align:center;font-weight:bold">单价</td><td style="text-align:center;font-weight:bold">金额</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">1</td><td style="text-align:left">PD-1001</td><td style="text-align:left">无线鼠标</td><td style="text-align:left">2.4G</td><td style="text-align:center">个</td><td style="text-align:right">1</td><td style="text-align:right">45</td><td style="text-align:right">45</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">2</td><td style="text-align:left">PD-1002</td><td style="text-align:left">机械键盘</td><td style="text-align:left">87键</td><td style="text-align:center">个</td><td style="text-align:right">4</td><td style="text-align:right">320</td><td style="text-align:right">1280</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">3</td><td style="text-align:left">PD-1003</td><td style="text-align:left">USB集线器</td><td style="text-align:left">4口</td><td style="text-align:center">个</td><td style="text-align:right">7</td><td style="text-align:right">65</td><td style="text-align:right">455</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">4</td><td style="text-align:left">PD-1004</td><td style="text-align:left">六类网线</td><td style="text-align:left">1.5m</td><td style="text-align:center">个</td><td style="text-align:right">3</td><td style="text-align:right">12</td><td style="text-align:right">36</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">5</td><td style="text-align:left">PD-1005</td><td style="text-align:left">高清摄像头</td><td style="text-align:left">1080P</td><td style="text-align:center">个</td><td style="text-align:right">6</td><td style="text-align:right">180</td><td style="text-align:right">1080</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">6</td><td style="text-align:left">PD-1006</td><td style="text-align:left">打印纸</td><td style="text-align:left">A4 70g</td><td style="text-align:center">个</td><td style="text-align:right">2</td><td style="text-align:right">22</td><td style="text-align:right">44</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">7</td><td style="text-align:left">PD-1007</td><td style="text-align:left">碳粉盒</td><td style="text-align:left">黑色</td><td style="text-align:center">个</td><td style="text-align:right">5</td><td style="text-align:right">260</td><td style="text-align:right">1300</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">8</td><td style="text-align:left">PD-1008</td><td style="text-align:left">标签纸</td><td style="text-align:left">100×150</td><td style="text-align:center">个</td><td style="text-align:right">1</td><td style="text-align:right">38</td><td style="text-align:right">38</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">9</td><td style="text-align:left">PD-1009</td><td style="text-align:left">条码机色带</td><td style="text-align:left">110mm</td><td style="text-align:center">个</td><td style="text-align:right">4</td><td style="text-align:right">55</td><td style="text-align:right">220</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">10</td><td style="text-align:left">PD-1010</td><td style="text-align:left">收纳盒</td><td style="text-align:left">大号</td><td style="text-align:center">个</td><td style="text-align:right">7</td><td style="text-align:right">28</td><td style="text-align:right">196</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">11</td><td style="text-align:left">PD-1011</td><td style="text-align:left">无线鼠标</td><td style="text-align:left">2.4G</td><td style="text-align:center">个</td><td style="text-align:right">3</td><td style="text-align:right">45</td><td style="text-align:right">135</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">12</td><td style="text-align:left">PD-1012</td><td style="text-align:left">机械键盘</td><td style="text-align:left">87键</td><td style="text-align:center">个</td><td style="text-align:right">6</td><td style="text-align:right">320</td><td style="text-align:right">1920</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">13</td><td style="text-align:left">PD-1013</td><td style="text-align:left">USB集线器</td><td style="text-align:left">4口</td><td style="text-align:center">个</td><td style="text-align:right">2</td><td style="text-align:right">65</td><td style="text-align:right">130</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">14</td><td style="text-align:left">PD-1014</td><td style="text-align:left">六类网线</td><td style="text-align:left">1.5m</td><td style="text-align:center">个</td><td style="text-align:right">5</td><td style="text-align:right">12</td><td style="text-align:right">60</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">15</td><td style="text-align:left">PD-1015</td><td style="text-align:left">高清摄像头</td><td style="text-align:left">1080P</td><td style="text-align:center">个</td><td style="text-align:right">1</td><td style="text-align:right">180</td><td style="text-align:right">180</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">16</td><td style="text-align:left">PD-1016</td><td style="text-align:left">打印纸</td><td style="text-align:left">A4 70g</td><td style="text-align:center">个</td><td style="text-align:right">4</td><td style="text-align:right">22</td><td style="text-align:right">88</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">17</td><td style="text-align:left">PD-1017</td><td style="text-align:left">碳粉盒</td><td style="text-align:left">黑色</td><td style="text-align:center">个</td><td style="text-align:right">7</td><td style="text-align:right">260</td><td style="text-align:right">1820</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">18</td><td style="text-align:left">PD-1018</td><td style="text-align:left">标签纸</td><td style="text-align:left">100×150</td><td style="text-align:center">个</td><td style="text-align:right">3</td><td style="text-align:right">38</td><td style="text-align:right">114</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">19</td><td style="text-align:left">PD-1019</td><td style="text-align:left">条码机色带</td><td style="text-align:left">110mm</td><td style="text-align:center">个</td><td style="text-align:right">6</td><td style="text-align:right">55</td><td style="text-align:right">330</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">20</td><td style="text-align:left">PD-1020</td><td style="text-align:left">收纳盒</td><td style="text-align:left">大号</td><td style="text-align:center">个</td><td style="text-align:right">2</td><td style="text-align:right">28</td><td style="text-align:right">56</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">21</td><td style="text-align:left">PD-1021</td><td style="text-align:left">无线鼠标</td><td style="text-align:left">2.4G</td><td style="text-align:center">个</td><td style="text-align:right">5</td><td style="text-align:right">45</td><td style="text-align:right">225</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">22</td><td style="text-align:left">PD-1022</td><td style="text-align:left">机械键盘</td><td style="text-align:left">87键</td><td style="text-align:center">个</td><td style="text-align:right">1</td><td style="text-align:right">320</td><td style="text-align:right">320</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">23</td><td style="text-align:left">PD-1023</td><td style="text-align:left">USB集线器</td><td style="text-align:left">4口</td><td style="text-align:center">个</td><td style="text-align:right">4</td><td style="text-align:right">65</td><td style="text-align:right">260</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">24</td><td style="text-align:left">PD-1024</td><td style="text-align:left">六类网线</td><td style="text-align:left">1.5m</td><td style="text-align:center">个</td><td style="text-align:right">7</td><td style="text-align:right">12</td><td style="text-align:right">84</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">25</td><td style="text-align:left">PD-1025</td><td style="text-align:left">高清摄像头</td><td style="text-align:left">1080P</td><td style="text-align:center">个</td><td style="text-align:right">3</td><td style="text-align:right">180</td><td style="text-align:right">540</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">26</td><td style="text-align:left">PD-1026</td><td style="text-align:left">打印纸</td><td style="text-align:left">A4 70g</td><td style="text-align:center">个</td><td style="text-align:right">6</td><td style="text-align:right">22</td><td style="text-align:right">132</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">27</td><td style="text-align:left">PD-1027</td><td style="text-align:left">碳粉盒</td><td style="text-align:left">黑色</td><td style="text-align:center">个</td><td style="text-align:right">2</td><td style="text-align:right">260</td><td style="text-align:right">520</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">28</td><td style="text-align:left">PD-1028</td><td style="text-align:left">标签纸</td><td style="text-align:left">100×150</td><td style="text-align:center">个</td><td style="text-align:right">5</td><td style="text-align:right">38</td><td style="text-align:right">190</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">29</td><td style="text-align:left">PD-1029</td><td style="text-align:left">条码机色带</td><td style="text-align:left">110mm</td><td style="text-align:center">个</td><td style="text-align:right">1</td><td style="text-align:right">55</td><td style="text-align:right">55</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">30</td><td style="text-align:left">PD-1030</td><td style="text-align:left">收纳盒</td><td style="text-align:left">大号</td><td style="text-align:center">个</td><td style="text-align:right">4</td><td style="text-align:right">28</td><td style="text-align:right">112</td></tr><tr class="is-data" style="height:6.686mm"><td style="text-align:center">31</td><td style="text-align:left">PD-1031</td><td style="text-align:left">无线鼠标</td><td style="text-align:left">2.4G</td><td style="text-align:center">个</td><td style="text-align:right">7</td><td style="text-align:right">45</td><td style="text-align:right">315</td></tr><tr class="is-data is-striped" style="height:6.686mm"><td style="text-align:center">32</td><td style="text-align:left">PD-1032</td><td style="text-align:left">机械键盘</td><td style="text-align:left">87键</td><td style="text-align:center">个</td><td style="text-align:right">3</td><td style="text-align:right">320</td><td style="text-align:right">960</td></tr><tr class="is-summary" style="height:6.686mm"><td style="text-align:left;font-weight:bold">合计</td><td style="text-align:left;font-weight:bold"><br></td><td style="text-align:left;font-weight:bold"><br></td><td style="text-align:left;font-weight:bold"><br></td><td style="text-align:center;font-weight:bold"><br></td><td style="text-align:right;font-weight:bold">127</td><td style="text-align:right;font-weight:bold"><br></td><td style="text-align:right;font-weight:bold">13,240</td></tr></tbody></table><div class="op-node op-text" data-id="bd-no" style="left:12mm;top:12mm;width:62mm;height:6mm;font-size:10pt;color:#000000;font-family:思源黑体;font-weight:normal;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">单号：SO-20260911-0038</div><div class="op-node op-text" data-id="bd-date" style="left:74mm;top:12mm;width:62mm;height:6mm;font-size:10pt;color:#000000;font-family:思源黑体;font-weight:normal;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">日期：2026-09-11</div><div class="op-node op-text" data-id="bd-salesman" style="left:136mm;top:12mm;width:62mm;height:6mm;font-size:10pt;color:#000000;font-family:思源黑体;font-weight:normal;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">业务员：陈伟</div><div class="op-node op-text" data-id="bd-cust" style="left:12mm;top:19mm;width:92mm;height:6mm;font-size:10pt;color:#000000;font-family:思源黑体;font-weight:normal;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">客户：中山市恒达电子有限公司</div><div class="op-node op-text" data-id="bd-contact" style="left:104mm;top:19mm;width:94mm;height:6mm;font-size:10pt;color:#000000;font-family:思源黑体;font-weight:normal;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">联系人：李敏　电话：0760-8888 6666</div><div class="op-node op-text" data-id="bd-addr" style="left:12mm;top:26mm;width:186mm;height:6mm;font-size:10pt;color:#000000;font-family:思源黑体;font-weight:normal;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">收货地址：广东省中山市火炬开发区科技大道 18 号 3 栋 502</div></div></div><div class="op-section op-footer"><div class="op-node op-line" data-id="ft-rule" style="left:12mm;top:1mm;width:186mm;height:0mm"><span style="left:0;right:0;top:50%;transform:translateY(-50%);border-top:0.5px solid #999999"></span></div><div class="op-node op-text" data-id="ft-brand" style="left:12mm;top:3mm;width:90mm;height:6mm;font-size:8pt;color:#888888;font-family:思源黑体;font-weight:normal;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">本单据由 OpenPrint 生成</div><div class="op-node op-text" data-id="ft-page" style="left:108mm;top:3mm;width:90mm;height:6mm;font-size:9pt;color:#555555;font-family:思源黑体;font-weight:normal;font-style:normal;text-decoration:none;text-align:right;line-height:1.16">第 1 页 / 共 2 页</div></div></div></div><div class="op-page-wrap"><div class="op-page" data-page="2"><div class="op-section op-header"><div class="op-node op-text" data-id="hd-company" style="left:12mm;top:0mm;width:100mm;height:6mm;font-size:10pt;color:#333333;font-family:&quot;Source Han Sans CN&quot;, &quot;PingFang SC&quot;, sans-serif;font-weight:bold;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">深圳某某科技有限公司</div><div class="op-node op-text" data-id="hd-title" style="left:12mm;top:7mm;width:186mm;height:11mm;font-size:18pt;color:#000000;font-family:&quot;Source Han Sans CN&quot;, &quot;PingFang SC&quot;, sans-serif;font-weight:bold;font-style:normal;text-decoration:none;text-align:center;line-height:1.16">销售出库单</div><div class="op-node op-code" data-id="hd-barcode" style="left:152mm;top:0mm;width:46mm;height:12mm"><svg class="op-barcode-svg" preserveAspectRatio="none" width="100%" height="100%" viewBox="0 0 174 42" xmlns="http://www.w3.org/2000/svg">
+<path stroke="#000000" stroke-width="2" d="M1 42L1 0M12 42L12 0M30 42L30 0M36 42L36 0M55 42L55 0M73 42L73 0M76 42L76 0M87 42L87 0M111 42L111 0M130 42L130 0M133 42L133 0M137 42L137 0M145 42L145 0M162 42L162 0M173 42L173 0" />
+<path stroke="#000000" stroke-width="1" d="M3.50 42L3.50 0M6.50 42L6.50 0M18.50 42L18.50 0M22.50 42L22.50 0M33.50 42L33.50 0M43.50 42L43.50 0M58.50 42L58.50 0M70.50 42L70.50 0M80.50 42L80.50 0M83.50 42L83.50 0M91.50 42L91.50 0M94.50 42L94.50 0M97.50 42L97.50 0M108.50 42L108.50 0M119.50 42L119.50 0M140.50 42L140.50 0M149.50 42L149.50 0M151.50 42L151.50 0M170.50 42L170.50 0" />
+<path stroke="#000000" stroke-width="3" d="M15.50 42L15.50 0M27.50 42L27.50 0M40.50 42L40.50 0M46.50 42L46.50 0M62.50 42L62.50 0M66.50 42L66.50 0M105.50 42L105.50 0M115.50 42L115.50 0M122.50 42L122.50 0M154.50 42L154.50 0M168.50 42L168.50 0" />
+<path stroke="#000000" stroke-width="4" d="M51 42L51 0M101 42L101 0M126 42L126 0M158 42L158 0" />
+</svg>
+</div><div class="op-node op-line" data-id="hd-rule" style="left:12mm;top:21mm;width:186mm;height:0mm"><span style="left:0;right:0;top:50%;transform:translateY(-50%);border-top:1px solid #333333"></span></div></div><div class="op-content"><div class="op-section op-body"><div class="op-node op-text" data-id="bd-total" style="left:12mm;top:26mm;width:186mm;height:7mm;font-size:11pt;color:#000000;font-family:思源黑体;font-weight:bold;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">合计金额（大写）：¥13,240.00</div><div class="op-node op-text" data-id="bd-memo" style="left:12mm;top:34mm;width:120mm;height:6mm;font-size:9pt;color:#555555;font-family:思源黑体;font-weight:normal;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">备注：请于 3 个工作日内送达；货到验收入库后回传签收单。</div><div class="op-node op-text" data-id="bd-sign" style="left:12mm;top:44mm;width:186mm;height:6mm;font-size:9pt;color:#000000;font-family:思源黑体;font-weight:normal;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">制单人：陈伟　　审核：＿＿＿＿　　仓管：＿＿＿＿　　客户签收：＿＿＿＿</div></div></div><div class="op-section op-footer"><div class="op-node op-line" data-id="ft-rule" style="left:12mm;top:1mm;width:186mm;height:0mm"><span style="left:0;right:0;top:50%;transform:translateY(-50%);border-top:0.5px solid #999999"></span></div><div class="op-node op-text" data-id="ft-brand" style="left:12mm;top:3mm;width:90mm;height:6mm;font-size:8pt;color:#888888;font-family:思源黑体;font-weight:normal;font-style:normal;text-decoration:none;text-align:left;line-height:1.16">本单据由 OpenPrint 生成</div><div class="op-node op-text" data-id="ft-page" style="left:108mm;top:3mm;width:90mm;height:6mm;font-size:9pt;color:#555555;font-family:思源黑体;font-weight:normal;font-style:normal;text-decoration:none;text-align:right;line-height:1.16">第 2 页 / 共 2 页</div></div></div></div></div>
+
+</body>
+</html>

@@ -1,0 +1,195 @@
+/**
+ * brand.css —— 语义化品牌 CSS 变量
+ *
+ * 与 naive-theme.ts / uno.config.ts 同源：
+ *   :root        → 亮色
+ *   html.dark    → 暗色（由 ui store 切换时在 document.documentElement 打 .dark 类）
+ *
+ * 注意：
+ * - body 的背景/前景色交给 NGlobalStyle（它会同步 common.bodyColor / textColor），
+ *   这里只做「组件内自定义样式」使用的语义化变量。
+ * - 旧 --brand-dark 保留作为「深色顶栏背景」语义的别名，
+ *   但推荐直接用 --brand-nav-bg（含义更明确）。
+ */
+
+:root {
+  /* 主色 */
+  --brand-primary: var(--op-primary, #1677FF);
+  --brand-primary-hover: var(--op-primary-hover, #4096FF);
+  --brand-primary-pressed: var(--op-primary-pressed, #0958D9);
+
+  /* 表面 */
+  --brand-bg: var(--op-bg, #F5F7FA);
+  --brand-surface: var(--op-surface, #FFFFFF);
+  --brand-border: var(--op-border, #E5E7EB);
+
+  /* 文字 */
+  --brand-text-1: var(--op-text-1, #1F2329);
+  --brand-text-2: var(--op-text-2, #4B5563);
+  --brand-text-3: var(--op-text-3, #86909C);
+  --brand-text-muted: var(--op-text-muted, #86909C);
+
+  /* 顶栏跟随主题：亮色下用白色表面 + 深色文字 */
+  --brand-nav-bg: var(--op-nav-bg, #FFFFFF);
+  --brand-nav-bg-hover: var(--op-nav-bg-hover, rgba(0,0,0,0.04));
+  --brand-nav-text: var(--op-nav-text, #1F2329);
+  --brand-nav-text-muted: var(--op-nav-text-muted, #86909C);
+  --brand-nav-text-active: var(--op-nav-text-active, #1F2329);
+  --brand-nav-icon: var(--op-nav-icon, #4B5563);
+  --brand-nav-icon-hover: var(--op-nav-icon-hover, #1F2329);
+
+  /* 兼容性别名（旧代码里用 --brand-dark 表示深色顶栏） */
+  --brand-dark: var(--brand-nav-bg);
+
+  /* 画布外围 */
+  --op-canvas-bg: var(--op-bg, #F5F7FA);
+  --op-canvas-checker-a: #FFFFFF;
+  --op-canvas-checker-b: #F3F4F6;
+}
+
+html.dark {
+  /* 主色 · 暗下调亮保证对比 */
+  --brand-primary: var(--op-primary, #3C8DFF);
+  --brand-primary-hover: var(--op-primary-hover, #5FA1FF);
+  --brand-primary-pressed: var(--op-primary-pressed, #1B65D4);
+
+  /* 表面 */
+  --brand-bg: var(--op-bg, #0B0D12);
+  --brand-surface: var(--op-surface, #171A21);
+  --brand-border: var(--op-border, #2A2F3A);
+
+  /* 文字 · 主文字用纯白保证对比 */
+  --brand-text-1: var(--op-text-1, #FFFFFF);
+  --brand-text-2: var(--op-text-2, #AFB4BD);
+  --brand-text-3: var(--op-text-3, #7A808C);
+  --brand-text-muted: var(--op-text-muted, #7A808C);
+
+  /* 顶栏 · 暗色下用深色背景 + 白色文字/图标 */
+  --brand-nav-bg: var(--op-nav-bg, #0F1116);
+  --brand-nav-bg-hover: var(--op-nav-bg-hover, rgba(255,255,255,0.08));
+  --brand-nav-text: var(--op-nav-text, #FFFFFF);
+  --brand-nav-text-muted: var(--op-nav-text-muted, #9CA3AF);
+  --brand-nav-text-active: var(--op-nav-text-active, #FFFFFF);
+  --brand-nav-icon: var(--op-nav-icon, #FFFFFF);
+  --brand-nav-icon-hover: var(--op-nav-icon-hover, #FFFFFF);
+
+  --brand-dark: var(--brand-nav-bg);
+
+  --op-canvas-bg: var(--op-bg, #0B0D12);
+  --op-canvas-checker-a: #171A21;
+  --op-canvas-checker-b: #1F242D;
+}
+
+/* =========================================================================
+ * SVIP 黑金主题（点击左上角版本号切换，ui store 同时给 html 加 .dark + .svip）
+ *   - 背景：#3E4144  金色渐变：#FFB95A → #E4A93C → #B87100  小灰字：#C0C4CC
+ *   - 黑金 = 暗色基座 + 金色主色覆盖；放在 html.dark 之后以保证覆盖优先级
+ * ========================================================================= */
+html.svip {
+  /* 主色 · 黑金用金色系 */
+  --brand-primary: #E4A93C;
+  --brand-primary-hover: #FFB95A;
+  --brand-primary-pressed: #B87100;
+
+  /* 表面 · 用户指定背景 #3E4144，表面略亮形成层次 */
+  --brand-bg: #3E4144;
+  --brand-surface: #484C50;
+  --brand-border: #585C61;
+
+  /* 文字 · 主文字暖金白，小灰字 #C0C4CC */
+  --brand-text-1: #F2E6C9;
+  --brand-text-2: #C0C4CC;
+  --brand-text-3: #9AA0A6;
+  --brand-text-muted: #C0C4CC;
+
+  /* 顶栏 · 黑金：深炭底 + 金色文字/图标 */
+  --brand-nav-bg: #33363A;
+  --brand-nav-bg-hover: rgba(255, 185, 90, 0.1);
+  --brand-nav-text: #F2E6C9;
+  --brand-nav-text-muted: #C0C4CC;
+  --brand-nav-text-active: #FFB95A;
+  --brand-nav-icon: #C0C4CC;
+  --brand-nav-icon-hover: #FFB95A;
+
+  --brand-dark: var(--brand-nav-bg);
+
+  --op-canvas-bg: #3E4144;
+  --op-canvas-checker-a: #484C50;
+  --op-canvas-checker-b: #3E4144;
+}
+
+/* =========================================================================
+ * NSelect 下拉菜单对比度兜底
+ *
+ * 下拉菜单（.n-base-select-menu）由 naive-ui teleport 到 <body>，脱离了组件
+ * 的 scoped 样式作用域，且其背景/文字色依赖主题 token 经 portal 传递。
+ * 在部分主题接线状态下会出现「浅灰背景 + 深色主题白字」的不可读情况
+ * （背景呈现 #f3f3f5 一类浅灰、文字白到看不见）。
+ *
+ * DOM 结构：.n-base-select-option（wrapper，naive 在这设 color）
+ *          └─ .n-base-select-option__content
+ *               ├─ 标签文本（继承自 wrapper 的 color）
+ *               └─ 勾选图标（独立着色）
+ *
+ * 这里用全局 !important 把菜单背景钉死为表面色、把选项文字（包括 wrapper
+ * 和 content 两个层级）钉死为语义文字色，直接引用 :root / html.dark 上的
+ * --brand-* 变量，保证亮/暗主题下都清晰。
+ * （与 DatabaseExplorer 树形区的 render-label + tree-box 打底同思路。）
+ * ========================================================================= */
+.n-base-select-menu {
+  background-color: var(--brand-surface) !important;
+}
+
+/* 选项文字：wrapper 与 content 都钉死，避免任何一层 color 漏掉 */
+.n-base-select-menu .n-base-select-option,
+.n-base-select-menu .n-base-select-option__content {
+  color: var(--brand-text-1) !important;
+}
+
+/* 选中项：主色强调（wrapper + content 都覆盖） */
+.n-base-select-menu .n-base-select-option--selected,
+.n-base-select-menu .n-base-select-option--selected .n-base-select-option__content {
+  color: var(--brand-primary) !important;
+}
+
+/* hover/pending：保持主文字色（hover 底色仍由 naive 主题 optionColorPending 给） */
+.n-base-select-menu .n-base-select-option--pending,
+.n-base-select-menu .n-base-select-option--pending .n-base-select-option__content {
+  color: var(--brand-text-1) !important;
+}
+
+/* 禁用项：次级文字色 */
+.n-base-select-menu .n-base-select-option--disabled,
+.n-base-select-menu .n-base-select-option--disabled .n-base-select-option__content {
+  color: var(--brand-text-3) !important;
+}
+
+/* =========================================================================
+ * NTabs segment 类型·选中态对比度兜底
+ *
+ * 浅色下 surface 是纯白 #FFFFFF，segment 轨道是很浅的灰，激活态默认是
+ * 「白药丸浮在浅灰轨上」，白底面板/弹窗里几乎看不出当前选中哪个 tab。
+ *
+ * 这里统一把激活药丸做成：表面底色 + 浮起阴影 + 主色 1px 描边 + 主色加粗文字，
+ * 轨道改用 --brand-bg 与表面形成对比。亮/暗主题均适用，覆盖左侧面板与
+ * 表达式弹窗等所有 type="segment" 的 Tab。
+ * ========================================================================= */
+.n-tabs-nav--segment-type {
+  background-color: var(--brand-bg) !important;
+  padding: 3px !important;
+  border-radius: 8px !important;
+}
+.n-tabs-nav--segment-type .n-tabs-tab {
+  font-weight: 500;
+}
+.n-tabs-nav--segment-type .n-tabs-tab--active {
+  background-color: var(--brand-surface) !important;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--brand-primary) 50%, transparent),
+    0 1px 4px rgba(0, 0, 0, 0.14) !important;
+  color: var(--brand-primary) !important;
+  font-weight: 600 !important;
+}
+.n-tabs-nav--segment-type .n-tabs-tab--active .n-tabs-tab__label {
+  color: var(--brand-primary) !important;
+}

@@ -1,0 +1,1956 @@
+{
+  "01-blank": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          }
+        },
+        "sections": [
+          {
+            "type": "body",
+            "components": []
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "销售出库单模板",
+      "controls": [],
+      "zones": [],
+      "selectedIds": [],
+      "dirty": false,
+      "minPages": 0,
+      "canUndo": false,
+      "canRedo": false
+    },
+    "checkpoints": {}
+  },
+  "02-all-control-types": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          }
+        },
+        "sections": [
+          {
+            "type": "body",
+            "components": [
+              {
+                "id": "ctl_loyw3v28014fzz",
+                "left": 10,
+                "top": 10,
+                "printable": true,
+                "type": "text",
+                "width": 50,
+                "height": 8,
+                "contentType": "fixed",
+                "value": "文本",
+                "style": {
+                  "fontSize": 12
+                }
+              },
+              {
+                "id": "ctl_loyw3v28028fzz",
+                "left": 12,
+                "top": 13,
+                "printable": true,
+                "type": "richtext",
+                "width": 80,
+                "height": 24,
+                "value": "<h3>标题</h3><p>在这里输入<strong>富文本</strong>内容，支持列表、加粗等排版。</p>"
+              },
+              {
+                "id": "ctl_loyw3v2803cfzz",
+                "left": 14,
+                "top": 16,
+                "printable": true,
+                "type": "image",
+                "width": 40,
+                "height": 25,
+                "value": {
+                  "mode": "inline",
+                  "content": ""
+                },
+                "fit": "contain"
+              },
+              {
+                "id": "ctl_loyw3v2804gfzy",
+                "left": 16,
+                "top": 19,
+                "printable": true,
+                "type": "rect",
+                "width": 40,
+                "height": 25,
+                "fill": "transparent",
+                "stroke": "#000000",
+                "strokeWidth": 1
+              },
+              {
+                "id": "ctl_loyw3v2805kfzj",
+                "left": 18,
+                "top": 22,
+                "printable": true,
+                "type": "line",
+                "width": 60,
+                "height": 0,
+                "stroke": "#000000",
+                "strokeWidth": 1
+              },
+              {
+                "id": "ctl_loyw3v2806ofvb",
+                "left": 20,
+                "top": 25,
+                "printable": true,
+                "type": "table",
+                "width": 180,
+                "height": 42.00375,
+                "columns": [
+                  {
+                    "title": "序号",
+                    "expression": "{{rowIndex + 1}}",
+                    "width": 15,
+                    "align": "center",
+                    "headerAlign": "center"
+                  },
+                  {
+                    "title": "名称",
+                    "field": "items[].name",
+                    "width": 60
+                  },
+                  {
+                    "title": "数量",
+                    "field": "items[].qty",
+                    "width": 25,
+                    "headerAlign": "center",
+                    "aggregate": true
+                  },
+                  {
+                    "title": "单价",
+                    "field": "items[].price",
+                    "width": 30,
+                    "headerAlign": "center",
+                    "aggregate": true
+                  },
+                  {
+                    "title": "金额",
+                    "field": "items[].amount",
+                    "width": 30,
+                    "headerAlign": "center",
+                    "aggregate": true
+                  }
+                ],
+                "data": [
+                  {
+                    "name": "示例商品 A",
+                    "qty": 2,
+                    "price": 12.5,
+                    "amount": 25
+                  },
+                  {
+                    "name": "示例商品 B",
+                    "qty": 1,
+                    "price": 36,
+                    "amount": 36
+                  },
+                  {
+                    "name": "示例商品 C",
+                    "qty": 5,
+                    "price": 8,
+                    "amount": 40
+                  }
+                ],
+                "options": {
+                  "repeatHeader": true,
+                  "repeatFooter": true,
+                  "pageRows": "auto",
+                  "borders": "all",
+                  "verticalAlign": "middle",
+                  "defaultCellStyle": {
+                    "align": "center"
+                  }
+                },
+                "cells": [
+                  [
+                    {
+                      "text": "序号",
+                      "style": {
+                        "align": "center",
+                        "bold": true
+                      }
+                    },
+                    {
+                      "text": "名称",
+                      "style": {
+                        "align": "center",
+                        "bold": true
+                      }
+                    },
+                    {
+                      "text": "数量",
+                      "style": {
+                        "align": "center",
+                        "bold": true
+                      }
+                    },
+                    {
+                      "text": "单价",
+                      "style": {
+                        "align": "center",
+                        "bold": true
+                      }
+                    },
+                    {
+                      "text": "金额",
+                      "style": {
+                        "align": "center",
+                        "bold": true
+                      }
+                    }
+                  ],
+                  [
+                    {
+                      "expression": "{{rowIndex + 1}}",
+                      "style": {
+                        "align": "center"
+                      }
+                    },
+                    {
+                      "field": "items[].name",
+                      "style": {}
+                    },
+                    {
+                      "field": "items[].qty",
+                      "style": {}
+                    },
+                    {
+                      "field": "items[].price",
+                      "style": {}
+                    },
+                    {
+                      "field": "items[].amount",
+                      "style": {}
+                    }
+                  ],
+                  [
+                    {
+                      "text": "本页合计",
+                      "style": {
+                        "bold": true,
+                        "align": "center"
+                      }
+                    },
+                    {},
+                    {
+                      "text": "{{#pageSum}}",
+                      "style": {
+                        "bold": true,
+                        "align": "center"
+                      }
+                    },
+                    {
+                      "text": "{{#pageSum}}",
+                      "style": {
+                        "bold": true,
+                        "align": "center"
+                      }
+                    },
+                    {
+                      "text": "{{#pageSum}}",
+                      "style": {
+                        "bold": true,
+                        "align": "center"
+                      }
+                    }
+                  ],
+                  [
+                    {
+                      "text": "总计",
+                      "style": {
+                        "bold": true,
+                        "align": "center"
+                      }
+                    },
+                    {},
+                    {
+                      "text": "{{#totalSum}}",
+                      "style": {
+                        "bold": true,
+                        "align": "center"
+                      }
+                    },
+                    {
+                      "text": "{{#totalSum}}",
+                      "style": {
+                        "bold": true,
+                        "align": "center"
+                      }
+                    },
+                    {
+                      "text": "{{#totalSum}}",
+                      "style": {
+                        "bold": true,
+                        "align": "center"
+                      }
+                    }
+                  ],
+                  [
+                    {
+                      "text": "大写金额",
+                      "style": {
+                        "bold": true,
+                        "align": "center"
+                      }
+                    },
+                    {},
+                    {},
+                    {},
+                    {
+                      "text": "{{#totalCap}}",
+                      "style": {
+                        "bold": true,
+                        "align": "center"
+                      }
+                    }
+                  ]
+                ],
+                "headerRows": 1,
+                "staticRows": 3,
+                "designRows": 0
+              },
+              {
+                "id": "ctl_loyw3v2807sepc",
+                "left": 22,
+                "top": 28,
+                "printable": true,
+                "type": "barcode",
+                "width": 60,
+                "height": 30,
+                "contentType": "fixed",
+                "format": "CODE128",
+                "showText": true
+              },
+              {
+                "id": "ctl_loyw3v2808w31f",
+                "left": 24,
+                "top": 31,
+                "printable": true,
+                "type": "qrcode",
+                "width": 25,
+                "height": 25,
+                "contentType": "fixed",
+                "errorLevel": "M"
+              },
+              {
+                "id": "ctl_loyw3v2809wuee",
+                "left": 26,
+                "top": 34,
+                "printable": true,
+                "type": "chart",
+                "width": 90,
+                "height": 60,
+                "kind": "bar",
+                "categories": [
+                  "一月",
+                  "二月",
+                  "三月",
+                  "四月"
+                ],
+                "series": [
+                  {
+                    "name": "销量",
+                    "data": [
+                      120,
+                      200,
+                      150,
+                      80
+                    ]
+                  },
+                  {
+                    "name": "退货",
+                    "data": [
+                      20,
+                      35,
+                      15,
+                      10
+                    ]
+                  }
+                ],
+                "options": {
+                  "showAxis": true,
+                  "showGrid": true,
+                  "showLegend": true,
+                  "valueLabel": false
+                }
+              },
+              {
+                "id": "ctl_loyw3v280a3mwq",
+                "left": 28,
+                "top": 37,
+                "printable": true,
+                "type": "math",
+                "width": 80,
+                "height": 25,
+                "latex": "c = \\pm\\sqrt{a^2 + b^2}",
+                "displayMode": true,
+                "fontSize": 16,
+                "color": "#000000"
+              },
+              {
+                "id": "ctl_loyw3v280b79tg",
+                "left": 30,
+                "top": 40,
+                "printable": true,
+                "type": "signature",
+                "width": 60,
+                "height": 30,
+                "src": "",
+                "penWidth": 1,
+                "color": "#000000"
+              },
+              {
+                "id": "ctl_loyw3v280cawq6",
+                "left": 32,
+                "top": 43,
+                "printable": true,
+                "type": "labelgrid",
+                "width": 180,
+                "height": 96,
+                "columns": 3,
+                "gapX": 3,
+                "gapY": 3,
+                "cardWidth": 58,
+                "cardHeight": 30,
+                "showLines": true,
+                "children": [],
+                "name": "标签网格（3 列）"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "销售出库单模板",
+      "controls": [
+        {
+          "id": "ctl_loyw3v28014fzz",
+          "type": "text",
+          "left": 10,
+          "top": 10,
+          "width": 50,
+          "height": 8
+        },
+        {
+          "id": "ctl_loyw3v28028fzz",
+          "type": "richtext",
+          "left": 12,
+          "top": 13,
+          "width": 80,
+          "height": 24
+        },
+        {
+          "id": "ctl_loyw3v2803cfzz",
+          "type": "image",
+          "left": 14,
+          "top": 16,
+          "width": 40,
+          "height": 25
+        },
+        {
+          "id": "ctl_loyw3v2804gfzy",
+          "type": "rect",
+          "left": 16,
+          "top": 19,
+          "width": 40,
+          "height": 25
+        },
+        {
+          "id": "ctl_loyw3v2805kfzj",
+          "type": "line",
+          "left": 18,
+          "top": 22,
+          "width": 60,
+          "height": 0
+        },
+        {
+          "id": "ctl_loyw3v2806ofvb",
+          "type": "table",
+          "left": 20,
+          "top": 25,
+          "width": 180,
+          "height": 42.00375
+        },
+        {
+          "id": "ctl_loyw3v2807sepc",
+          "type": "barcode",
+          "left": 22,
+          "top": 28,
+          "width": 60,
+          "height": 30
+        },
+        {
+          "id": "ctl_loyw3v2808w31f",
+          "type": "qrcode",
+          "left": 24,
+          "top": 31,
+          "width": 25,
+          "height": 25
+        },
+        {
+          "id": "ctl_loyw3v2809wuee",
+          "type": "chart",
+          "left": 26,
+          "top": 34,
+          "width": 90,
+          "height": 60
+        },
+        {
+          "id": "ctl_loyw3v280a3mwq",
+          "type": "math",
+          "left": 28,
+          "top": 37,
+          "width": 80,
+          "height": 25
+        },
+        {
+          "id": "ctl_loyw3v280b79tg",
+          "type": "signature",
+          "left": 30,
+          "top": 40,
+          "width": 60,
+          "height": 30
+        },
+        {
+          "id": "ctl_loyw3v280cawq6",
+          "type": "labelgrid",
+          "left": 32,
+          "top": 43,
+          "width": 180,
+          "height": 96
+        }
+      ],
+      "zones": [],
+      "selectedIds": [],
+      "dirty": true,
+      "minPages": 0,
+      "canUndo": true,
+      "canRedo": false
+    },
+    "checkpoints": {}
+  },
+  "03-update-then-undo-redo": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          }
+        },
+        "sections": [
+          {
+            "type": "body",
+            "components": [
+              {
+                "id": "ctl_loyw3v280dejmw",
+                "left": 11.1,
+                "top": 20,
+                "printable": true,
+                "type": "text",
+                "width": 66,
+                "height": 8,
+                "contentType": "fixed",
+                "value": "hello",
+                "style": {
+                  "fontSize": 12
+                },
+                "fontSize": 18,
+                "bold": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "销售出库单模板",
+      "controls": [
+        {
+          "id": "ctl_loyw3v280dejmw",
+          "type": "text",
+          "left": 11.1,
+          "top": 20,
+          "width": 66,
+          "height": 8
+        }
+      ],
+      "zones": [],
+      "selectedIds": [],
+      "dirty": true,
+      "minPages": 0,
+      "canUndo": true,
+      "canRedo": true
+    },
+    "checkpoints": {
+      "after-add": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v280dejmw",
+            "type": "text",
+            "left": 20,
+            "top": 20,
+            "width": 50,
+            "height": 8
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": false
+      },
+      "after-2-updates": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v280dejmw",
+            "type": "text",
+            "left": 35.5,
+            "top": 42.3,
+            "width": 90,
+            "height": 20
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": false
+      },
+      "after-undo-1": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v280dejmw",
+            "type": "text",
+            "left": 11.1,
+            "top": 20,
+            "width": 66,
+            "height": 8
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": true
+      },
+      "after-undo-2": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v280dejmw",
+            "type": "text",
+            "left": 20,
+            "top": 20,
+            "width": 50,
+            "height": 8
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": true
+      },
+      "after-redo-1": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v280dejmw",
+            "type": "text",
+            "left": 11.1,
+            "top": 20,
+            "width": 66,
+            "height": 8
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": true
+      }
+    }
+  },
+  "04-move-and-remove": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          }
+        },
+        "sections": [
+          {
+            "type": "body",
+            "components": [
+              {
+                "id": "ctl_loyw3v280ei6jm",
+                "left": 10,
+                "top": 10,
+                "printable": true,
+                "type": "text",
+                "width": 50,
+                "height": 8,
+                "contentType": "fixed",
+                "value": "文本",
+                "style": {
+                  "fontSize": 12
+                }
+              },
+              {
+                "id": "ctl_loyw3v280fltgd",
+                "left": 10,
+                "top": 40,
+                "printable": true,
+                "type": "rect",
+                "width": 40,
+                "height": 25,
+                "fill": "transparent",
+                "stroke": "#000000",
+                "strokeWidth": 1
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "销售出库单模板",
+      "controls": [
+        {
+          "id": "ctl_loyw3v280ei6jm",
+          "type": "text",
+          "left": 10,
+          "top": 10,
+          "width": 50,
+          "height": 8
+        },
+        {
+          "id": "ctl_loyw3v280fltgd",
+          "type": "rect",
+          "left": 10,
+          "top": 40,
+          "width": 40,
+          "height": 25
+        }
+      ],
+      "zones": [],
+      "selectedIds": [
+        "ctl_loyw3v280ei6jm"
+      ],
+      "dirty": true,
+      "minPages": 0,
+      "canUndo": true,
+      "canRedo": false
+    },
+    "checkpoints": {
+      "before-move": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v280ei6jm",
+            "type": "text",
+            "left": 10,
+            "top": 10,
+            "width": 50,
+            "height": 8
+          },
+          {
+            "id": "ctl_loyw3v280fltgd",
+            "type": "rect",
+            "left": 10,
+            "top": 40,
+            "width": 40,
+            "height": 25
+          },
+          {
+            "id": "ctl_loyw3v280gpgd3",
+            "type": "line",
+            "left": 10,
+            "top": 70,
+            "width": 60,
+            "height": 0
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": false
+      },
+      "after-move-up": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v280fltgd",
+            "type": "rect",
+            "left": 10,
+            "top": 40,
+            "width": 40,
+            "height": 25
+          },
+          {
+            "id": "ctl_loyw3v280ei6jm",
+            "type": "text",
+            "left": 10,
+            "top": 10,
+            "width": 50,
+            "height": 8
+          },
+          {
+            "id": "ctl_loyw3v280gpgd3",
+            "type": "line",
+            "left": 10,
+            "top": 70,
+            "width": 60,
+            "height": 0
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": false
+      },
+      "after-move-down": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v280ei6jm",
+            "type": "text",
+            "left": 10,
+            "top": 10,
+            "width": 50,
+            "height": 8
+          },
+          {
+            "id": "ctl_loyw3v280fltgd",
+            "type": "rect",
+            "left": 10,
+            "top": 40,
+            "width": 40,
+            "height": 25
+          },
+          {
+            "id": "ctl_loyw3v280gpgd3",
+            "type": "line",
+            "left": 10,
+            "top": 70,
+            "width": 60,
+            "height": 0
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": false
+      }
+    }
+  },
+  "05-undo-to-empty": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          }
+        },
+        "sections": [
+          {
+            "type": "body",
+            "components": [
+              {
+                "id": "ctl_loyw3v280ht39t",
+                "left": 10,
+                "top": 10,
+                "printable": true,
+                "type": "text",
+                "width": 50,
+                "height": 8,
+                "contentType": "fixed",
+                "value": "文本",
+                "style": {
+                  "fontSize": 12
+                }
+              },
+              {
+                "id": "ctl_loyw3v280iwq6j",
+                "left": 10,
+                "top": 30,
+                "printable": true,
+                "type": "rect",
+                "width": 40,
+                "height": 25,
+                "fill": "transparent",
+                "stroke": "#000000",
+                "strokeWidth": 1
+              },
+              {
+                "id": "ctl_loyw3v280j4fzz",
+                "left": 10,
+                "top": 50,
+                "printable": true,
+                "type": "line",
+                "width": 60,
+                "height": 0,
+                "stroke": "#000000",
+                "strokeWidth": 1
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "销售出库单模板",
+      "controls": [
+        {
+          "id": "ctl_loyw3v280ht39t",
+          "type": "text",
+          "left": 10,
+          "top": 10,
+          "width": 50,
+          "height": 8
+        },
+        {
+          "id": "ctl_loyw3v280iwq6j",
+          "type": "rect",
+          "left": 10,
+          "top": 30,
+          "width": 40,
+          "height": 25
+        },
+        {
+          "id": "ctl_loyw3v280j4fzz",
+          "type": "line",
+          "left": 10,
+          "top": 50,
+          "width": 60,
+          "height": 0
+        }
+      ],
+      "zones": [],
+      "selectedIds": [],
+      "dirty": true,
+      "minPages": 0,
+      "canUndo": true,
+      "canRedo": false
+    },
+    "checkpoints": {
+      "after-add-3": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v280ht39t",
+            "type": "text",
+            "left": 10,
+            "top": 10,
+            "width": 50,
+            "height": 8
+          },
+          {
+            "id": "ctl_loyw3v280iwq6j",
+            "type": "rect",
+            "left": 10,
+            "top": 30,
+            "width": 40,
+            "height": 25
+          },
+          {
+            "id": "ctl_loyw3v280j4fzz",
+            "type": "line",
+            "left": 10,
+            "top": 50,
+            "width": 60,
+            "height": 0
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": false
+      },
+      "after-undo-all": {
+        "templateName": "销售出库单模板",
+        "controls": [],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": false,
+        "canRedo": true
+      },
+      "after-undo-overflow": {
+        "templateName": "销售出库单模板",
+        "controls": [],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": false,
+        "canRedo": true
+      },
+      "after-redo-all": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v280ht39t",
+            "type": "text",
+            "left": 10,
+            "top": 10,
+            "width": 50,
+            "height": 8
+          },
+          {
+            "id": "ctl_loyw3v280iwq6j",
+            "type": "rect",
+            "left": 10,
+            "top": 30,
+            "width": 40,
+            "height": 25
+          },
+          {
+            "id": "ctl_loyw3v280j4fzz",
+            "type": "line",
+            "left": 10,
+            "top": 50,
+            "width": 60,
+            "height": 0
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": false
+      },
+      "after-redo-overflow": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v280ht39t",
+            "type": "text",
+            "left": 10,
+            "top": 10,
+            "width": 50,
+            "height": 8
+          },
+          {
+            "id": "ctl_loyw3v280iwq6j",
+            "type": "rect",
+            "left": 10,
+            "top": 30,
+            "width": 40,
+            "height": 25
+          },
+          {
+            "id": "ctl_loyw3v280j4fzz",
+            "type": "line",
+            "left": 10,
+            "top": 50,
+            "width": 60,
+            "height": 0
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": false
+      }
+    }
+  },
+  "06-zones": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          }
+        },
+        "sections": [
+          {
+            "type": "header",
+            "height": 20,
+            "repeat": true,
+            "components": [
+              {
+                "id": "ctl_loyw3v280nkfzj",
+                "left": 12,
+                "top": 4,
+                "printable": true,
+                "type": "text",
+                "width": 50,
+                "height": 8,
+                "contentType": "fixed",
+                "value": "页眉标题",
+                "style": {
+                  "fontSize": 12
+                }
+              }
+            ]
+          },
+          {
+            "type": "body",
+            "components": [
+              {
+                "id": "ctl_loyw3v280mgfzy",
+                "left": 10,
+                "top": 10,
+                "printable": true,
+                "type": "text",
+                "width": 50,
+                "height": 8,
+                "contentType": "fixed",
+                "value": "文本",
+                "style": {
+                  "fontSize": 12
+                }
+              }
+            ]
+          },
+          {
+            "type": "footer",
+            "height": 14,
+            "repeat": true,
+            "components": [
+              {
+                "id": "ctl_loyw3v280oofvb",
+                "left": 12,
+                "top": 6,
+                "printable": true,
+                "type": "line",
+                "width": 60,
+                "height": 0,
+                "stroke": "#000000",
+                "strokeWidth": 1
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "销售出库单模板",
+      "controls": [
+        {
+          "id": "ctl_loyw3v280mgfzy",
+          "type": "text",
+          "left": 10,
+          "top": 10,
+          "width": 50,
+          "height": 8
+        }
+      ],
+      "zones": [
+        {
+          "id": "zone_loyw3v280k8fzz",
+          "type": "zone",
+          "zone": "header",
+          "childCount": 1
+        },
+        {
+          "id": "zone_loyw3v280lcfzz",
+          "type": "zone",
+          "zone": "footer",
+          "childCount": 1
+        }
+      ],
+      "selectedIds": [],
+      "dirty": true,
+      "minPages": 0,
+      "canUndo": true,
+      "canRedo": false
+    },
+    "checkpoints": {}
+  },
+  "07-zone-height-reflow": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          }
+        },
+        "sections": [
+          {
+            "type": "header",
+            "height": 45,
+            "repeat": true,
+            "components": []
+          },
+          {
+            "type": "body",
+            "components": [
+              {
+                "id": "ctl_loyw3v280qw31f",
+                "left": 10,
+                "top": 40,
+                "printable": true,
+                "type": "text",
+                "width": 50,
+                "height": 8,
+                "contentType": "fixed",
+                "value": "文本",
+                "style": {
+                  "fontSize": 12
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "销售出库单模板",
+      "controls": [
+        {
+          "id": "ctl_loyw3v280qw31f",
+          "type": "text",
+          "left": 10,
+          "top": 40,
+          "width": 50,
+          "height": 8
+        }
+      ],
+      "zones": [
+        {
+          "id": "zone_loyw3v280psepc",
+          "type": "zone",
+          "zone": "header",
+          "childCount": 0
+        }
+      ],
+      "selectedIds": [],
+      "dirty": true,
+      "minPages": 0,
+      "canUndo": true,
+      "canRedo": false
+    },
+    "checkpoints": {}
+  },
+  "08-labelgrid": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          }
+        },
+        "sections": [
+          {
+            "type": "body",
+            "components": [
+              {
+                "id": "ctl_loyw3v280rwuee",
+                "left": 10,
+                "top": 10,
+                "printable": true,
+                "type": "labelgrid",
+                "width": 180,
+                "height": 96,
+                "columns": 3,
+                "gapX": 3,
+                "gapY": 3,
+                "cardWidth": 58,
+                "cardHeight": 30,
+                "showLines": true,
+                "children": [
+                  {
+                    "id": "ctl_loyw3v280s3mwq",
+                    "left": 4,
+                    "top": 4,
+                    "printable": true,
+                    "type": "text",
+                    "width": 50,
+                    "height": 8,
+                    "contentType": "fixed",
+                    "value": "品名",
+                    "style": {
+                      "fontSize": 12
+                    },
+                    "childOf": "ctl_loyw3v280rwuee"
+                  },
+                  {
+                    "id": "ctl_loyw3v280t79tg",
+                    "left": 4,
+                    "top": 12,
+                    "printable": true,
+                    "type": "barcode",
+                    "width": 60,
+                    "height": 30,
+                    "contentType": "fixed",
+                    "format": "CODE128",
+                    "showText": true,
+                    "childOf": "ctl_loyw3v280rwuee"
+                  }
+                ],
+                "name": "标签网格（3 列）"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "销售出库单模板",
+      "controls": [
+        {
+          "id": "ctl_loyw3v280rwuee",
+          "type": "labelgrid",
+          "left": 10,
+          "top": 10,
+          "width": 180,
+          "height": 96
+        }
+      ],
+      "zones": [],
+      "selectedIds": [
+        "ctl_loyw3v280rwuee"
+      ],
+      "dirty": true,
+      "minPages": 0,
+      "canUndo": true,
+      "canRedo": false
+    },
+    "checkpoints": {}
+  },
+  "09-min-pages": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          },
+          "minPages": 2
+        },
+        "sections": [
+          {
+            "type": "body",
+            "components": [
+              {
+                "id": "ctl_loyw3v280uawq6",
+                "left": 10,
+                "top": 10,
+                "printable": true,
+                "type": "text",
+                "width": 50,
+                "height": 8,
+                "contentType": "fixed",
+                "value": "文本",
+                "style": {
+                  "fontSize": 12
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "销售出库单模板",
+      "controls": [
+        {
+          "id": "ctl_loyw3v280uawq6",
+          "type": "text",
+          "left": 10,
+          "top": 10,
+          "width": 50,
+          "height": 8
+        }
+      ],
+      "zones": [],
+      "selectedIds": [],
+      "dirty": true,
+      "minPages": 2,
+      "canUndo": true,
+      "canRedo": false
+    },
+    "checkpoints": {}
+  },
+  "10-new-blank-clears-history": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          }
+        },
+        "sections": [
+          {
+            "type": "body",
+            "components": [
+              {
+                "id": "ctl_loyw3v280xltgd",
+                "left": 5,
+                "top": 5,
+                "printable": true,
+                "type": "line",
+                "width": 60,
+                "height": 0,
+                "stroke": "#000000",
+                "strokeWidth": 1
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "未命名模板",
+      "controls": [
+        {
+          "id": "ctl_loyw3v280xltgd",
+          "type": "line",
+          "left": 5,
+          "top": 5,
+          "width": 60,
+          "height": 0
+        }
+      ],
+      "zones": [],
+      "selectedIds": [],
+      "dirty": true,
+      "minPages": 0,
+      "canUndo": true,
+      "canRedo": false
+    },
+    "checkpoints": {
+      "before-new-blank": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v280vejmw",
+            "type": "text",
+            "left": 10,
+            "top": 10,
+            "width": 50,
+            "height": 8
+          },
+          {
+            "id": "ctl_loyw3v280wi6jm",
+            "type": "rect",
+            "left": 10,
+            "top": 30,
+            "width": 40,
+            "height": 25
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": false
+      },
+      "after-new-blank": {
+        "templateName": "未命名模板",
+        "controls": [],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": false,
+        "minPages": 0,
+        "canUndo": false,
+        "canRedo": false
+      }
+    }
+  },
+  "11-select-and-remove": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          }
+        },
+        "sections": [
+          {
+            "type": "body",
+            "components": [
+              {
+                "id": "ctl_loyw3v280ypgd3",
+                "left": 10,
+                "top": 10,
+                "printable": true,
+                "type": "text",
+                "width": 50,
+                "height": 8,
+                "contentType": "fixed",
+                "value": "文本",
+                "style": {
+                  "fontSize": 12
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "销售出库单模板",
+      "controls": [
+        {
+          "id": "ctl_loyw3v280ypgd3",
+          "type": "text",
+          "left": 10,
+          "top": 10,
+          "width": 50,
+          "height": 8
+        }
+      ],
+      "zones": [],
+      "selectedIds": [],
+      "dirty": true,
+      "minPages": 0,
+      "canUndo": true,
+      "canRedo": false
+    },
+    "checkpoints": {}
+  },
+  "12-coordinate-snap": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          }
+        },
+        "sections": [
+          {
+            "type": "body",
+            "components": [
+              {
+                "id": "ctl_loyw3v2810wq6j",
+                "left": 139.8,
+                "top": 0,
+                "printable": true,
+                "type": "text",
+                "width": 50,
+                "height": 8,
+                "contentType": "fixed",
+                "value": "文本",
+                "style": {
+                  "fontSize": 12
+                }
+              },
+              {
+                "id": "ctl_loyw3v28114fzz",
+                "left": 0,
+                "top": 0,
+                "printable": true,
+                "type": "rect",
+                "width": 40,
+                "height": 25,
+                "fill": "transparent",
+                "stroke": "#000000",
+                "strokeWidth": 1
+              },
+              {
+                "id": "ctl_loyw3v28128fzz",
+                "left": 33.3,
+                "top": 0,
+                "printable": true,
+                "type": "line",
+                "width": 60,
+                "height": 0,
+                "stroke": "#000000",
+                "strokeWidth": 1
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "销售出库单模板",
+      "controls": [
+        {
+          "id": "ctl_loyw3v2810wq6j",
+          "type": "text",
+          "left": 139.8,
+          "top": 0,
+          "width": 50,
+          "height": 8
+        },
+        {
+          "id": "ctl_loyw3v28114fzz",
+          "type": "rect",
+          "left": 0,
+          "top": 0,
+          "width": 40,
+          "height": 25
+        },
+        {
+          "id": "ctl_loyw3v28128fzz",
+          "type": "line",
+          "left": 33.3,
+          "top": 0,
+          "width": 60,
+          "height": 0
+        }
+      ],
+      "zones": [],
+      "selectedIds": [],
+      "dirty": true,
+      "minPages": 0,
+      "canUndo": true,
+      "canRedo": false
+    },
+    "checkpoints": {}
+  },
+  "13-nested-style-history": {
+    "template": {
+      "version": "1.0",
+      "document": {
+        "type": "report",
+        "page": {
+          "width": 210,
+          "height": 297,
+          "unit": "mm",
+          "orientation": "portrait",
+          "margin": {
+            "top": 10,
+            "bottom": 10,
+            "left": 10,
+            "right": 10
+          },
+          "backgroundColor": "#ffffff",
+          "watermark": {
+            "enabled": false,
+            "text": "OpenPrint",
+            "color": "#cccccc",
+            "fontSize": 16,
+            "rotation": 45,
+            "tile": false
+          }
+        },
+        "sections": [
+          {
+            "type": "body",
+            "components": [
+              {
+                "id": "ctl_loyw3v2813cfzz",
+                "left": 10,
+                "top": 10,
+                "printable": true,
+                "type": "text",
+                "width": 50,
+                "height": 8,
+                "contentType": "fixed",
+                "value": "文本",
+                "style": {
+                  "fontSize": 24,
+                  "bold": true
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "snapshot": {
+      "templateName": "销售出库单模板",
+      "controls": [
+        {
+          "id": "ctl_loyw3v2813cfzz",
+          "type": "text",
+          "left": 10,
+          "top": 10,
+          "width": 50,
+          "height": 8
+        }
+      ],
+      "zones": [],
+      "selectedIds": [],
+      "dirty": true,
+      "minPages": 0,
+      "canUndo": true,
+      "canRedo": true
+    },
+    "checkpoints": {
+      "after-style-1": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v2813cfzz",
+            "type": "text",
+            "left": 10,
+            "top": 10,
+            "width": 50,
+            "height": 8
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": false
+      },
+      "after-style-2": {
+        "templateName": "销售出库单模板",
+        "controls": [
+          {
+            "id": "ctl_loyw3v2813cfzz",
+            "type": "text",
+            "left": 10,
+            "top": 10,
+            "width": 50,
+            "height": 8
+          }
+        ],
+        "zones": [],
+        "selectedIds": [],
+        "dirty": true,
+        "minPages": 0,
+        "canUndo": true,
+        "canRedo": false
+      }
+    }
+  }
+}

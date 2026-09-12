@@ -1,0 +1,163 @@
+/* DataImportModal —— 数据导入预览样式（对齐 Vue 版 DataImportModal.vue scoped 样式） */
+
+.dim-select {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px 0;
+}
+.dim-hint {
+  font-size: 12px;
+  opacity: 0.65;
+}
+.dim-error {
+  font-size: 12px;
+  color: var(--brand-danger, #ef4444);
+}
+
+.dim-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.dim-info-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.dim-info-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dim-source-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+.dim-stats {
+  font-size: 12px;
+  opacity: 0.65;
+}
+.dim-preview-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dim-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dim-empty {
+  text-align: center;
+  opacity: 0.6;
+  font-size: 12px;
+  padding: 12px 0;
+}
+
+/* 数据预览：固定合适显示区域，原生双向滚动（表头吸顶） */
+.preview-scroll {
+  height: 340px;
+  overflow: auto;
+  border: 1px solid var(--brand-border, #e5e7eb);
+  border-radius: 6px;
+  scrollbar-width: thin;
+}
+.preview-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.preview-scroll::-webkit-scrollbar-thumb {
+  background: var(--brand-border, #d4d6d9);
+  border-radius: 6px;
+}
+.preview-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--brand-text-3, #b0b3b8);
+}
+
+.import-preview-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  min-width: 100%;
+}
+.import-preview-table th,
+.import-preview-table td {
+  border: 1px solid var(--brand-border, #eceef1);
+  padding: 4px 10px;
+  text-align: left;
+  white-space: nowrap;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.import-preview-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--brand-bg-hover, #f5f6f7);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.import-preview-table .row-check-col {
+  width: 44px;
+  min-width: 44px;
+  text-align: center;
+}
+.import-preview-table tbody tr:hover {
+  background: var(--brand-bg-hover, rgba(128, 128, 128, 0.08));
+}
+
+/* 表头列：标题可编辑 + 悬浮显示删除按钮 */
+.col-th {
+  position: relative;
+  padding-right: 22px !important;
+}
+.th-title-input {
+  width: 100%;
+  min-width: 48px;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  color: var(--brand-text-1, #111827);
+  padding: 0;
+  cursor: text;
+}
+.th-title-input:focus {
+  outline: 1px solid var(--brand, #2563eb);
+  border-radius: 2px;
+}
+.th-del {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--brand-text-3, #6b7280);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+  transition:
+    opacity 0.12s,
+    background 0.12s,
+    color 0.12s;
+}
+.col-th:hover .th-del,
+.th-del:focus-visible {
+  opacity: 1;
+}
+.th-del:hover {
+  background: var(--brand-danger, #ef4444);
+  color: #fff;
+}

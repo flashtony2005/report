@@ -1,0 +1,11 @@
+{
+  "connections": [
+    { "id": "demo", "engine": "sqlite", "label": "示例库(只读)", "path": "F:/project/openprint/print-server/demo.db" },
+    { "id": "pg", "engine": "postgres", "label": "我的PG库",
+      "host": "127.0.0.1", "port": 5432,
+      "user": "readonly", "password": "改我", "dbname": "finance",
+      "schema": "public" }
+  ],
+  "scanDirs": ["F:/data/db"],
+  "spoolDir": "spool"
+}

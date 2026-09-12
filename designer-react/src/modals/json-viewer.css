@@ -1,0 +1,26 @@
+/* JsonViewerModal —— 画布 JSON 查看器 */
+
+.json-viewer-body {
+  height: 480px;
+  border: 1px solid var(--brand-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.json-viewer-body .cm-editor {
+  height: 100%;
+}
+
+.json-viewer-body .cm-scroller {
+  overflow: auto;
+}
+
+.json-viewer-body .cm-editor.cm-focused {
+  outline: none;
+}
+
+.json-viewer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

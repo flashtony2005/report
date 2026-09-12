@@ -1,0 +1,59 @@
+:root {
+  /* 旧变量保留（对齐文档，但品牌变量统一在 theme/brand.css 中） */
+  --brand-primary: #1677ff;
+  --brand-dark: #111827;
+  --brand-bg: #f5f7fa;
+  --brand-border: #e5e7eb;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* naive-ui Provider 会在 #app 下包一层无样式 div，补齐高度链 */
+#app > div {
+  height: 100%;
+}
+
+body {
+  font-family:
+    Inter,
+    'Source Han Sans CN',
+    'PingFang SC',
+    'Microsoft YaHei',
+    system-ui,
+    -apple-system,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--brand-bg);
+  color: var(--brand-text-1);
+  overflow: hidden;
+}
+
+/* html.dark 下 body 由 NGlobalStyle 同步 bodyColor；这里加一个过渡让切换更顺 */
+* {
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+/* 画布/标尺/控件本身不需要过渡，否则拖拽有拖影 */
+canvas,
+svg,
+svg *,
+.fabric-canvas,
+canvas * {
+  transition: none !important;
+}
+
+/* NInputNumber 内部 input 默认左对齐；button-placement="both" 时左右按钮挤压空间，
+   统一居中更美观。覆盖内部 .n-input__input-el（naive-ui 无 textAlign prop）。 */
+.n-input-number .n-input__input-el {
+  text-align: center;
+}

@@ -1,0 +1,23 @@
+{
+  "order": {
+    "orderNo": "XS-20260830-0001",
+    "orderDate": "2026-08-30",
+    "salesman": "王小明",
+    "total": 12846.5,
+    "memo": "请当面清点，签收后概不退换。"
+  },
+  "customer": {
+    "name": "深圳市鑫源贸易有限公司",
+    "contact": "李经理",
+    "phone": "138-0013-8000",
+    "address": "广东省深圳市宝安区西乡街道兴业路 2008 号 A 栋 3 楼"
+  },
+  "items": [
+    { "productCode": "P-10021", "productName": "工业级条码打印机", "spec": "ZT411 / 300dpi", "unit": "台", "qty": 2, "price": 4200, "amount": 8400 },
+    { "productCode": "P-10088", "productName": "热敏标签纸", "spec": "100mm × 150mm / 500张", "unit": "卷", "qty": 12, "price": 86, "amount": 1032 },
+    { "productCode": "P-20103", "productName": "碳带（混合基）", "spec": "110mm × 300m", "unit": "卷", "qty": 6, "price": 145, "amount": 870 },
+    { "productCode": "P-30077", "productName": "标签剥离器", "spec": "LAB-200", "unit": "个", "qty": 3, "price": 680, "amount": 2040 },
+    { "productCode": "P-40012", "productName": "打印头清洁笔", "spec": "标准装", "unit": "支", "qty": 10, "price": 25.5, "amount": 255 },
+    { "productCode": "P-50031", "productName": "无线扫码枪", "spec": "2.4G + 蓝牙", "unit": "把", "qty": 2, "price": 124.75, "amount": 249.5 }
+  ]
+}

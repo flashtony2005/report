@@ -1,0 +1,353 @@
+/* TopToolbar —— 亮/暗都走 CSS 变量，跟随主题（对齐 Vue 版 scoped 样式） */
+
+.toolbar-root {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  padding: 0 16px;
+  background: var(--brand-nav-bg);
+  color: var(--brand-nav-text);
+  border-bottom: 1px solid var(--brand-border);
+}
+
+.toolbar-left,
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar-left {
+  gap: 12px;
+}
+
+.toolbar-center {
+  display: flex;
+  align-items: center;
+  min-width: 180px;
+}
+
+/* 品牌 logo */
+.logo-circle {
+  height: 28px;
+  width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.logo-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.product-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--brand-nav-text-active);
+}
+
+/* 版本号 / SVIP 开关 */
+.version-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--brand-primary), color-mix(in srgb, var(--brand-primary) 70%, #0b1c3a));
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  user-select: none;
+  transition: filter 0.15s;
+}
+.version-tag:hover {
+  filter: brightness(1.15);
+}
+/* SVIP 黑金激活态：金色渐变文字 + 深炭底 + 金描边 */
+.version-tag.is-svip {
+  color: transparent;
+  background: #2b2e31;
+  background-image: linear-gradient(135deg, #ffb95a 0%, #e4a93c 55%, #b87100 100%);
+  background-clip: text;
+  -webkit-background-clip: text;
+  border: 1px solid rgba(228, 169, 60, 0.55);
+  box-shadow: 0 0 8px rgba(228, 169, 60, 0.25);
+  letter-spacing: 0.5px;
+}
+.version-tag.is-svip:hover {
+  filter: brightness(1.2);
+}
+
+/* 文件菜单触发器 */
+.file-menu-trigger {
+  margin-left: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--brand-nav-icon);
+  transition: color 0.15s, background 0.15s;
+}
+.file-menu-trigger:hover {
+  color: var(--brand-nav-icon-hover);
+  background: var(--brand-nav-bg-hover);
+}
+.file-menu-caret {
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* 后端模式徽标 */
+.backend-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: default;
+}
+.backend-tag.is-cloud {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+}
+.backend-tag.is-local {
+  background: var(--brand-nav-bg-hover);
+  color: var(--brand-nav-text-muted);
+}
+
+/* 中间模板名（内联可编辑，去边框呈标题样式） */
+.tpl-name-input {
+  max-width: 200px;
+  color: var(--brand-nav-text-active);
+}
+.tpl-name-input input {
+  text-align: center;
+  font-weight: 500;
+  color: var(--brand-nav-text-active);
+}
+.tpl-name-input input::placeholder {
+  color: var(--brand-nav-text-muted);
+}
+
+/* 图标按钮 */
+.toolbar-icon-btn {
+  color: var(--brand-nav-icon) !important;
+}
+.toolbar-icon-btn:hover:not(:disabled) {
+  color: var(--brand-nav-icon-hover) !important;
+  background: var(--brand-nav-bg-hover) !important;
+}
+.toolbar-icon-btn:disabled {
+  opacity: 0.4;
+}
+
+/* 幽灵按钮（深导航上可读） */
+.toolbar-ghost-btn {
+  color: var(--brand-nav-icon) !important;
+  border-color: var(--brand-nav-text-muted) !important;
+}
+.toolbar-ghost-btn:hover {
+  color: var(--brand-nav-icon-hover) !important;
+  border-color: var(--brand-nav-icon-hover) !important;
+  background: var(--brand-nav-bg-hover) !important;
+}
+
+/* 分隔线 */
+.toolbar-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 4px;
+  background: var(--brand-border);
+}
+
+/* 占位弹窗内容 */
+.toolbar-placeholder {
+  padding: 24px 0;
+  text-align: center;
+  color: var(--brand-text-muted, #999);
+  font-size: 13px;
+}
+
+/* 弹窗通用 */
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.modal-hint {
+  font-size: 12px;
+  color: var(--brand-text-muted, #999);
+}
+
+/* ================= 快捷键指南弹窗 ================= */
+.shortcuts-platform-toggle {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--brand-bg-hover, rgba(128, 128, 128, 0.12));
+  border: 1px solid var(--brand-border, #e5e5e5);
+  margin-bottom: 14px;
+}
+.platform-tab {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 10px;
+  border-radius: 5px;
+  color: var(--brand-text-muted, #888);
+  background: transparent;
+  transition: color 0.15s, background 0.15s;
+}
+.platform-tab:hover {
+  color: var(--brand-text, #333);
+}
+.platform-tab.active {
+  color: #fff;
+  background: var(--brand-primary, #3b82f6);
+  font-weight: 600;
+}
+
+.shortcuts-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.shortcuts-group-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand-text, inherit);
+}
+
+.shortcuts-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shortcuts-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 28px;
+}
+
+.shortcuts-keys {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 168px;
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 7px;
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1;
+  color: var(--brand-text, #333);
+  background: var(--brand-bg-hover, #f5f5f5);
+  border: 1px solid var(--brand-border, #e0e0e0);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
+}
+
+.kbd-plus {
+  font-size: 11px;
+  color: var(--brand-text-muted, #aaa);
+}
+
+.shortcuts-desc {
+  font-size: 13px;
+  color: var(--brand-text, inherit);
+}
+
+.shortcuts-hint {
+  font-size: 12px;
+  color: var(--brand-text-muted, #999);
+}
+
+.shortcuts-foot {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--brand-text-muted, #999);
+  border-top: 1px dashed var(--brand-border, #eee);
+  padding-top: 12px;
+}
+
+/* ================= 打印按钮连接状态灯 ================= */
+.printer-btn {
+  position: relative;
+}
+
+.printer-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--brand-nav-bg, #fff);
+  background: #9ca3af;
+  transition: background 0.2s;
+}
+
+.printer-dot.is-connected {
+  background: #22c55e;
+  box-shadow: 0 0 4px rgba(34, 197, 94, 0.7);
+}
+
+.printer-dot.is-disconnected {
+  background: #ef4444;
+  box-shadow: 0 0 4px rgba(239, 68, 68, 0.7);
+}
+
+.printer-dot.is-checking {
+  background: #f59e0b;
+  animation: printer-dot-pulse 1s ease-in-out infinite;
+}
+
+.printer-dot.is-idle {
+  background: #9ca3af;
+}
+
+@keyframes printer-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}

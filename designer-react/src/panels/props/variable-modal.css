@@ -1,0 +1,118 @@
+/* VariableModal 样式 —— 从 Vue 版 VariableModal.vue scoped style 平移，类名一致 */
+.var-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 460px;
+}
+.var-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.var-count {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--n-text-color-3, #888);
+}
+.var-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.var-group {
+  margin-bottom: 10px;
+}
+.var-group-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--n-text-color-3, #888);
+  margin: 6px 2px;
+}
+.var-fn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--brand-surface, #fafafa);
+  border: 1px solid var(--brand-border, #e5e7eb);
+  border-radius: 6px;
+  padding: 7px 9px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    box-shadow 0.15s;
+}
+.var-fn:hover {
+  border-color: var(--brand-primary, #3b82f6);
+  background: color-mix(in srgb, var(--brand-primary, #3b82f6) 6%, transparent);
+}
+.var-fn--active {
+  border-color: var(--brand-primary, #3b82f6);
+  background: color-mix(in srgb, var(--brand-primary, #3b82f6) 10%, transparent);
+  box-shadow: inset 2px 0 0 var(--brand-primary, #3b82f6);
+}
+.var-fn-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.var-fn-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.var-fn-type {
+  font-size: 11px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+.var-fn-path {
+  font-size: 11px;
+  color: var(--n-text-color-3, #888);
+  background: rgba(127, 127, 127, 0.1);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.var-fn-sample {
+  font-size: 12px;
+  color: var(--n-text-color-2, #aaa);
+  margin-top: 3px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.var-empty {
+  padding-top: 24px;
+}
+.var-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--brand-border, #e5e7eb);
+  padding-top: 8px;
+}
+.var-foot-label {
+  font-size: 12px;
+  color: var(--n-text-color-3, #888);
+}
+.var-foot-path {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-primary, #3b82f6);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.var-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

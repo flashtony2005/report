@@ -1,0 +1,174 @@
+/* ExpressionModal React 版样式 —— 与 Vue 版 scoped 样式对齐（P4.1） */
+.expr-modal {
+  display: flex;
+  gap: 0;
+  height: 460px;
+}
+.expr-left {
+  flex: 1 1 50%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-right: 12px;
+}
+.expr-search {
+  margin: 8px 0 4px;
+}
+.expr-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.expr-list--tabs {
+  margin-top: 4px;
+}
+.expr-cat {
+  margin-bottom: 10px;
+}
+.expr-cat-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #888;
+  margin: 6px 2px;
+}
+.expr-fn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--brand-surface, rgba(127, 127, 127, 0.06));
+  border: 1px solid var(--brand-border, rgba(127, 127, 127, 0.25));
+  border-radius: 6px;
+  padding: 7px 9px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+.expr-fn:hover {
+  border-color: var(--brand-primary, #1677ff);
+  background: color-mix(in srgb, var(--brand-primary, #1677ff) 8%, transparent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+.expr-fn-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.expr-fn-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.expr-fn-snip {
+  font-size: 11px;
+  color: #1677ff;
+  background: rgba(127, 127, 127, 0.1);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.expr-fn-desc {
+  font-size: 12px;
+  color: #999;
+  margin-top: 3px;
+  line-height: 1.4;
+}
+.expr-fn-note {
+  font-size: 11px;
+  color: #d48806;
+  margin-top: 2px;
+}
+.expr-empty {
+  padding-top: 24px;
+}
+.expr-right {
+  flex: 1 1 50%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-left: 12px;
+  border-left: 1px solid var(--brand-border, rgba(127, 127, 127, 0.25));
+}
+.expr-right-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #888;
+  margin: 2px 0 6px;
+}
+.expr-color-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.expr-color-chip {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+.expr-color-chip:hover {
+  transform: scale(1.15);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+}
+.expr-color-picker {
+  width: auto;
+}
+.expr-input {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  resize: none;
+  border: 1px solid rgba(127, 127, 127, 0.25);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: inherit;
+  background: rgba(127, 127, 127, 0.05);
+}
+.expr-input:focus {
+  outline: none;
+  border-color: #1677ff;
+}
+.expr-preview {
+  flex: 0 0 auto;
+  min-height: 52px;
+  max-height: 90px;
+  overflow: auto;
+  border: 1px dashed rgba(127, 127, 127, 0.3);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: rgba(127, 127, 127, 0.04);
+  word-break: break-all;
+}
+.expr-preview-text {
+  font-weight: 600;
+}
+.expr-err {
+  color: #f5222d;
+  font-size: 12px;
+}
+.expr-tip {
+  font-size: 11px;
+  color: #888;
+  margin-top: 6px;
+  line-height: 1.5;
+}
+.expr-tip code {
+  background: rgba(127, 127, 127, 0.12);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.expr-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

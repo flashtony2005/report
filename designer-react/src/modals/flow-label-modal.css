@@ -1,0 +1,365 @@
+/* FlowLabelModal —— 流水标签批量打印工作台（与 Vue 版样式对齐，走 brand.css 语义变量） */
+
+.flow-body {
+  display: flex;
+  gap: 16px;
+  max-height: 66vh;
+}
+
+.flow-left {
+  width: 42%;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.flow-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* ---------- 上传区 ---------- */
+.flow-upload {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 32px 16px;
+  border: 2px dashed var(--brand-border, #d4d6d9);
+  border-radius: 10px;
+  color: var(--brand-text-2);
+}
+
+.flow-upload-icon {
+  font-size: 32px;
+  line-height: 1;
+  color: var(--brand-text-3);
+}
+
+.flow-upload-title {
+  font-size: 13px;
+}
+
+.flow-upload-sub {
+  font-size: 11px;
+  color: var(--brand-text-3);
+}
+
+.flow-upload-err {
+  font-size: 12px;
+  color: #d4380d;
+}
+
+.flow-file-input {
+  display: none;
+}
+
+/* ---------- 文件信息 ---------- */
+.flow-file-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.flow-file-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-ml-auto {
+  margin-left: auto;
+}
+
+.flow-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-text-1);
+}
+
+.flow-title-sub {
+  margin-left: 4px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--brand-text-3);
+}
+
+.flow-section-title-inline {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-text-1);
+}
+
+.flow-empty-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--brand-text-3);
+}
+
+.flow-empty-hint code {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--brand-bg);
+}
+
+/* ---------- 字段映射 ---------- */
+.flow-mapping-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.flow-mapping-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flow-ph-tag {
+  flex: none;
+  min-width: 92px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--brand-bg);
+  color: var(--brand-text-1);
+  font-size: 12px;
+}
+
+.flow-mapping-arrow {
+  color: var(--brand-text-3);
+}
+
+/* ---------- 数据预览表 ---------- */
+.flow-data-scroll {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--brand-border);
+  border-radius: 6px;
+}
+
+.flow-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.flow-data-table th,
+.flow-data-table td {
+  max-width: 160px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--brand-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.flow-data-table th {
+  position: sticky;
+  top: 0;
+  background: var(--brand-surface);
+  color: var(--brand-text-2);
+  font-weight: 600;
+}
+
+.flow-data-table tbody tr {
+  cursor: pointer;
+}
+
+.flow-data-table tbody tr.is-current {
+  background: rgba(22, 119, 255, 0.1);
+}
+
+.flow-idx-col {
+  width: 36px;
+  color: var(--brand-text-3);
+  text-align: right;
+}
+
+/* ---------- 预览 ---------- */
+.flow-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.flow-preview-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.flow-preview-indicator {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--brand-text-2);
+}
+
+.flow-preview-wrap {
+  position: relative;
+  height: 220px;
+  overflow: hidden;
+  border: 1px solid var(--brand-border);
+  border-radius: 6px;
+  background: var(--brand-bg);
+}
+
+.flow-preview-iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.flow-preview-empty {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--brand-text-3);
+}
+
+/* ---------- 打印配置 ---------- */
+.flow-config-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.flow-config-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.flow-config-label {
+  font-size: 12px;
+  color: var(--brand-text-2);
+  white-space: nowrap;
+}
+
+.flow-config-hint {
+  font-size: 11px;
+  color: var(--brand-text-3);
+  white-space: nowrap;
+}
+
+.flow-info {
+  cursor: pointer;
+  color: var(--brand-text-3);
+}
+
+.flow-conn-hint {
+  font-size: 11px;
+  color: var(--brand-text-3);
+}
+
+.flow-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flow-paused {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #d46b08;
+}
+
+/* ---------- 统计 ---------- */
+.flow-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flow-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.flow-stat-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--brand-bg);
+}
+
+.flow-stat-num {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: var(--brand-text-1);
+}
+
+.flow-stat-label {
+  font-size: 11px;
+  color: var(--brand-text-3);
+}
+
+.flow-stat-ok .flow-stat-num {
+  color: #389e0d;
+}
+
+.flow-stat-fail .flow-stat-num {
+  color: #cf1322;
+}
+
+/* ---------- 失败行 ---------- */
+.flow-failed-toolbar {
+  margin-bottom: 8px;
+}
+
+.flow-failed-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--brand-border);
+}
+
+.flow-failed-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.flow-failed-summary {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--brand-text-3);
+}
+
+.flow-failed-err {
+  color: #cf1322;
+}
+
+/* ---------- 底部 ---------- */
+.flow-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.flow-foot-hint {
+  font-size: 11px;
+  color: var(--brand-text-3);
+}

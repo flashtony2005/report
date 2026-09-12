@@ -1,0 +1,171 @@
+/* TemplateMarket —— 模板市场 */
+
+.market-layout {
+  display: flex;
+  gap: 16px;
+  height: 480px;
+}
+
+/* 左侧分类 */
+.market-cats {
+  width: 130px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--brand-border);
+  padding-right: 12px;
+  overflow-y: auto;
+}
+
+.market-cat-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 10px;
+  margin-bottom: 2px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--brand-text-2);
+  font-size: 13px;
+  text-align: left;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.market-cat-item:hover {
+  background: var(--brand-surface-hover, rgba(128, 128, 128, 0.08));
+}
+
+.market-cat-item.is-active {
+  background: rgba(22, 119, 255, 0.12);
+  color: var(--brand-primary);
+}
+
+.market-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--brand-text-3);
+}
+
+/* 右侧主区 */
+.market-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.market-search {
+  margin-bottom: 8px;
+}
+
+.market-grid-wrap {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.market-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.market-empty {
+  margin-top: 64px;
+}
+
+/* 模板卡片 */
+.market-card {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  border: 1px solid var(--brand-border);
+  border-radius: 10px;
+  background: var(--brand-surface);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.market-card:hover {
+  border-color: var(--brand-primary);
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.12);
+}
+
+.market-card-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.market-card-title {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.market-card-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--brand-text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-card-size {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--brand-text-3);
+}
+
+.market-card-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--brand-text-3);
+}
+
+.market-card-actions {
+  margin-top: 8px;
+}
+
+/* 迷你纸张：淡蓝描边 + 三条示意线 */
+.mini-paper {
+  flex-shrink: 0;
+  border: 1px solid #b9d2ff;
+  border-radius: 2px;
+  background: #f6f9ff;
+  padding: 3px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+}
+
+.mini-line {
+  height: 2px;
+  border-radius: 1px;
+  background: #c3d6ff;
+}
+
+/* footer */
+.market-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.market-footer-hint {
+  font-size: 12px;
+  color: var(--brand-text-3);
+}

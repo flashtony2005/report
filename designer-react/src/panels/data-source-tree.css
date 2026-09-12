@@ -1,0 +1,168 @@
+/* DataSourceTree —— 对齐 Vue 版 scoped 样式 */
+.ds-tree {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.ds-tree-provider {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--brand-border, rgba(127, 127, 127, 0.35));
+}
+.ds-tree-caption {
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--brand-text-3, rgba(127, 127, 127, 0.8));
+}
+.ds-tree-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 1px solid var(--brand-border, rgba(127, 127, 127, 0.35));
+}
+.ds-tree-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ds-tree-source {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--brand-border, rgba(127, 127, 127, 0.35));
+}
+.ds-tree-fields {
+  padding: 8px 8px 0;
+}
+.ds-tree-group {
+  margin-bottom: 12px;
+}
+.ds-tree-group-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--brand-text-3, rgba(127, 127, 127, 0.8));
+}
+.ds-tree-array {
+  color: var(--brand-primary, #1677ff);
+}
+.field-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: grab;
+  transition: background 0.15s;
+}
+.field-item:hover {
+  background: color-mix(in srgb, var(--brand-primary, #1677ff) 6%, transparent);
+}
+.field-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.field-custom {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 2px;
+  background: rgba(22, 119, 255, 0.1);
+  font-size: 9px;
+  color: #1677ff;
+}
+.field-type {
+  font-size: 9px;
+  color: var(--brand-text-3, rgba(127, 127, 127, 0.8));
+}
+.field-type.type-number {
+  color: #3b82f6;
+}
+.field-type.type-date {
+  color: #22c55e;
+}
+.field-type.type-image {
+  color: #a855f7;
+}
+.field-path {
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+  color: var(--brand-text-3, rgba(127, 127, 127, 0.8));
+}
+.ds-tree-empty {
+  padding: 16px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--brand-text-3, rgba(127, 127, 127, 0.8));
+}
+
+/* ---------------- DatabaseExplorer（P5.1b）—— 对齐 Vue 版 scoped 样式 ---------------- */
+.db-explorer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+.db-explorer-hint {
+  font-size: 12px;
+  line-height: 1.7;
+}
+.db-explorer-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.db-explorer-switch-label {
+  font-size: 12px;
+  color: var(--brand-text-2, rgba(127, 127, 127, 0.9));
+}
+.db-explorer-dim {
+  opacity: 0.6;
+}
+.db-explorer-select {
+  width: 100%;
+}
+.db-explorer-field {
+  margin-bottom: 10px;
+}
+.db-explorer-field-label {
+  margin-bottom: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-text-2, rgba(127, 127, 127, 0.9));
+}
+/* 树容器显式用表面色打底，配合 titleRender 的语义化文字色，
+   保证亮/暗主题下「表/列」名字都清晰可读（不依赖 antd 默认树文字色）。 */
+.db-explorer-tree-box {
+  padding: 4px;
+  border: 1px solid var(--brand-border, rgba(127, 127, 127, 0.35));
+  border-radius: 6px;
+  background: var(--brand-surface, transparent);
+}
+.db-explorer-bound {
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--brand-bg, rgba(127, 127, 127, 0.08));
+}
+.db-explorer-bound-line {
+  font-size: 12px;
+  opacity: 0.7;
+}
+.db-explorer-bound-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.db-explorer-reload {
+  height: auto;
+  padding: 0;
+}
