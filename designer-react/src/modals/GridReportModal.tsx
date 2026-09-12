@@ -46,6 +46,7 @@ import {
   parseParams,
   stripArrayPrefix,
   toWorkbookData,
+  withExportFormula,
   type AggType,
   type CellFormatSpec,
   type RenderRequest,
@@ -256,6 +257,21 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   /** 服务端筛选：WHERE 子句（占位符 ?）+ 参数（JSON 数组） */
   const [where, setWhere] = useState('')
   const [paramText, setParamText] = useState('')
+  /** 分页：按「数据行」切页，表头/表尾每页重复（服务端 sheet.page） */
+  const [paging, setPaging] = useState(false)
+  const [rowsPerPage, setRowsPerPage] = useState(20)
+  const [repeatHeader, setRepeatHeader] = useState(1)
+  const [repeatFooter, setRepeatFooter] = useState(0)
+  /**
+   * 导出 xlsx 时把 value_expr 落成 Excel 公式（而非写死算好的值），
+   * 导出后在 Excel 里改明细，小计 / 合计会跟着重算。
+   * 分页导出时会自动回落写值（公式坐标按整表生成，逐页复制后行号对不上）。
+   */
+  const [exportFormula, setExportFormula] = useState(false)
+  /** 调试：让服务端回传展开中间结果（层次坐标 / 父格）与模板告警 */
+  const [dump, setDump] = useState(false)
+  const [dumpText, setDumpText] = useState('')
+  const [warnings, setWarnings] = useState<string[]>([])
 
   const dbDatabases = useDataSourceStore((s) => s.dbDatabases)
   const dbTables = useDataSourceStore((s) => s.dbTables)
@@ -284,6 +300,23 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   }, [open, dbDatabases.length, dbTables.length, dbSelection.database, loadDatabases, loadTables])
 
   const columnNames = useMemo(() => dbColumns.map((c) => c.name).filter(Boolean), [dbColumns])
+
+  /**
+   * 分页配置。必须 memo：buildRequest 是 useCallback，而预览有一层 400ms 去抖，
+   * 若 page 每次渲染都换新对象，doRender 身份随之变化，去抖会退化成反复请求。
+   */
+  const page = useMemo(
+    () =>
+      paging
+        ? {
+            // rows_per_page 兜底为 1：0 会让服务端把整表退化成一页
+            rows_per_page: Math.max(1, rowsPerPage),
+            repeat_header_rows: Math.max(0, repeatHeader),
+            repeat_footer_rows: Math.max(0, repeatFooter),
+          }
+        : undefined,
+    [paging, rowsPerPage, repeatHeader, repeatFooter],
+  )
 
   /**
    * 组装渲染请求：模板 + 数据源声明
@@ -321,6 +354,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         agg: crossAgg,
         aliases,
         valueFormats,
+        page,
         title: `${rowFields.join('/')} × ${colFields.join('/')}`,
       })
     } else {
@@ -339,6 +373,9 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       })
     }
 
+    // 导出公式：统一后处理，不动三个构造器的签名
+    template = withExportFormula(template, exportFormula)
+
     const { database, table, engine } = dbSelection
     if (!database || !table) return { kind: 'error', message: '请先在数据源里选择库和表' }
 
@@ -352,6 +389,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       kind: 'request',
       req: {
         template,
+        dump: dump ? true : undefined,
         sources: [{ name: dsName, database, engine, table, where: whereClause, params }],
       },
       headerRows: headerRowCount(template),
@@ -370,6 +408,9 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     valueFormats,
     where,
     paramText,
+    page,
+    exportFormula,
+    dump,
     dbSelection,
   ])
 
@@ -413,6 +454,9 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         }
         data = payload as RenderResponse
       }
+      // 告警与展开中间结果：只有 dump=true 时服务端才回 dump 字段
+      setWarnings(data.warnings ?? [])
+      setDumpText(data.dump ?? '')
       return { data, headerRows: built.kind === 'sample' ? 2 : built.headerRows }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -720,6 +764,91 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
             />
           </>
         )}
+
+        {showQuery && (
+          <>
+            <Space wrap size="small">
+              <Space size={4}>
+                <Switch
+                  size="small"
+                  checked={paging}
+                  onChange={(v: boolean) => setPaging(v)}
+                  data-testid="grid-report-paging"
+                />
+                <Typography.Text style={{ fontSize: 12 }}>分页</Typography.Text>
+              </Space>
+              {paging && (
+                <>
+                  <Space size={4}>
+                    <Typography.Text style={{ fontSize: 12 }}>每页数据行</Typography.Text>
+                    <InputNumber
+                      size="small"
+                      style={{ width: 72 }}
+                      min={1}
+                      max={500}
+                      value={rowsPerPage}
+                      onChange={(v: number | null) => setRowsPerPage(v ?? 20)}
+                      data-testid="grid-report-rows-per-page"
+                    />
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text style={{ fontSize: 12 }}>重复表头行</Typography.Text>
+                    <InputNumber
+                      size="small"
+                      style={{ width: 64 }}
+                      min={0}
+                      max={10}
+                      value={repeatHeader}
+                      onChange={(v: number | null) => setRepeatHeader(v ?? 0)}
+                      data-testid="grid-report-repeat-header"
+                    />
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text style={{ fontSize: 12 }}>重复表尾行</Typography.Text>
+                    <InputNumber
+                      size="small"
+                      style={{ width: 64 }}
+                      min={0}
+                      max={10}
+                      value={repeatFooter}
+                      onChange={(v: number | null) => setRepeatFooter(v ?? 0)}
+                      data-testid="grid-report-repeat-footer"
+                    />
+                  </Space>
+                </>
+              )}
+              <Space size={4}>
+                <Switch
+                  size="small"
+                  checked={dump}
+                  onChange={(v: boolean) => setDump(v)}
+                  data-testid="grid-report-dump"
+                />
+                <Typography.Text style={{ fontSize: 12 }}>调试（展开中间结果）</Typography.Text>
+              </Space>
+              <Space size={4}>
+                <Switch
+                  size="small"
+                  checked={exportFormula}
+                  onChange={(v: boolean) => setExportFormula(v)}
+                  data-testid="grid-report-export-formula"
+                />
+                <Typography.Text style={{ fontSize: 12 }}>导出公式</Typography.Text>
+              </Space>
+            </Space>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              分页按「数据行」计数，不含每页重复的表头/表尾。预览区始终展示未分页的完整表；
+              「导出 xlsx」按页出 sheet（每页一个）。
+              {exportFormula && (
+                <>
+                  {' '}
+                  导出公式：小计 / 合计落成 Excel 公式，导出后改明细会自动重算；
+                  <b>分页导出时会自动回落写值</b>（公式坐标按整表生成，逐页复制后行号对不上）。
+                </>
+              )}
+            </Typography.Text>
+          </>
+        )}
       </Space>
 
       {error && (
@@ -729,6 +858,23 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           title="渲染失败，下面为服务端生成的 HTML 兜底"
           description={error}
           style={{ marginBottom: 12 }}
+        />
+      )}
+
+      {warnings.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          title="模板告警（表照常出，但数据可能不是你要的）"
+          description={
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {warnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          }
+          style={{ marginBottom: 12 }}
+          data-testid="grid-report-warnings"
         />
       )}
 
@@ -751,6 +897,28 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           <div style={{ maxHeight: '52vh', overflow: 'auto' }} dangerouslySetInnerHTML={{ __html: fallbackHtml }} />
         )}
       </div>
+
+      {dumpText && (
+        <details style={{ marginTop: 12 }} data-testid="grid-report-dump-panel">
+          <summary style={{ fontSize: 12, cursor: 'pointer' }}>
+            展开中间结果（层次坐标 / 父格）
+          </summary>
+          <pre
+            style={{
+              maxHeight: 200,
+              overflow: 'auto',
+              fontSize: 11,
+              lineHeight: 1.5,
+              background: '#fafafa',
+              border: '1px solid #f0f0f0',
+              padding: 8,
+              margin: '8px 0 0',
+            }}
+          >
+            {dumpText}
+          </pre>
+        </details>
+      )}
     </Modal>
   )
 }

@@ -14,6 +14,10 @@ export interface GridCell {
   rowspan: number
   colspan: number
   raw_number?: number | null
+  /** Excel 数字格式串（由 NumFmt 推导），xlsx 导出时套到数值格上 */
+  num_format?: string | null
+  /** Excel 公式（仅 cell.model.export_formula 且表达式可翻译时非空）；HTML 预览用 text */
+  formula?: string | null
 }
 
 export interface RenderedSheet {
@@ -21,9 +25,30 @@ export interface RenderedSheet {
   rows: GridCell[][]
 }
 
+/** 分页配置（页面级：按数据行数切页，表头/表尾每页重复） */
+export interface PageConfig {
+  /** 每页容纳的**数据**行数（不含重复的表头/表尾） */
+  rows_per_page?: number
+  /** 每页顶部重复的模板行数（表头） */
+  repeat_header_rows?: number
+  /** 每页底部重复的模板行数（表尾 / 签字栏等） */
+  repeat_footer_rows?: number
+}
+
 export interface RenderResponse {
   sheets: RenderedSheet[]
   html: string
+  /** 展开中间结果（仅 dump=true 时返回）：`seq | pos | 文本 <- 层次坐标 | 行父 | 列父` */
+  dump?: string | null
+  /** 分页结果（仅模板配了 page 时返回）：每页一个 sheet，名字带 ` (i/n)` */
+  pages?: RenderedSheet[] | null
+  /** 逐页 HTML，与 pages 一一对应 */
+  pages_html?: string[] | null
+  /**
+   * 会静默产出错误数据的可疑情况（父格查不到、表达式解析失败等）。
+   * 不中断渲染，但调用方应当展示给用户。
+   */
+  warnings?: string[] | null
 }
 
 export type ExpandDir = 'r' | 'c'
@@ -57,8 +82,38 @@ export interface CellModel {
   col_after?: string
   value_expr?: string
   expand_expr?: string
+  /** 展开条数下限：不足时补空值（「默认留 N 个空行」） */
+  expand_min_count?: number
+  /** 展开条数上限：超过的丢弃（「只显示前 N 条」） */
+  expand_max_count?: number
+  /** 展开集为空时保留该格（值为 null）；缺省会连同子格一起删除 */
+  keep_expand_empty?: boolean
   /** 数值显示格式（小计 / 合计格应与所在数值列一致） */
   format?: CellFormatSpec
+  /**
+   * 展示期表达式（第三值阶段）：可用 `value` 指代本格的值，
+   * 如 `IF(value >= 1000, "大额", "小额")`。
+   * 只影响展示文本，不影响导出到 xlsx 的原始数值。
+   */
+  format_expr?: string
+  /**
+   * 字典翻译：原始值文本 → 展示文本，如 `{ "1": "是", "0": "否" }`。
+   * 键取未套数字格式的原始文本；命中不了就回落到 format / 全局兜底。
+   */
+  dict?: Record<string, string>
+  /**
+   * 行测试表达式：返回假则**整行删除**（本格连同子树一起不占位）。
+   * 应挂在「决定这一行」的单元格上（如分组格），挂在叶子格上只会删掉那一格。
+   */
+  row_test_expr?: string
+  /** 列测试表达式：返回假则整列删除 */
+  col_test_expr?: string
+  /**
+   * 导出 xlsx 时把 value_expr 翻译成 Excel 公式（而非写死算好的值），
+   * 导出后在 Excel 里改明细，小计 / 合计会跟着重算。
+   * 翻不出来（如 PROPORTION / 条件表达式）会回落写值并告警。
+   */
+  export_formula?: boolean | null
 }
 
 export interface CellTpl {
@@ -80,6 +135,8 @@ export interface RowTpl {
 export interface SheetTpl {
   name: string
   rows: RowTpl[]
+  /** 分页配置；缺省不分页 */
+  page?: PageConfig | null
 }
 
 export interface ReportTemplate {
@@ -104,6 +161,8 @@ export interface RenderRequest {
   template: ReportTemplate
   datasets?: Record<string, Record<string, unknown>[]>
   sources?: ReportSource[]
+  /** 输出展开中间结果，用于排查扩展 / 求值问题 */
+  dump?: boolean | null
 }
 
 /** 列下标 → Excel 列名：0 → A，26 → AA */
@@ -217,6 +276,8 @@ export interface GroupTemplateOptions {
   valueFormats?: Record<string, CellFormatSpec>
   /** 标题（留空则不输出标题行） */
   title?: string
+  /** 分页配置；缺省不分页（整张表一次输出） */
+  page?: PageConfig
 }
 
 /**
@@ -310,6 +371,8 @@ export interface DetailTemplateOptions {
   /** 字段 → 数值显示格式（仅对配置了的数值列生效） */
   valueFormats?: Record<string, CellFormatSpec>
   title?: string
+  /** 分页配置；缺省不分页 */
+  page?: PageConfig
 }
 
 /**
@@ -345,7 +408,7 @@ export function buildDetailTemplate(opts: DetailTemplateOptions): ReportTemplate
     ),
   })
 
-  return { sheets: [{ name: opts.sheetName ?? '明细表', rows }] }
+  return { sheets: [{ name: opts.sheetName ?? '明细表', rows, page: opts.page }] }
 }
 
 export interface CrossTemplateOptions {
@@ -366,6 +429,8 @@ export interface CrossTemplateOptions {
   /** 字段 → 数值显示格式（数值格 / 行合计 / 列合计 / 总计 一致套用） */
   valueFormats?: Record<string, CellFormatSpec>
   title?: string
+  /** 分页配置；缺省不分页（整张表一次输出） */
+  page?: PageConfig
 }
 
 /**
@@ -597,5 +662,28 @@ export function toWorkbookData(sheet: RenderedSheet, opts: { headerRows?: number
         mergeData,
       },
     },
+  }
+}
+
+/**
+ * 打开「导出公式」：给所有带 `value_expr` 的格打上 `export_formula`。
+ *
+ * 做成后处理而不是改三个构造器：构造器里小计 / 合计 / 总计的格散落多处，
+ * 逐个加参数会污染签名；而「要不要公式」本身是个整体开关，统一套一层更清楚。
+ */
+export function withExportFormula(tpl: ReportTemplate, on = true): ReportTemplate {
+  if (!on) return tpl
+  return {
+    ...tpl,
+    sheets: tpl.sheets.map((s) => ({
+      ...s,
+      rows: s.rows.map((r) => ({
+        cells: r.cells.map((c) => {
+          const m = c.model
+          if (!m?.value_expr) return c
+          return { ...c, model: { ...m, export_formula: true } }
+        }),
+      })),
+    })),
   }
 }
