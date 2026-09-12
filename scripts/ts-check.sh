@@ -9,7 +9,9 @@
 #   scripts/ts-check.sh                       # 检查 report 引擎 TS + 设计器
 #   scripts/ts-check.sh openprint/src/report  # 只查某个目录
 #
-# 噪声说明（已被下面的 grep 过滤）：
+# 任何残留错误都会让脚本退出 1，可以直接挂 CI。
+#
+# 噪声说明（已被下面的 NOISE 过滤）：
 #   TS2307 / TS2882         —— 找不到模块（--noResolve 的必然结果）
 #   TS7006 / TS7016 / TS7031 —— 隐式 any，来自解析不到类型的第三方库（fabric / antd / vitest）
 #   TS2339 Property 'x' does not exist on 'PrintZone' 之类 —— 基类解析不到
@@ -29,20 +31,57 @@ fi
 
 TARGETS=${*:-"openprint/src/report designer-react/src/modals"}
 
-FILES=$(find $TARGETS -name '*.ts' -o -name '*.tsx' 2>/dev/null | grep -v '\.spec\.\|__tests__' | sort)
+ALL=$(find $TARGETS -name '*.ts' -o -name '*.tsx' 2>/dev/null | sort)
 
-if [ -z "$FILES" ]; then
+if [ -z "$ALL" ]; then
   echo "没有匹配到文件：$TARGETS" >&2
   exit 2
 fi
 
-echo "检查 $(echo "$FILES" | wc -l | tr -d ' ') 个文件：$TARGETS"
+# 注意：macOS 的 BSD grep 在 BRE 下不支持 \| 做「或」，会把它当字面量，
+# 导致过滤静默失效（第一版就栽在这，spec 文件其实一直没被排除）。用多个 -e。
+SRC=$(printf '%s\n' "$ALL" | grep -v -e '\.spec\.' -e '__tests__' || true)
+SPEC=$(printf '%s\n' "$ALL" | grep -e '\.spec\.' -e '__tests__' || true)
 
+# --noResolve 的必然噪声 + 解析不到类型的第三方库
+NOISE="TS2307|TS2882|TS7006|TS7016|TS7031|TS7053|TS18046|TS2571"
+NOISE="$NOISE|ImportMeta|Cannot find name|Cannot find namespace"
+NOISE="$NOISE|JSX\.IntrinsicElements|Cannot find global type|Cannot find lib definition"
+# spec 文件额外一条：vitest 没解析，importOriginal<T>() 被当成无类型函数调用（TS2347）
+NOISE_SPEC="$NOISE|TS2347"
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+TSCFLAGS="--noEmit --skipLibCheck --strict --jsx preserve"
+TSCFLAGS="$TSCFLAGS --target es2022 --lib es2022,dom,dom.iterable"
+TSCFLAGS="$TSCFLAGS --module esnext --moduleResolution bundler --noResolve"
+
+NS=$(printf '%s\n' "$SRC" | grep -c . || true)
+NE=$(printf '%s\n' "$SPEC" | grep -c . || true)
+echo "检查 $((NS + NE)) 个文件（源码 $NS / 测试 $NE）：$TARGETS"
+
+set +e
 # shellcheck disable=SC2086
-$NODE "$TSC" \
-  --noEmit --skipLibCheck --strict --jsx preserve \
-  --target es2022 --lib es2022,dom,dom.iterable \
-  --module esnext --moduleResolution bundler --noResolve \
-  $FILES 2>&1 | grep -vE \
-  "TS2307|TS2882|TS7006|TS7016|TS7031|TS7053|TS18046|TS2571|ImportMeta|Cannot find name|Cannot find namespace|JSX\.IntrinsicElements|Cannot find global type|Cannot find lib definition" \
-  || true
+if [ "$NS" -gt 0 ]; then
+  $NODE "$TSC" $TSCFLAGS $SRC 2>&1 | grep -vE "$NOISE" > "$TMP/src.err"
+fi
+if [ "$NE" -gt 0 ]; then
+  $NODE "$TSC" $TSCFLAGS $SPEC 2>&1 | grep -vE "$NOISE_SPEC" > "$TMP/spec.err"
+fi
+set -e
+
+TOTAL=0
+for f in src spec; do
+  [ -f "$TMP/$f.err" ] || continue
+  [ -s "$TMP/$f.err" ] || continue
+  echo "--- $f ---"
+  cat "$TMP/$f.err"
+  TOTAL=$((TOTAL + $(wc -l < "$TMP/$f.err" | tr -d ' ')))
+done
+
+if [ "$TOTAL" -gt 0 ]; then
+  echo "类型错误 $TOTAL 处"
+  exit 1
+fi
+echo "OK：无类型错误"
