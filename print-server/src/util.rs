@@ -4,15 +4,21 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use serde_json::json;
-use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
 
 /// String → 0 结尾 UTF-16（Windows W 系列 API 输入）
+///
+/// 用 `str::encode_utf16` 而非 `std::os::windows::ffi::OsStrExt::encode_wide`，
+/// 后者只存在于 Windows，会让整个 crate 在非 Windows 上编译失败。
+///
+/// 仅 Windows 参与编译：这两个函数只服务于 winspool / ShellExecuteW，
+/// 非 Windows 上留着会是无引用的死代码（且 to_wide 的用途会误导人）。
+#[cfg(target_os = "windows")]
 pub fn to_wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// 0 结尾 UTF-16 指针 → String（越界风险由调用方保证指针指向合法缓冲）
+#[cfg(target_os = "windows")]
 pub unsafe fn from_wide(ptr: *const u16) -> String {
     if ptr.is_null() {
         return String::new();
@@ -50,6 +56,7 @@ pub fn service_error(message: impl Into<String>) -> Response {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn wide_roundtrip() {
         let w = to_wide("打印机A");

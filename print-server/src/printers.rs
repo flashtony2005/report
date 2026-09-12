@@ -5,30 +5,17 @@
 //! - 分辨率/双面/彩色：DevMode 的 dmFields + dmPrintQuality/dmYResolution/dmColor/dmDuplex
 //! - 纸盒：DeviceCapabilitiesW(DC_BINNAMES)
 //! - 全部失败时返回空列表（ok:true, count:0），前端有安全默认（defaultDpi 300）
+//!
+//! 平台：枚举实现依赖 winspool，仅 Windows 有效。macOS / Linux 上 `list_printers()`
+//! 返回空列表——`/printers` 仍然 200 且 `count:0`，健康检查照常工作，
+//! 这样报表引擎的渲染 / 导出接口可以在非 Windows 上开发调试。
+//! （曾因此处未做 cfg 隔离，macOS 链接阶段报 `Undefined symbols: _DeviceCapabilitiesW`；
+//!   `cargo test` 测不出来，因为测试 harness 替换了 main，路由不可达导致函数被死代码消除。）
 
-use crate::util::{from_wide, to_wide};
 use crate::AppState;
 use axum::extract::State;
 use axum::Json;
 use serde_json::json;
-
-// 手动定义所需常量（不依赖 windows-sys 常量导出面，避免 feature 缺口）
-const PRINTER_ENUM_LOCAL: u32 = 0x2;
-const PRINTER_ENUM_CONNECTIONS: u32 = 0x4;
-const PRINTER_ATTRIBUTE_WORK_OFFLINE: u32 = 0x400;
-const PRINTER_STATUS_ERROR_BITS: u32 = 0x2 | 0x80 | 0x1000; // ERROR | OFFLINE | NOT_AVAILABLE
-const DM_PRINTQUALITY: u32 = 0x400;
-const DM_COLOR: u32 = 0x800;
-const DM_DUPLEX: u32 = 0x1000;
-const DM_YRESOLUTION: u32 = 0x2000;
-const DMCOLOR_COLOR: i16 = 2;
-const DMDUP_SIMPLEX: i16 = 1;
-const DC_BINNAMES: u16 = 12;
-const BIN_NAME_LEN: usize = 24; // 每个 bin 名固定 24 wchar
-
-use windows_sys::Win32::Graphics::Gdi::DEVMODEW;
-use windows_sys::Win32::Graphics::Printing::{EnumPrintersW, GetDefaultPrinterW, PRINTER_INFO_2W};
-use windows_sys::Win32::Storage::Xps::DeviceCapabilitiesW;
 
 /// 单台打印机（对齐前端 PrinterInfo 字段名）
 pub struct PrinterInfo {
@@ -72,10 +59,57 @@ pub async fn list_printers_handler(
 }
 
 /// 枚举本机打印机；任何 FFI 失败返回 Err（调用方降级为空列表）
+#[cfg(target_os = "windows")]
 pub fn list_printers() -> Result<Vec<PrinterInfo>, String> {
     unsafe { enum_printers_level2() }
 }
 
+/// 非 Windows：无 winspool 可调，返回空列表（前端有安全默认 defaultDpi 300）
+#[cfg(not(target_os = "windows"))]
+pub fn list_printers() -> Result<Vec<PrinterInfo>, String> {
+    Ok(Vec::new())
+}
+
+// ───────── 以下为 winspool 实现，仅 Windows 参与编译 ─────────
+// （避免 macOS / Linux 链接阶段找不到 Win32 符号）
+
+#[cfg(target_os = "windows")]
+use crate::util::{from_wide, to_wide};
+
+// 手动定义所需常量（不依赖 windows-sys 常量导出面，避免 feature 缺口）
+#[cfg(target_os = "windows")]
+const PRINTER_ENUM_LOCAL: u32 = 0x2;
+#[cfg(target_os = "windows")]
+const PRINTER_ENUM_CONNECTIONS: u32 = 0x4;
+#[cfg(target_os = "windows")]
+const PRINTER_ATTRIBUTE_WORK_OFFLINE: u32 = 0x400;
+#[cfg(target_os = "windows")]
+const PRINTER_STATUS_ERROR_BITS: u32 = 0x2 | 0x80 | 0x1000; // ERROR | OFFLINE | NOT_AVAILABLE
+#[cfg(target_os = "windows")]
+const DM_PRINTQUALITY: u32 = 0x400;
+#[cfg(target_os = "windows")]
+const DM_COLOR: u32 = 0x800;
+#[cfg(target_os = "windows")]
+const DM_DUPLEX: u32 = 0x1000;
+#[cfg(target_os = "windows")]
+const DM_YRESOLUTION: u32 = 0x2000;
+#[cfg(target_os = "windows")]
+const DMCOLOR_COLOR: i16 = 2;
+#[cfg(target_os = "windows")]
+const DMDUP_SIMPLEX: i16 = 1;
+#[cfg(target_os = "windows")]
+const DC_BINNAMES: u16 = 12;
+#[cfg(target_os = "windows")]
+const BIN_NAME_LEN: usize = 24; // 每个 bin 名固定 24 wchar
+
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Graphics::Gdi::DEVMODEW;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Graphics::Printing::{EnumPrintersW, GetDefaultPrinterW, PRINTER_INFO_2W};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Storage::Xps::DeviceCapabilitiesW;
+
+#[cfg(target_os = "windows")]
 unsafe fn enum_printers_level2() -> Result<Vec<PrinterInfo>, String> {
     let flags = PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS;
     let mut needed: u32 = 0;
@@ -143,6 +177,7 @@ unsafe fn enum_printers_level2() -> Result<Vec<PrinterInfo>, String> {
     Ok(out)
 }
 
+#[cfg(target_os = "windows")]
 unsafe fn get_default_printer_name() -> Option<String> {
     let mut needed: u32 = 0;
     GetDefaultPrinterW(std::ptr::null_mut(), &mut needed);
@@ -157,6 +192,7 @@ unsafe fn get_default_printer_name() -> Option<String> {
     Some(from_wide(buf.as_ptr()))
 }
 
+#[cfg(target_os = "windows")]
 unsafe fn devmode_caps(dm: *mut DEVMODEW) -> (i64, i64, bool, bool) {
     if dm.is_null() {
         return (300, 0, false, false);
@@ -181,6 +217,7 @@ unsafe fn devmode_caps(dm: *mut DEVMODEW) -> (i64, i64, bool, bool) {
     (default_dpi, max_dpi, color, duplex)
 }
 
+#[cfg(target_os = "windows")]
 unsafe fn bin_names(name: &str, port: &str) -> Vec<String> {
     let wname = to_wide(name);
     let wport = to_wide(port);
@@ -226,6 +263,7 @@ unsafe fn bin_names(name: &str, port: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(target_os = "windows")]
 fn classify_kind(name: &str) -> &'static str {
     let n = name.to_lowercase();
     if ["pdf", "xps", "onenote", "fax", "传真", "虚拟", "image writer"]

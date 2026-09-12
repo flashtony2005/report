@@ -5,8 +5,13 @@
 //! - `html` + `utf8`：注入 @page 纸张 CSS → Edge/Chrome headless 转 PDF → 同上打印（矢量、含文本层）
 //! - `esc/tsc/zpl`：画布 JSON → 票据指令的翻译暂未实现，返回 ok:false
 //! - `svg`：已废弃（原 Qt 客户端 QSvgRenderer 不支持 foreignObject），返回 ok:false
+//!
+//! 平台：发送打印在 Windows 走 ShellExecuteW，在 macOS / Linux 走 CUPS `lp`；
+//! 渲染 / 导出链路与平台无关。
 
-use crate::util::{decode_base64_lenient, service_error, to_wide};
+use crate::util::{decode_base64_lenient, service_error};
+#[cfg(target_os = "windows")]
+use crate::util::to_wide;
 use crate::AppState;
 use axum::extract::State;
 use axum::Json;
@@ -202,12 +207,21 @@ fn inject_page_css(html: &str, width_mm: f64, height_mm: f64, orientation: &str)
 
 /// 按优先级找可用的 headless 浏览器
 fn find_browser() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
     let candidates = [
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     ];
+    #[cfg(target_os = "macos")]
+    let candidates = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ];
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let candidates = ["/usr/bin/chromium", "/usr/bin/google-chrome"];
     candidates.iter().map(PathBuf::from).find(|p| p.exists())
 }
 
@@ -243,6 +257,7 @@ fn send_to_printer(pdf_path: &Path, printer: &str, ctx: &str) -> axum::response:
 /// ShellExecuteW 调用系统 PDF 处理器打印
 /// - verb "print"：用默认关联程序打印（走默认打印机）
 /// - verb "printto"：参数为打印机名
+#[cfg(target_os = "windows")]
 fn shell_print(file: &Path, verb: &str, printer: Option<&str>) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     let op = to_wide(verb);
@@ -263,6 +278,32 @@ fn shell_print(file: &Path, verb: &str, printer: Option<&str>) -> Result<(), Str
         Ok(())
     } else {
         Err(format!("ShellExecuteW({verb}) 返回 {code}"))
+    }
+}
+
+/// macOS / Linux：走 CUPS `lp`
+/// - verb "printto" 且给了打印机名 → `lp -d <printer> <file>`
+/// - verb "print"（缺省打印机）→ `lp <file>`
+///
+/// 这样非 Windows 上报表渲染 / 导出 / 打印链路仍可端到端自测，
+/// 不必先装 Windows 才能跑通。副本数沿用 `lp -n`，其余选项（双面/彩色）
+/// CUPS 侧由打印机默认策略决定，与 Windows 分支行为一致（都交给驱动）。
+#[cfg(not(target_os = "windows"))]
+fn shell_print(file: &Path, _verb: &str, printer: Option<&str>) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("lp");
+    if let Some(p) = printer.map(str::trim).filter(|p| !p.is_empty()) {
+        cmd.arg("-d").arg(p);
+    }
+    cmd.arg(file);
+    let out = cmd.output().map_err(|e| format!("调用 lp 失败：{e}（请确认 CUPS 已安装）"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "lp 退出码 {:?}：{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
     }
 }
 
