@@ -1,0 +1,35 @@
+datasetName. select (selectExp{, descExp{, filterExp{, sortExp}}})
+参数说明;
+
+SelectExp             选出的字段或其表达式
+
+descExp              选出数据的排序规则，true 为逆序，
+false 为正序
+
+filterExp                        过滤表达式
+
+sortExp                排序依据表达式
+group: 根据分组表达式，从数据集中选出一组组集
+语法;
+
+datasethame, group (selectExp{, descExpf{, filterExp{, sortExp
+}}))
+参数说明:
+
+selectExp             选出的分组表达式
+
+descExp              分组表达式结果数据的排序顺序，
+true 为道序，false 为顺序
+
+filterExp              过滤表达式
+
+SortExp             排序依据表达式
+select_one: 从数据集中根据选出字段或表达式以及选出条件，选出一个数据
+语法:
+
+datasetName, Select_one (selectExp{, filterExp})
+参数说明;
+
+selectExp             选出字段或表达式
+
+filterExp              过滤条件

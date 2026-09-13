@@ -1,0 +1,3023 @@
+===== PAGE p-01.png
+分类号
+UDC
+密
+学
+级
+号
+060812030577
+西岛招工大学
+硕士学位论文
+报表引擎系统研究开发
+www.qocin.com
+裴晓华
+学科名称：
+学科门类：
+指导教师：
+申请日期：
+计算机应用技术
+工学
+张璟 教授
+2009年3月
+===== PAGE p-02.png
+独创性声明
+秉承祖国优良道德传统和学校的严谨学风郑重申明：本人所呈交的学位论文是我
+个人在导师指导下进行的研究工作及取得的成果。尽我所知，除特别加以标注和致谢
+的地方外，论文中不包含其他人的研究成果。与我一同工作的同志对本文所研究的工
+作和成果的任何贡献均已在论文中作了明确的说明并已致谢。
+本论文及其相关资料若有不实之处，由本人承担一切相关责任
+论文作者签名：
+装旺华
+2009年
+3月
+日
+学位论文使用授权声明
+本人_張 贱绎在导师的指导下创作完成毕业论文。本人已通过论文的答辩，
+并已经在西安理工大学申请博士/硕士学位。本人作为学位论文善作权拥有者，同意
+授权西安理工大学拥有学位论文的部分使用权，即：1）已获学位的研究生按学校规定
+提交印刷版和电子版学位论文，学校可以采用影印、缩印或其他复制手段保存研究生
+上交的学位论文，可以将学位论文的全部或部分内容编入有关数据库进行检索：2）为
+教学和科研目的，学校可以将公开的学位论文或解密后的学位论文作为资料在图书馆、
+资料室等场所或在校园网上供校内师生阅读、浏览。
+本人学位论文全部或部分内容的公布（包括刊登）授权西安理工大学研究生部办
+理。
+（保密的学位论文在解密后，适用本授权说明）
+论文作者签名，一张Q军 导师签名：
+71孫
+年月
+===== PAGE p-03.png
+摘要
+论文题目：报表引擎系统研究开发
+学科专业：计算机应用技术
+研究生：裴晓华
+指导教师：张 璟 教授
+签名：裴风老华
+签名：张涼
+摘要
+报表引擎是报表工具软件的核心组成部分，它控制报表系统的运行过程，为灵活多变
+钓企业级报表展示提供强有力的软件支持。
+在研究报表引擎工作原理、Eelipse 插件、RCP、XML、OSGI 等相关理论技术，剖析国
+外先进报表引攀系统的基础上，作者提出了基于滑动窗口协议的报表引擎实现方案，设计
+了一个具有一定特色的报表引擎系统体系结构，编码实现了一个可在 Windows 环境下运行
+的报表引攀系统原型。该报表引擎具有报表运行引擎、策略引擎、展现引擎等基本软件模
+块，可实现报表请求、格式定义、引擎定义、引擎运行、引擎监控、引擎输出等基本报表
+工具功能。该系统原型为进一步开发实用报表系统奠定了良好基础。
+本系统基于面向对象技术开发，采用 UML建模语言进行了报表引攀系统的分析与设
+计，绘制（编写）了系统用例图及其用例描述、类图、包图、活动图等文档：应用伪代码
+方法设计了主要软件模块的实现算法。最后在 Eelipse V3.2 环境下，用Java 语言实现了软
+件系统。
+本文将详细介绍作者的上述研究开发工作。
+关键字：报表引擎；报表工具；报表系统：运行引擎：展现引擎；Eclipse：插件开发：
+RCP; OSGI
+===== PAGE p-04.png
+西安理工大学硕士学位论文
+Title: REPORT ENGINE SYSTEM RESEARCH AND IMPLEMENT
+Major: Computer Application Technology
+Name: XIAOHUA PEI
+Supervisor: Prof. Jing ZHANG
+Signature：_xidohua pei
+Signature: Jingzharg
+Abstract
+As a important component of the reporting tool, reporting engine can provide strong
+technical support to enterprises for better displaying report. Because Business is ever-changing
+and reports become more and more complex, reporting engine is a product which fit for this
+status.
+After the deep study of the Working Principle of reporting engine system, plug-in
+developing technology, Rich Client Platform（RCP） developing technology, Extensible Markup
+language（XML）， Open Service Gateway Initiative（OSGT） and so on. Author forward and design
+idea of reporting engine system with Chinese characteristics, which provide Theoretical
+foundation for designing and developing a reporting engine system, and develop a engine
+system which can run in windows system. This report engine system can be divided into some
+components, such as running engine, strategy engine, displaying engine, and can implement
+basic report function, such as report requesting, format defining, engine, defining engine
+running, engine monitoring, engine outputting.
+Basing on theoretical studying, author design a report engine which meets the requirement
+with Object-Oriented Software Development. This design lay a solid foundation for our team's
+development. Author also develop a meeting basic requirement reporting engine system with
+Eclipse plug-in develop technology.
+All the work discussed above is presented in this paper.
+Key words: Report engine; Report tool; Report system; Running engine; Display engine；
+Eclipse, Plug-in Development;RCP;osGi
+II
+===== PAGE p-05.png
+目录
+目录
+1概述
+1.1课题背景和意义・
+1.2国内外报表软件发展状况•
+1.3国内外报表引擎发展状況•
+1.4课题来源与本文的主要工作：
+1.5论文组织结构•
+2 开发技术介绍•
+2.1Eclipse 平台及其关键技术
+2.1.1 Eclipse 体系结构•
+2.1.2 平台运行时・
+2.1.3 OSGI・
+2.1.4 Eclipse 插件技术
+2.1.5 Eclipse 技术应用
+2.1.5.1 开发插件
+2.1.5.2开发 RCP应用
+2.2XML技术•
+2.2.1 XML简介
+2.2.2 DTD 与 XML Schema
+2.2.3 XSL与 iText
+文档对象模型•
+3 报表引擎系统需求分析
+3.1 功能分析
+3.2 模块分析
+3.3流程分析
+3.4相关文件格式分析•
+4报表引擎系统设计•
+4.1功能设计
+4.2 结构设计
+4.2.1 包图
+4.2.2 类图
+4.2.3 类描述
+4.3 流程设计•
+4.4内部接口设计
+5报表引擎系统实现
+・3
+・4
+.5
+・5
+・6
+・6
+•7
+・・8
+：8
+・9
+・9
+・10
+：10
+⋯13
+•15
+・15
+…・15
+：26
+：27
+•31
+•31
+・32
+・32
+・33
+•42
+…・46
+・52
+・55
+===== PAGE p-06.png
+西安理工大学硕士学位论文
+5.1生成引擎模块实现•
+5.1.1 ReportitemExecutor 类实现算法
+5.1.2 AutoTextItemExecutor类的实现及其算法
+5.1.3 ExecutorManager 类的实现及其算法•
+5.2展现引擎模块的实现⋯
+5.2.1 ReportDocumentBuilder 类的实现算法
+5.2.2 LocalizedContentVisitor 类的实现及其算法：
+5.2.3 滑动窗口协议思想在报表引繁系统中的实现、
+5.2.4 算法描述•
+5.2.5 算法试验及其分析•
+6报表引擎系统运行实例⋯
+6.1 系统直接解析报表设计文档
+6.2 系统直接嵌入到报表工具中、
+6.3 系统生成含图表格式的报表
+结東语•
+致谢•
+参考文献•
+论文发表
+・55
+：56
+•57
+•57
+・58
+•58
+・60
+・・61
+・62
+・63
+・・・65
+・・65
+…・67
+⋯・69
+…・71
+⋯・73
+…・75
+⋯・77
+www.qocin.com
+TI
+===== PAGE p-07.png
+概述
+1 概述
+1.1 课题背景和意义
+报表引擎，是报表软件的核心部分，是报表软件的控制中心。报表引攀软件系统包
+括报表引擎运行器、策略引擎器、报表生成器等基本软件模块，可实现报表请求、格式定
+义、引擎定义、引攀运行、引擎监控、引擎输出等基本报表工具功能。
+报表引擎借鉴工作流引擎「2】 的流程运转原理运行。它首先接收来自报表设计器，基
+于指定XML【31格式报表设计文件：然后对该文件进行格式检查、数据源查找、各种计
+算处理、图形、图表处理：最后生成一个中间的二进制文档，发送给报表展示子系统，动
+态生成 PDF、HTML、CSV【4］、SVG【S1等格式的报表。
+报表引擎的功能与性能，在很大程度上决定了报表系统的功能与性能，决定了实用报
+表应用系统的功能与性能。因此，进行本课题的研究开发，探索先进的报表马擎理论与技
+术，开发功能强大报表引擎系统，以及具有一定特色的报表应用系统，对于促进我国政府、
+企业、事业的报表信息处理水平，推动国民经济与社会的信息化快速发展，具有重要实
+际意义，也有很好的学术意义。
+1.2 国内外报表软件发展状况
+报表处理一直是企业应用系统中最重要的一项工作，也是比较复杂的一个环节，因为
+每一个企业都有自己的特色，要求有适合自己需求的报表系统。针对这个需求，国内外软
+件企业纷纷推出各种各样报表引擎系统。下面分别介绍几种主要的报表引擎系统。
+目前国外最有名气的报表工具软件主要有 Crystal Report “6,71 和 Active Report等。水
+晶报表由美国 Crystal Decisions 公司开发。其主要特点是：可以从各种数据来源创建丰富、
+交互内容，并将它集成到应用程序：可充分使用 Web 的优势，实现快速和交互的报表
+系统；提供了完整的组件，可支持 Windows开发环境。目前，水晶报表已被公认为是高
+效能报表系统的行业标准，微软在其.NET 开发平台捆绑的便是水晶报表。水晶报表的不
+足之处在于难以开发一些格式复杂的报表，如带有斜线、交叉线等不规则报表；在报表
+设计和使用方面不太符合中国企业习惯；软件费用比较昂贵。
+Windward Reports 【1是一款轻量级的报表解决方案。其主要特点是：可以使用在各种
+各样场合，可把该报表引擎安装在PC 机上作为一个单机版的软件来使用；或者安装在
+服务器上，作为C/S或B/S结构的服务器来使用。任何语言都可以调用 Windward Reports
+服务器端的服务。还可以把 Windward Reports 报表系统集成在微软的 Word 中，把 Word
+作为报表设计工具，用 Word 进行报表设计。Windward Reports 输出格式包括 PDE, RTE，
+HTML, WordML, SpreadsheetML, XLS or TXT等。但是，Windward Reports是一个轻量级
+报表引擎，适用用于一些中小型应用：在与其它系统整合时比较费时、费力。
+国内报表工具软件以用友华表公司 Cell【91 软件为代表，其内核采用了类似微软
+===== PAGE p-08.png
+西安理工大学硕士学位论文
+Excel的技术。Cell 组件（ActiveX控件）主要适用于开发 Windows 应用程序，可在 VC,VB，
+Delphi, PB, VFP, C++ Builder 等开发工具下使用。Cell 插件主要用于开发 Web 应用程
+序，支持 Html, Asp,JSP, VBScript,JavaScript等言。Cell的主要特点是：具有很强的
+打印及打印预览功能、丰富单元格式与设计、很强的图表功能等。但其不足之处也是很
+明显的：它不是严格意义上的报表类软件，其本质是属于电子表格类软件。只是开发类似
+Excel的报表方面，它具有较明显的优势。
+Grid++Report 「1o】是一款高性能报表开发工具，特别适用于管理信息系统报表开
+发。它提供一个具有超强数据展现能力的数据网格（DataGrid）部件，制作各种表格报表非
+常简便；运行时可通过事件处理使报表与用户交互；针对票据套打进行了专门实现。
+Grid++Report提供可视化报表设计器，设计报表快速简单。除了提供打印功能外，还提供
+报表的查询显示功能，让报表的查询显示与打印一次实现，既提高开发效率又保持数据
+一致性。这也是 Grid++Report 与其它报表构件的最大区别。Grid+tReport 适用于所有支
+持 COM 的开发平台，为 VB、VC、Delphi、C++Builder编写了大量例程。采用
+VC+COM+ATL+WTL 开发，运行性能高，重新发布简单、发布文件小且不依赖任何运行
+时库。
+ACReport 是一套功能强大、基于表格的中国式报表組件，同时也是一款中文化程度
+最高、最终用户最易学习的报表组件，操作简单方便、计算功能强大、容易与程序集成及
+易于扩充。ACReport 支持分组、交叉表、子报表等复杂的报表：具备强大的计算功能的
+特性和比 Excel更灵活的制表功能；支持导入 Excel、Rtf、html文档格式。
+EOS“TT】报表引擎是普元产品家族的一个重要组成部分，它有如下特点：支持三种数
+据源来源：JDBC 数据源，能够连接支持 JDBC2.0 关系数据库；XML 数据源，从 XML
+文件中提取数据；EOS数据源，从 EOS数据总线上提取数据。在报表字段集中，支持数
+据的分组，排序，过滤，汇总，连接等运算。EOS 报表中采用标准的javascript 作为公式
+脚本语言，在报表引擎中包装高效 javascript 执行引擎。EOS 报表对标准 javascript
+函数做了扩充，增加了数据引用，单元格引用，汇总等报表函数。EOS 报表引擎支持二
+维和三维韵柱形图、饼图、面积图、折线图、散点图、股价图等常用的图表样式。通过“展
+开区域”，可以根据字段集中的数据对报表设计文件中表格式的表样进行展开，得到需要
+的报表样式。EOS 报表支持字段集的横向（列展开）和纵向（行展开）展开、双向展开、
+及交叉表的展开。EOS 报表可以输出多种常用格式的报表，如 HTML、Excel、PDF、XML、
+SVG 等。
+润乾报表「121是一款优秀的国产报表软件，在许多方面符合中国国情。其特点包括：
+创新的报表模型、对跨平台大型应用的支持、HTML、EXCEL、PDF 报表展现方
+式、填报功能、强大的 API 接口等。
+润乾报表的主要缺点包括：瞄着高端路线，价格昂贵：外围功能做得较少、使用入门
+比较困难。
+2
+===== PAGE p-09.png
+概述
+1.3国内外报表引擎的发展状况
+经过多年发展，报表引擎系统已经比较成熟，各种不同的报表引擎只是在公认技术
+基础上突出自己在某方面的特色。已有的报表引擎系统体系结构分为三种：Java“13，报
+表引擎、控件方式的报表引擎、独立服务方式报表引擎。
+控件方式引擎：在浏览器端要安装一个 ActiveX 控件，在服务器端负责取数据，报表
+的计算和生成都在控件中进行。采用这种方式的原因是它的报表功能往往都是用 Dephi
+实现的，包括许多产品都是采用相同的第三方组件。
+控件方式缺点在于：（1）部署：一个控件要完成别人在报表服务器上实现的大部分
+功能。功能越强，控件体积越大，这对于部署是一个很大的负担。不仅如此，而且，当报
+表系统升级时，用户都必须重新安装控件。（2）性能：在 PC 计算机与服务器端计算方面，
+对于小报表差别不大，但对于大报表，差异非常大。并且，如果一个报表引擎系统由多个
+用户使用，服务器的方式所可以采用的定时计算，缓存等等都无法发挥作用。
+所以，控件方式一般只适用于简单小型报表，即报表样式简单；计算量，报表规模都
+比较简单。
+独立服务器引擎：这种方式安装一个（逻辑上）独立的报表服务器（包括报表引擎系
+统）。它避免了空间方式的报表引擎系统部署繁琐，升级不便的缺点，能通过服务器有效
+的管理报表，很好地处理性能问题。但它部署起来也是比较麻烦，实际上这类报表引擎系
+统很难做到跨平台。尤其是如果涉及集群，连接池等问题，它就无法提供良好可扩展性。
+Java 报表引擎：可以轻松的实现报表钓跨平台部署。有与独立服务器相同的优点与
+缺点。对于 Java应用，则可以类包钓方式将报表软件最入到J2EE应用架构中，与应用系
+统形成无缝衔接。这时，它的优势就更加明显：Java 应用服务器的所有提高性能的手段，
+都可以在报表系统上充分发挥作用，如计算能力更强的服务器、负载均衡、连接池等；报
+表系统可以与应用程序更紧密地衔接，被应用程序更灵活地使用。
+报表引擎虽然已成为一个成熟的技术，但在某些具体方面还是有很大的研究空间的，
+目前报表引擎研究主要专注与跨平台且具有独立的服务器功能方面，除此之外，根据不
+同地区的报表具有很好解析功能也是报表引擎研究热点。
+1.4 课题来源与本文的主要工作
+本课题是“十一五”863 计划信息技术领域2007年度重点项目“面向流程管理的软件
+生产线”的子课题：“报表工具系统”的一个重要组成部分。
+本课题的主要工作包括：
+理论与技术研究：学习研究报表引擎的工作原理；基子 Eclipse的软件开发技术；国
+内外典型报表引擎系统剖析。
+报表引擎软件系统开发：报表引擎软件系统的分析与设计；报表引擎的原型系统
+开发。
+3
+===== PAGE p-10.png
+西安理工大学硕士学位论文
+1.5 论文组织结构
+本文各章的内容安排如下：
+第一章：介绍了课题的背景和意义，报表引擎的原理及其发展情况。
+第二章：介绍了本课题所使用的开发平台、开发技术。
+第三章：介绍了报表引擎需求分析过程，并给出了部分需求分析文档。
+第四章：介绍了报表引擎的系统设计过程，并给出了部分设计文档。
+第五章：介绍了报表引擎的编码实现过程。
+第六章：总结。
+www.docin.com
+4
+===== PAGE p-11.png
+开发技术介绍
+2 开发技术介绍
+2.1 Eclipse 平台及其关键技术
+Eclipse “14,1S1是一个技术先进、功能强大的软件开发平台。应用软件在 Eclipse 中称为
+“插件”，它们在平台架构中互动，进行完美的集成。随着 Eclipse3.x对 RCP（Rich Client
+Platform，富客户端平台）开发的支持，Eclipse 已成为广为业界支持的开放性标准软件开
+发环境，业界已成事实工业标准。
+2.1.1 Eclipse 体系结构
+Eclipse 的体系结构如图2-1所示：
+Workbench
+SWTIJFace
+Help
+JDT
+PDE
+Workspace
+Team
+New toal
+Platform run-tirhe
+图 2-1 Eclipse 的体系结构
+Figure 2-1 Architecture of Eclipse
+Eclipse 体系结构类似于“软总线”，其核心部分（Platform Runtime）类似于一条“即插即
+用”的“总线”，它提供了许多的“插槽”（extension point，即扩展点）。其余的部分都可看成
+类似于外部设备的“插件”（Plug-in），可随时加载和卸载。更为灵活钓是每个插件又提供
+了“插槽”可继续安装其他的插件。
+Eclipse 分为 Eclipse 平台、PDE T16 （PIug-In Develop Environment，插件开发环境）、
+JDT I71 （Java Development Tools, Java 开发工具）、以及其他插件。其中 Eclipse 平
+合是整个系统的基础，Eclipse 的核心。JDT 是提供了用于编辑、查看、编译、调试和运
+行 Java 代码的专门插件。PDE 构建于 Eclipse 平台和JDT之上，提供了专门开发插件的
+工具。
+Eclipse 平合是在其上创建插件扩展核心框架和服务的名称，是一个通用基础架
+构。平台由平台运行时、工作空间、工作台、帮助、小组、调试构成。平台在结构上大致
+可分为核心（core）和用户界面（UT）两层。核心是与用户界面无关的基础结构，包含平
+台运行时和插件管理、工作空间和资源管理以及版本和配置管理。其中平台运行时又是
+Eclipse平台的核心。
+===== PAGE p-12.png
+西安理工大学硕士学位论文
+2.1.2平台运行时
+平台运行时（Runtime）相当于一个微内核，是插件的核心引擎。它位于平台核心中
+最低级别的部分，由 org.eclipse.osgi 和 org.eclipse.core 这两个插件组成，其他所有的插件
+都依赖于这两个插件。
+Runtime 功能
+◆定义插件的结构以及它们包含实现详细信息（bundle 和类载入器）。
+◆ 查找和执行主要的 Eclipse应用程序以及维护插件的注册表、扩展和扩展点。
+◆ 提供实用程序（如记录、调试跟踪选项、适配.、首选项库和并发性基础结构）。
+Runtime 的工作原理
+Runtime 管理着一个插件注册表（所有插件的标识），当 Eclipse 启动时，Runtime内
+核先定位JRE的位置，然后启动 startup.jar扫描 plugins 和 features目录下的插件配置文件，
+对插件进行初始化，把插件注册到 OSGI（ Open Service Gateway Initiative，开放服务网关
+协议）中，并保存配置文件中的信息。然后查找清单文件中声明的 extension point 和
+extension，将二者匹配，保存插件的依赖关系。最后启动应用。
+只有当需要使用插件时，Runtime 才将其调入内存；不需要时选择适当时机把插件
+清除出内存。
+2.1.3 OSGI
+Eclipse 体系架构是参照 OSGi 181 （Open Service Gateway Initiative，开放服务网关倡
+议）实现。核心插件 org.eclipse.osgi 就是 OSGi的实现。
+OSGi是一个为家用硬件设备的远程互访建立的一个开放的规范。它包括构建开放的
+可交付网络服务的各方面。
+OSGi中的应用称为 bundle，每个 bundle 可提供一定数量服务（Services）。每一个
+安装在OSGi服务平台 bundle 都有一个与之关联的 bundle 对象（object），它负责管理
+bundle 的生命周期。bundle有诸如安装、停止、活动等多种状态。
+OSGI主要规范如下：
+框架规范（Framework）：是 OSGi规范的核心，提供了一个通用、安全可管理Java
+框架以及管理bundle 安装和更新的功能。bundle 安装后会注册一定数量的服务，可被同一
+Framework 下的其他 bundle 使用。不同 bundle 提供 Services 可构成一个大规模的
+Services，不同 bundle 和 Services 形成依赖。这种依赖关系由 Framework负责管理。
+Framework 为 bundle 提供了代码动态加载的功能，OSGi兼容设备可以任意加载和卸载
+OSGi bundle。使得开发者开发、部署一个大规模 Services 变很容易。Framework 还为
+Java bundle 开发者提供了简明一致编程模型，允许开发者将自己接口规范绑定到
+OSGI环境中的 Services。
+6
+===== PAGE p-13.png
+开发技术介绍
+包管理服务 （Package Admin Service）规范：管理不同 bundle 之间的引用关系。当
+bundle 更新或者卸载时判断是否有其他的服务正在使用当前的 bundle。
+启动层次 （Start Level）规范：定义了启动和停止一个 OSGi服务平台时，不同 bundle
+的启动或者停止的先后顺序。
+权限管理服务 （Permission Admin Service）规范：对 bundle间的访问权限进行控
+制。Eclipse 实现了 oSGi规范，平台运行 （runtime）实现了 Framework 标准，提供了相
+应的核心功能。插件在效果上相当于 bundle，整个体系灵活而且强大。
+2.1.4 Eclipse的插件技术
+◆ 插件 （Plug-in）：Eclipse 功能实现的最小单位，包含 Java 代码或其他文件。实现插件
+的类一般都继承或实现某些类或接口。插件位于 plugins 目录下，使用清单文件
+plugin.xml向系统说明如何集成到平台。
+◆ 扩展点 （extension point）：具有命名特性的信息收集点，也就是为插件提供的接口。
+每一个插件都是在已有的扩展点上开发，同时可自定义扩展点，以便在这个插件上继
+续开发。正是由引入了扩展点，插件不仅可以安装在 Eelipse的平台上，还可以安装
+到其他插件上。
+◆ 扩展（extension）：对扩展点的实现。每个插件至少实现了一个扩展点。
+插件之间的通信是通过扩展点来实现的。首先插件 A 声明了扩展点P及其实现规则
+接口I。插件B 如果要扩展插件 A 的扩展点P，则生成一个实现接口I的类C，从而实现
+对P的扩展。在实际运行时，插件 A 找到类C并实例化，然后调用其实现了接口I中的
+方法。
+m
+定义扩展点P
+扩展
+A
+接口I
+实现
+类C
+创建 调用
+图2-2 插件通信机制
+Figure 2-2 Plug-in communication mechanism
+当需要与实现某扩展点的插件通信时，根据实现扩展的插件清单 plugin.xml中
+extension 标签声明中的“class”属性查找并装入类，再根据实现扩展类的规则来调用该类中
+钓方法，从而实现了扩展。
+7
+===== PAGE p-14.png
+西安理工大学硕士学位论文
+2.1.5 Ealipse 技术应用
+2.1.5.1 开发插件
+利用PDE可以方便快捷把应用程序开发成插件，打包后放到 plugins 目录下，Eclipse
+启动时会找到相应插件。利用这种方式可开发 GUI和非 GUT插件。如开发 GUI插件，
+一般是对平台的操作组（actionSets）进行扩展，实现在菜单栏中添加菜单项。然后提供
+透视图、视图、编辑器的扩展。使用这种方式开发的应用只能作为 Eclipse 的插件运行，
+必须安装 Eclipse。插件开发的步骤如下：
+◆ 决定插件如何与平台集成；
+◆ 标识需要进行添加的扩展点以便与用户的插件进行集成：
+◆根据扩展点的规范来实现这些扩展，如实现扩展点所要求特定的接口；
+◆提供清单文件（plugin.xml），它描达用户正在提供扩展以及代码的封装。Eclipse
+就是解析这个文件来加载插件的。
+2.1.5.2 开发RCP应用
+胖客户端程序（RCP）指运算和商务逻辑是在客户端实现应用，相反的在服务嚣端
+的实现被称为瘦客户端程序。
+Eclipse RCP［191 提供了一个通用的工作台，开发人员可以扩展该工作台来构造自己的
+应用程序。利用RCP可以开发出独立的应用，从面脱离了 Eclipse平台的IDE 环境。一个
+RCP 至少要实现一个插件，并且可以使用与 Eclipse IDE 相同用户界面元素。运行
+Eclipse RCP 不需要安装 Eclipse。
+开发 Eclipse RCP 钓步骤如下：
+◆ 编写插件清单 plugin.xml。
+◆生成组件类来实现扩展。
+◆ 创建 WorkbenchAdvisor 类。构建 RCP 核心任务之一就是创建一个实现抽象
+类 WorkbenchAdvisor 的类。WorkbenchAdvisor 负责配置工作台，当执行 RCP 应
+用程序时，将昆示该工作台。
+•创建 Application 类。它相当于与 Java 类中的 main 方法，是RCP 应用程序的主
+要入口点，需要定义 org.eclipse.core.runtime.applications 扩展点，并实现
+IPlatformRunnable 接日。
+•创建并导出一个应用程序，并生成一个插件，将其放在plugins 目录。
+◆ 配置 config.ini文件。需要定义 product、application 和闪屏等信息。
+8
+===== PAGE p-15.png
+开发技术介绍
+2.2XML技术
+2.2.1 XML 简介
+XML '201 （Extensible Markup Language，可扩展的标记语言）是一套定义语义标记旳规
+则，这些标记将文档分成许多部件并对这些部件加以标识'21。它也是元标记语言，用于
+定义其与特定领域有关的、语义、结构化标记语言的句法语言。XML同HTML一样，
+都来自 Standard Generalized Markup Language，即标准通用标记语言，简称 SGML。
+XML 结合了 SGML和 HTML的优点并消除其缺点。XML不仅保留了 SGML韵柔性
+而且还保留了 HTML 的简单性。XML不但是置标语言，而且是可扩展的（extensible）置
+标语言，它提供了一个标准，利用这个标准，用户可根据实际需要定义新置标语言，并
+为这个置标的语言规定它特有的一套标签。例如用 XM 描述一张报表信息将非常直观，
+如图2-3所示：
+<7xmi version="10"encoding-"GB2312"7>
+《报表≥
+《数据源>
+《斑动≥oracle jdhc. driver. Or acleDriver/驱动=
+《URL>jdbe: oraele: thin：@oralDs:1521:ore1
+KMRLP
+KUSER-Eajt/USER>
+KPASSWORDPEEj t/PASSWORD>
+＜/数据源＞
+《数据業＞
+《QneryTexP ：g1语有</QuetyText
+《/数据袋＞
+-/报表：
+V
+doCIn.com
+图2-3 用XML 描述报表信息
+Figure 2-3 Use XML Describe Information of Report
+上图中的这段代码是一个非常简单的 XML文件。看上去它和 HTML 非常相象，但
+细心的人会发现这里的标签代表的不再是显示格式，而是对于报表内容的语义解释。
+XML作为第二代 Web 语言，具有许多重要特性：
+【1】
+可扩展性：XML 让使用者创建和使用他们自己的标记而不是 HTML的有限
+词汇表。企业可以用 XMI为电子商务和供应链集成等应用定义自己的标记语言，甚至特
+定的行业一起来定义该领域的特殊的标记语言，作为该领域信息共享与数据交换的基础。
+【2】灵活性：XML提供了一种结构化的数据表示方式，使得用户界面分离于数
+据。在XML中，可以使用样式表，如 XSL（Extensible Style sheet Language，可扩展样式
+语言）和 CSS2（Cascading Style SheetLeve12，层叠样式表第二进阶），将数据呈现到浏览器
+中。
+13】
+对数据的交换、存储和共享性：使用 XML 可很容易地将不同来源结构化
+9
+===== PAGE p-16.png
+西安理工大学硕士学位论文
+数据结合起来，后台数据库和其他应用得来的数据能够在中间层钓服务器上进行集成；通
+过XML可以用纯文本文件方式在文件或数据库中存储数据，系统扩展或升级时更便利。
+【4】 自描述性：XML文档中的数据可被任何能对 XML数据进行解析的应用所分
+析、提取、处理，并以所需格式显示。XML 表示数据的方式真正做到了独立于应用系统，
+并且这些数据能重用。
+【5】 跨语言特性：XML 采用 Unicode 字符编码系统，从而支持世界上几乎所有
+主要语言，并且不同语言的文本可以在同一文档中共存，使用 XML软件能处理所有这
+些语言的任何组合。
+2.2.2 DTD与 XML Schema
+报表的格式和数据都存储在 XML格式的文档中，为了能够有效的定义报表格式和
+组织报表的数据，需要定义词汇表来验证和规范报表和数据文档。目前 W3C （World Wide
+Web Consortium,W3C 委员会）推荐两种方式定义词汇表：DTD（Document Type Definition，
+文档类型定义）、XML Schema。
+文档类型定义DTD 是一套关于标记符的语法规则，它提供了一个 XML文档中元素、
+标记、属性、实体的清单以及它们之间关系，一个有效的 XML 文档必须遵循 DTD 已
+声明的种种规定，简言之，DTD 就是一个标记语言的语法和词汇表。
+XML Schema 是在DTD 的基础上发展起来的，功能比DTD 更强大：可以定义每个元
+素的实际数据类型：从其它模式继承语法；创建简单和复杂的数据类型：定义元素可能出
+现次数的最多值和最小值。DTD 和 XML Schema 各有优缺点，主要表现在：
+◆ DTD是 W3C 1998年2月推荐规范，使用 EBNF （Extended Backus-NaurForm）
+语法描述元数据，对于那些不熟悉 EBNF语法使用者具有一定的难度。
+◆ XML Schema 221是 W3C 2001年5月确定的推荐标准，XML Schema 使用 XMIL
+语法，使用者不必花费太多的时间就能掌握。
+• DTD支持数据类型少于 XML Schema，在描述数据类型方面有一定的缺陷。
+◆ DTD 的定义非常简洁，而 XML Schema定义比较复杂，同一个词汇表DTD的
+定义大概只有 XML Schema 一半。
+◆ 采用 DTD 规范偏重于开发语言，适合专业编程人员；而采用 XML Schema 规
+范偏重于 XML提供技术，适合设计人员。
+2.2.3 XSL 与iText
+目前两种基于XML的报表实现技术比较流行：XML/XSL（XMLStylesheet Language，
+XML 样式语言）、XML/iText〔231。使用 XML/iText技术偏重于开发语言，词汇表中每一
+个元素都需要有具体实现，而便用 XML/XSL 技术则偏重于设计，因为 XSL也是W3C
+推荐昀规范。下面分别介绍这两种技术：
+10
+===== PAGE p-17.png
+开发技术介绍
+XSL是专门为XML文档显示所开发的语言，它定义一套 XML 语法规范，该规范可
+用来将 XML 文档转换成 HTML、XML或其他格式的文档。XSL采用 XML语法，因此
+文档本身也是 XML文档。一个 XSL样式表可以用于多个具有相似源树结构的文档。处
+理 XSL样式表是 XSL 处理器，它接收一个 XML文档和一个 XSL 样式表，按样式表的
+要求输出。XSL包括两个标准：XSLT （XSL Transformations）和 XSL-FO （XSL Formatting
+Objects）。采用 XML/XSL技术实现 Web 报表需要两个基本步骤：
+◆ 设计一个用于转换样式表XSLT，用其将 XML文档转换为由 XSL-FO 元素构成
+的文件。
+◆ 通过 Apache XML Project 的 FOP （Formatting Objects to PDF）引擎解析 FO 文档
+得到报表。
+实现过程如图2-4所示：
+KML Source
+FOP
+XSLT
+Processor
+XSL-FO
+filc
+XSLT
+stylesheet
+高质量报表
+图2-4XSL 实现 Web 报表工作原理
+Figure 2-4 Web statements realize XSL Working Principle
+XSLT是 W3C 制定的用于转换 XML文档的规范，它详细规定了转换所需要的词汇表
+和词汇表中词汇对应语义。XSLT 转换通常涉及三个文档：源文档（XML文档）、目标
+文档和含有模板规则文档（XSLT 样式表）。XSL处理器负责实现转换过程。首先，XML
+源文档被解析成DOM树存放在内存中，接着对文档进行分析，每一个DOM树中的节点
+都会与一个模式相比较，当二者匹配时，就会按照 XSLT 样式表中定义的规则进行转换，
+否则继续往下匹配。如此循环，直至整个文档处理完毕。图2-5表示整个处理过程。
+11
+===== PAGE p-18.png
+西安理工大学硕士学位论文
+样式表XSL
+XML
+样式单节点树
+（模板）
+源节
+点树
+XSL引擎
+结果
+节点
+树
+源
+XML
+指令执行
+格式化
+前对象
+格式化
+对象
+结果
+XMI
+非
+XML
+图例
+源节点
+样式表结
+果草点
+样式表指令
+苹点
+图2-5 XSLT 转换原理
+Figure 2-5 Conversion principle of XSLT
+XSL-FO 【241是 W3C 所推荐的最长的规范之一。目前，国内外有许多报表工具采用
+XML/XSL 技术生成报表。
+XML/iText 技术虽然采用 XML 存储报表格式和数据，但它没有过多的依赖 XML 技
+术，而是将 XML作为一种载体，大部分转换工作依靠编程人员所开发钓程序。采用
+XML/iText技术需要设计词汇表。自定义词汇表优点在于词汇表是在实际应用的基础上
+开发的，与实际应用紧密相连，易于理解和使用，并且数量较少，易于实现。采用 XML/iText
+技术需要解析、转换模板文档。自定义词汇表，必然需要相应的引擎来支持。引擎设
+计和实现完全围绕词汇表展开，每当增加一个元素，就必须为引攀提供相应的程序解析和
+转换新增的元素。采用 XML/iText 技术容易扩展、修改和维护，并且与实际应用联系紧
+密。其工作原理如图 2-5所示：
+报表模板
+解析、转換、
+輸出
+图 2-6 XML/iText 工作原理
+Figure 2-6 Working Principle of XML/Text
+PDF文档
+12
+===== PAGE p-19.png
+开发技术介绍
+2.2.4文档对象模型
+DOM （Document Object Model） 即文档对象模型，是解析和处理XML文档的常用
+API之一。DOM 以分层次对象模型来访问存储在XML中的信息，在处理 XML文档时，
+生成一棵节点树，并把文档中文本信息转变成一组树的节点。DOM 使用树状模型来访
+问 XML文档中的信息，由于XML文档是分层次的，所以 DOM 这种模式处理 XML文档
+十分清晰明确。
+DOM 是一个独立于平台和语系的接口，是相关于文档的一系列对象列表，通过操作
+这些对象，可对 XML文档进行读取、遍历、修改、添加和删除。在DOM 中最基本的对
+象是 Node，从 Node中又派生出了几种具体的节点类型。对应于XML中各种相应的节点。
+在使用 DOM 加载 XMIL 文档后，在内存中形成一个节点树，由 XML 各种节点形成各种
+对象模型组成。这些对象包括相应的属性、方法，以对数据进行操作。
+DOM中有几个基本对象：
+【1】
+document，这个对象参照到整个文档，是对文档操作的入口。
+【2】
+element 和 attribute，这是文档中的某一部分的映射，节点层次，反映了文
+，档的层次。
+【3】
+text，这是 element或属性节点的内容，不再包括子元素。
+DOM 中的所有节点，都是从NODE节点继承而来的，它包括一些基本属性与方法，
+通过这些属性和方法，可以对文档遍历，还可取得节点名称、取值和类型。它将 XMI
+中的所有项目看成节点：元素、属性、文本、注释、处理指令等。DOM韵接口与具体
+平台和语言没有关系，因此在J2EE平台和.NET 平台下有不同的实现，常见的有DOM和
+基于 Java 语言实现的 JDOM，dom4j等。J2EE 框架的类库对XML提供了大量的支持，
+并且符合 W3C标准，性能高，可扩展性好，为 XML的文档处理提供了有力的支持。
+本系统利用了 XML 对报表设计文件进行描述，利用 XSL 对报表设计文件所用到
+标记进行描述，利用 XML/Itext来生成PDF格式的报表。
+13
+===== PAGE p-20.png
+西安理工大学硕士学位论文
+www.docin.com
+14
+===== PAGE p-21.png
+报表引擎系统需求分析
+3 报表引擎系统的需求分析
+3.1 功能分析
+根据上文对国内外同类产品的分析以及国内企业用户的需求，我们获得了报表引擎应
+该具有的功能如下：
+1） 能处理各种各样的报表，特别是企业遇到的一些特殊格式的报表。
+2）跨平台，能在 Windows、Linux平台下运行。
+3）可支持多数据源。从以不同的形式存储的数据源中提取数据，并生成报表。
+4） 具有统计，分组，过滤功能。
+能产生图表，形象地展现报表数据的分布情况。
+6） 支持各种形式的报表输出，如 Excel、PDF、HTML 等形式，以应对各种各样的企
+业需求。
+7）
+有比较完备的错误处理机制，以及运行监控机制。
+8）
+支持 C/S 及 B/S 模式运行。
+9） 报表引擎可作为一个插件晚入到一些可视化设计软件（如 Word、Eclipse）中。
+10） 报表符合中国企业的习惯，支持斜线。
+11） 支持报表权限管理，控制用户对报表系统的访问权限。
+3.2 模块分析
+报表引擎从整体上划分为：报表请求器鄙分，格式定义部分，引擎定义部分，运行引
+繁部分，策略引擎部分，引擎监控部分，展现引擎部分。每一部分都是独立运行的一个模
+块。它们之间经过相互协调工作，共同完成整个报表从定义、请求、执行、监控、分派、
+显示功能。
+整个报表引擎的核心的部分是报表引擎运行器、策略引擎器以及报表生成器。其它几
+是报表引擎辅助部分，协调报表引擎的运作。
+报表请求器：主要是实现对报表请求参数的封装，实现统一的入口。并负责对请求及
+响应的集中控制、分配。该模块的用例图「251如图3-1。
+15
+===== PAGE p-22.png
+西安理工大学硕士学位论文
+參数封装
+啊应控制
+报表设计引堠
+报表引擊定义
+暑
+响应分配
+图3-1 报表请求器用例图
+Figure 3-1 Use Case Diagram of Report Requester
+以下是该用例图中的用例描述：
+表3-1 参数封装
+Table 3-1 Parameter encapsulation
+用例名称
+用例描述
+前置条件
+部署约束
+正常事件流
+可选事件流
+异常事件流
+非功能需求
+参数封装
+用户通过界面向系统提供报表引擎所使用的参数，此处只对参数进行封装
+无
+无
+请求参数所组成的流
+OCIn.Com
+请求参数所组成的流
+不符合格式参数流
+无
+16
+===== PAGE p-23.png
+报表引擎系統需求分析
+表3-2 响应控制
+Table 3-2 Response control
+用例名称
+用例描述
+前置条件
+部署约束
+正常事件流
+可选事件流
+异常事件流
+非功能需求
+响应控制
+根据报表引擎设计提交的参数进行分析、处理，如果参数格式符合
+要求，就进行下一步处理，否则就向提交方返回报表设计引擎响应。
+无
+无
+请求参数所组成流
+请求参数所组成流
+不符合格式参数流
+无
+表3-3响应分配
+Table 3-3 Response distribute
+用例名称
+用例描述
+响应分配
+如果用户提交参数格式正确，就分配对应功能，并把分配结果提交到报表定
+义器中。
+无
+无
+分配结果所組成流
+前置条件
+部署约束
+正常事件
+流
+可选事件
+流
+异常事件
+非功能需
+求
+分配結果所組成流
+不符合格式分配结果流
+无
+===== PAGE p-24.png
+西安理工大学硕士字位论文
+报表格式定义器：主要功能是实现报表输出格式的定义、报表栏位中输出的格式（包
+括字体、颜色、框线、显示样式等），输出的内容（输出的对象、输出对象的简单计算、
+页头、分组、页尾等）。该模块用例图如图 3-2 所示。
+フ输出格式的定义下
+报表栏位中输出的格式定义
+引浆运行嚣
+报表请求器
+输出内容定义
+图3-2报表格式定义器用例图
+Figure 3-2 Use Case Diagram of Report Format definition
+以下是该用例图的用例描述：
+用例名称
+用例描述
+前置条件
+部署约束
+正常事件流
+可选事件流
+异常事件流
+非功能需求
+表3-4 输出格式定义器
+Table 3-4 Output format definition
+输出格式定义器
+根据报表请求器提供参数，对输出格式进行定义
+无
+无
+输出格式
+输出格式
+不符合规定参数请求
+无
+COR
+18
+===== PAGE p-25.png
+用例名称
+用例描述
+前置条件
+部署约束
+正常事件流
+可选事件流
+异常事件流
+非功能需求
+报表引掔系统需求分析
+表3-5 报表栏位中的输出格式定义
+Table 3-5 Output format definition in report position
+报表栏位中的输出格式定义
+根据报表请求器提供参数，对报表栏位中的输出格式定
+义
+无
+无
+报表栏位输出格式
+报表栏位输出格式
+不符合规定参数请求
+元
+用例名称
+用例描述
+前置条件
+部署约束
+正常事件流
+可选事件流
+异常事件流
+非功能需求
+表3-6输出内容定义
+Table 3-6 Output content definition
+输出内容的定义
+根据报表请求器提供参数，对输出内容进行定义
+无
+无
+输出内容格式
+输出内容的格式
+不符合规定参数请求
+无
+19
+===== PAGE p-26.png
+西安理工大学硕士学位论文
+引擎定义器：定义报表引擎运行时算法、算法执行次序、是否循环或分解、引用
+外部应用接口等信息。算法包括从数据库中读取原始的数据信息、对各种参数进行计算
+算法。算法的形式参数、实际参数、数据类型。该模块用例图如图3-3所示。
+算法提取
+引擎运行嚣
+报表请求器
+算法管理
+图3-3 引擎定义器用例图
+Figure 3-3 Use Case Diagram of Engine Definition
+以下是该用例图用例描述
+用例名称
+用例描述
+前置条件
+部署约束
+正常事件流
+可选事件流
+异常事件流
+非功能需求
+表3-7 算法提取
+Table 3-7 Get algorithms
+算法提取
+根据报表请求器提供参数，提取系统中所要用到钓算法
+无
+无
+系统中所要求的算法
+系统中所要求算法
+不符合规定参数请求
+无
+20
+===== PAGE p-27.png
+用例名称
+用例描述
+前置条件
+部署约束
+正常事件流
+可选事件流
+异常事件流
+非功能需求
+报表引擎系统需求分析
+表3-8 尊法管理
+Table 3-8 Algorithms manage
+算法管理
+对已经提取来钓篡法进行相应钓管理
+无
+无
+已提取算法
+已提取算法
+不符合规定的参数请求
+无
+运行引擎：这也是报表引擎中比较重要的部分，其性能影响到整个报表引擎的性能。
+它根据在报表引擎定义部分确定的报表主题、各种算法、次序等信息进行计算，并返回计
+算结果。该模块用例图如图3-4所示。
+Aain.com
+算法提取
+引擎输出
+引擎定义
+计算
+返回结果
+图3-4 运行引擎用例图
+Figure 3-4 Use Case Diagram of Running Engine
+21
+===== PAGE p-28.png
+西安理工大学硕士学位论文
+以下是该用例图白用例描述
+表3-9主题提取
+Table 3-9 Get title
+用例名称
+用例描述
+前置条件
+部署约束
+正常事件流
+可选事件流
+异常事件流
+非功能需求
+主题提取
+提取引擎定义器提交的主题
+无
+无
+主题
+主题
+不符合规定主题
+无
+表3-10计算
+Table 3-10 Compute
+用例名称
+用例描述
+前置条件
+部署约束
+正常事件流
+可选事件流
+异常事件流
+非功能需求
+计算
+根据提取来各种算法对相应项目进行计算，并将计算结
+果提交到报表引擎输出器中
+无
+元
+各种算法
+计算结果
+无
+不合要求各种算法
+无
+22
+===== PAGE p-29.png
+用例名称
+用例描述
+前置条件
+部者约束
+正常事件流
+可选事件流
+异常事件流
+非功能需求
+报表引挚系统钓需求分析
+表3-11 返回结果
+Table 3-11 Return result
+返回结果
+将上一个用例一计算的结果向报表输出器进行提交
+无
+无
+结果
+无
+不符合要求的结果
+无
+策略引擎器：针对用户的定义的算法，根据所需的参数进行计算，并生成计算后的结
+果返回给调用者。这也是报表引擎比较重要的部分。它也可用于业务系统，在策略引擎的
+协同下，满足业务需求变动要求，灵活配置业务处理中的业务逻辑。这一部分对整个引
+擎的性能也有巨大影响，包括从数据库中提取数据信息、各种信息计算。该模块用例图
+如图3-5所示。
+提取算法
+提取信息
+外部库类
+引擎运行器
+计算
+图3-5 策略引擎器用例图
+Figure3-5 Use Case Diagram of Strategy Engine
+23
+===== PAGE p-30.png
+西安理工大学硕士学位论文
+以下是该用例图用例描述
+用例名称
+用例描述
+前置条件
+部署约束
+正常事件流
+可选事件流
+异常事件流
+非功能需求
+表3-12 提取信息
+Table 3-12 Get information
+提取信息
+报表引擎向外部库类提取和程序运行相关的信息
+无
+无
+相关信息
+无
+不符合要求信息
+元
+引擎监控器：主要功能是监控报表引攀的运行过程，如有些地方需要用户处理，引擎
+会等待用户处理后，再执行后一个算法。它也可以监控引攀运行过程中的出错信息，以便
+对引擎错误进行跟踪：这些错误有可能是系统的、引擎本身的、算法定义的错误等。在
+监视中，可以查看已在运行的报表，也可对运行的报表执行暂停、中止、恢复、保存、载
+入等操作。该模块用例图如图3-6 所示。
+运行情况采集
+引擎运行器
+运行情况分析
+处理
+图3-6 引擎监控器用例图
+Figure 3-6 Use Case Diagram of Monitoring Engine
+24
+===== PAGE p-31.png
+报表引掔系统需求分析
+展现引攀：根据报表格式定义的内容，以及引攀运行部分运行结果，生成输出界
+面，以比较直观的形式展示给用户浏览。在生成的输出界面中，支持 HTML、EXCEL、
+WORD 等格式。该模块用例图如图3-7所示。
+提取报表格式文档
+引擎运行嚣
+分析报表格式文档
+报表输出模块
+输出报表
+图3-7 展现引擎用例图
+Figure 3-7 Use Case Diagram of Showing Engine
+以下是该用例图的用例描述
+用例名称
+用例描述
+前置条件
+部署约束
+正常事件流
+可选事件流
+异常事件流
+非功能需來
+表3-13 提取报表格式文档
+Table 3-13 Get report format document
+提取报表格式文档
+为了输出，报表输出器向引擎运行器提取报表相应的输出格式文
+档
+无
+无
+文档格式
+无
+不符合格式的输出格式文档
+无
+25
+===== PAGE p-32.png
+西安理工大学硕士学位论文
+表3-14 输出报表
+Table 3-14 Output report
+用例名称
+用例描述
+前置条件
+部署约束
+正常事件流
+可选事件流
+异常事件流
+非功能需求
+输出报表
+报表输出器输出二进制格式钓报表文件
+无
+无
+报表文件
+无
+不符合格式报表文件
+无
+3.3 流程分析
+在报表引擎定义器中，定义报表引擎的主题信息、计算策略，并根据定义的内容，生
+成报表引擎的定义文件（XML 文件）。报表引攀运行器运行时，自动根据系统的配置信
+息，导入定义好的格式文件，并解释成报表引擎能操作的对象。
+用户请求报表引擎执行报表计算时，传入起动参数及报表的 ID，报表引擎在配置文
+件中查找要计算的报表。找到报表定义文件后，实例化报表約定义对象，并根据算法钓执
+行次序，起动整个报表的执行过程。在报表的每一个算法中，根据定义的形式参数从系统
+环境中读取实际参数值。如果算法是一个表达式，系统启动策略引擎器进行计算，再返回
+运算的结果；如果算法是调用外部的应用程序或过程，系统会自动根据定义的内容及参数，
+调用相应的应用程序或过程进行运算，并保存运行的结果。
+在报表引擎运行过程中，报表引擎监控暴可以跟踪报表的执行过程，并记录它的执行
+过程；也可以对运行钓报表执行暂停、中止、恢复、保存、载入等操作。用户可以根据报
+表的运行情况，分析报表的各种性能及调整报表的执行过程，优化报表引擎的性能。
+当报表引擎运行结束后，返回运算结果，报表生成器根据用户在报表格式定义器中定
+义的报表格式，生成相应的报表，再展示给用户浏览。
+报表引擊运行时库图【261如图 3-8 所示：
+26
+===== PAGE p-33.png
+报表引擎系统需求分析
+提表设计置
+提表请米番
+器X
+退表帝式定
+引華定义器
+运行引整
+笨略引毫
+引璧监控疂
+歷現引毫
+XML
+请求信息
+请求信息
+格式
+格式不对
+经处理好设计文件
+算法请求
+算法信息
+运行信息
+二进制文档
+com
+图3-8 报表引擎运行时序图
+Figure 3-8 Sequence Diagram Of Report Engine Runming
+3.4 相关文件格式分析
+下面分析报表引攀工作时要用到的两个重要文件的格式。报表引擎要用的第一个文件
+是引擎运行器向引擎运行所提交一个报表设计文件，其护展名为 rptdesign“27）第二
+个文件是引擎运行器向引擎输出器发送的一个报表文档文件，其扩展名为 rptdocument。
+报表设计文件是一个包含报表设计和完整说明的 xml文件。报表设计描述一个报表
+的每个方面，包括它的结构，格式，数据源，数据集和 javascript时间处理代码。下面介
+绍 rptdsign文件中各个元素的意义。
+元素
+Property
+表3-15 元素描述
+Table3-15
+Elements descrption
+详細信息
+大多数简单参数的值。文档对象模型通过查询一个元属性
+数据集合来确定值的类型。
+27
+===== PAGE p-34.png
+西安理工大学硕士学位论文
+用户自定义的XML属性值。这个属性常用来扩充存储信
+息。
+xml-property
+property-list
+Expression
+ex-property
+Structure
+Label
+Data-Item
+Text item
+Image
+Line and rectangle
+Chart
+Matmx
+Table-of-contents item
+Browser
+List
+Table
+Free-form
+Grid
+Include
+Extended item
+AutoTlext
+CascadingParameter Giroup
+Cell
+Column
+Data
+Dataset
+Data Source
+DesignBlement
+ExtendedItem
+GraphicMasterPage
+JointDataSet
+含有任何有列表属性的属性，如用户自定义颜色、绑定等。
+用于任何被表达式定义钓属性，为将来扩展时使用
+用于格式不规整属性定义
+用于结构体属性（两个或更多属性集合）。
+显示能够被转化为多种语言的静态文本。
+显示数据库列、表达式中数据。
+显示带有格式指示器，以及表示数据库连接位置
+显示各种各样的格式。
+提供带有报表图形。
+显示图形，如线条图，饼状图等。
+展现一个数据列表视图。
+使用户把一个表的内容直接插入到一个报表中。
+允许开发者创建自定义网页内容。
+提供一个典型带状报表。
+带状报表被组织到行和列中。
+保存在任意位置的任意集合。
+提供一个静态，表向导的报表布局。
+向报表中导入其他文件。
+允许开发者定义自定义项目。
+描述报表的页码。
+报表层叠参数的可视化分组。
+代表一个在棚格或表行的单元元素。
+描述在表格或栅格中的一列。
+显示一个带有可选格式的数据集或计算值。
+简单数据集或联合数据集父节点。
+代表外部数据系统连接的数据源元素。
+代表任何有属性的抽象元素。
+代表一个可扩充项，为报表提供可扩充的能力
+一个带有不规则修饰主页
+代表已链接的数据集。
+28
+===== PAGE p-35.png
+Libray
+Line
+ListGiroup
+Listing
+ListingGroup
+MasterPage
+OdaDataSet
+OdaData Source
+Pararnter
+Parameter Group
+Rectangle
+ReportDesign
+ReportElement
+Row
+ScalarParameter
+ScmptDataSet
+SimpleDataSet
+SimpleMaterPage
+Style
+TableGroup
+TemplateDataSet
+TemplateElement
+TemplateParameterDetinition
+TemplateReportItem
+Text
+TextData
+Theme
+Action
+CachedMetaData
+ColumnHint
+Computed Column
+报表引擘系统需求分析
+预定义规则和组件。
+向报表增加图像。
+代表一组含有列表的突破线。
+捕获普通行为到列表和表格中的抽象基本元素。
+捕获普通行为到列表和表格組中的抽象基本元素。
+在报表主页中的基本元素。
+被通过 ODA 驱动（开放数据访问接口）查询来更新的可扩
+充数据集。
+。可扩展的数据源。
+基本的参数元素，义属性到所有的参数类型。
+报表参数的可视化分组。
+描述一个筒单矩形。
+一个报表元素代表报表整体。
+用户可视化元素的抽象元素。
+栅格或表中的行。
+定义一个简单的单值参数。
+一个在javascript中定义的数据集。
+数据集代表一个从外部数据源提供器中更新的结果集。
+一个简单的主页在每一页提供头和尾。
+描述类型元累。
+展现在表格中的一组突破点。
+定义一个数据集模板。
+一个基本模板元素，代表一个数据集或报表项目占位
+符。
+一个模板元素定义。
+一个报表项目的模板占位符。
+显示一个在报表中定义的多文本区，可包含联入式格式和
+值表达式。
+显示在报表中定义的多行文本区。
+代表在库中的一个主题。
+定义一个超连接。
+高速缓存元数据，包括高速缓存派生数据集属性。
+提供大量关于结果集列数据属性。
+在结果集中的一个用户自定义的列表。
+29
+===== PAGE p-36.png
+西安理工大学硕士学位论文
+Config Var
+CustomeColor
+DataSetParam
+Data TimeFormatValue
+EmbeddedImage
+ExtendedProperty
+HideRule
+HighligntRule
+IncludeSerpt
+InchudeLiabrary
+MapRule
+NumberFormatValue
+OdaDataSetParam
+OdaDesigner State
+OdaResultSetColumn
+ParamBinding
+ParameterFormat Value
+PropertyBingding
+PropetyMask
+ScrptLib
+SearchKey
+SelectionChoice
+SortKey
+StringFormatValue
+UsetProperty
+定义一个变量，于部暑声明。
+定义一个用户自定义颜色名。
+描述一个输入或输出的数据集查询参数。
+格式化一个时间值。
+保存一个城入在设计文件中的可重用图像。
+代表一个可扩充属性。
+在一类输出格式中为报表项目定义一个可视化的输出规
+则。
+代表一个高亮规测。
+存储一个被设计装载脚本文件地址。
+连接到一个由命名空间使用的库。
+代表一个映射规则。
+用于格式化数字。
+描述一个 ODA 数据集查询的输入或输出参数。
+描述一个 ODA 数据源或数据集的状态。
+描述在一个 ODA 数据集结果中的列。
+代表一个在表达式或嵌套报表输入参数间的连接
+格式化数量参数的值。
+连接一个值表达式到属性。
+允许第三方开发者锁定或隐藏一个属性。
+为报表定义脚本储存一个类路径。
+为一个超连接查找定义一个查找标准。
+在静态参数选择列表中定义一个项目。
+由表达式和分类说明组成的分类定义。
+格式化一个字符值。
+定义一个用户自定义属性。
+报表文档文件是一个封装了报表设计，集成了数据并包含像数据分叶信息和目录信息
+的二进制文件。
+30
+===== PAGE p-37.png
+报表引擎系统设计
+4 报表引擎系统设计
+4.1 功能设计
+报表引攀系统前结构简化图如图4-1所示：
+报表文件
+报表请求器
+格式定义器
+引擎定义器
+算法
+数据
+策略引擎
+生成引擎
+数据引擎
+展现引擎
+报表
+com
+图4-1 报表引擎系统结构简化图
+Figure 4-1 The Framework of Report Engine System Diagram
+表引擎系统功能结构简化图如图 4-2 所示
+31
+===== PAGE p-38.png
+西安理工大学硕士学位论文
+报表引擎
+请求功能
+提取信息功能
+生成功能
+格式定义器
+策略引擎
+生成引擎
+报表请求器
+引擎定义器
+数据引擎
+展现引擎
+图4-2 报表引擎系统功能结构划分图
+Figure 4-2 The Functional Divided Structure Of Report Engine System Diagram
+4.2 结构设计
+4.2.1包图
+aocin.com
+创建完所有时序图后，就容易得到系统类列表。本系统的类按功能包含在十七个包中，
+系统包图【281如图4-3 所示。
+api包中的类主要由一些接口组成，用来为外部系统调用引擎提供一些接口。
+adpter包为系统调用外部模块而准备，当外部模块的接口和本系统不相匹配时，就需
+用该包中的类去适配，以使它能被本系统所调用。
+content 包中的类是本引擎系统的核心类，其主要功能是处理报表设计文件及报表文
+档文件中的内容项，并把它生成相应的报表项。
+CSs包中的类处理报表中与样式相关的处理动作，如调整文字大小、颜色、字体等。
+data包中的类处理引擎中与数据相关的操作，如寻找数据源，并从数据源中获取数据
+插入到报表中对应的位置。
+emitter包中类的功能是把包已经处理的报表，以及相应格式发射到用户指定位置。
+extension包中的类为系统以后护展所用。
+i18n包中的类存储了一些系统中所要用到的消息。
+32
+===== PAGE p-39.png
+报表引擎系统设计
+internal包中的类处理报表文档文件中的内部信息并把它们插入到报表指定位置。
+ir包中类的作用是在程序运行时临时存放报表文档中的一些内容。
+layout包中类的主要作用是处理报表中一些项目的布局。
+parser 包中类的作用是分析报表系统所接受到的文件。
+prsentation 包中类的作用是处理报表的一些展示信息，如分页信息。
+script包中类的作用是接受用户输入的一些脚本并把它们转化为java程序后调用相应
+的模块处理报表。
+toc 包中类的作用是维护整个报表引擎系统中报表文件的树形目录。
+util包中类的作用包括创建、复制、删除等相关的文件操作。
+Exector 包中的类是实现对设计文件的解析工作，并生成二进制的报表文档文件。
+xecutor
+resentation
+图 4-3 报表引擎系统包图
+Figure 4-3 Package Diagram of Reporter Engine System
+4.2.2类图
+类图〔291用来显示系统中所有类。它们增加了时序图中涉及到的所有类，并且增加方法
+到这些类中去。此外，类图还描述了系统的静态结构。类图不仅定义系统的类、表示类的
+内部结构（属性和操作），还表示了系统之间类关系，包括关联、依赖以及聚合等。
+33
+===== PAGE p-40.png
+西安理工大学硕士学位论文
+本系统中所有类被分成十七部分，上面已经描述。除 util包之外每一个包至少有一幅
+类图。只有与指定的包相关的类才能显示在相关类图中。
+本系统中使用的类图如图4-4所示。
+ExpressionUtil
+（Trom adapter
+Parseindicator
+（from adapter）
+OoretrieveSize tint
+sonewindex:int
+BisCandidateKey : boolean
+RomitNextQuote : boolean
+BcandidateKey1: boolean
+GcandidateKey2 : boolean
+*Parselndicatoro
+egetRetrieveSizeo
+YgetNewindex0
+SisCandidateKeyO
+SomitNextQuote（）
+PgetCandidateKey10
+SgetCandidatekey20
+图44 Adapter 包中的类图
+Figure 4-4 Class Diagram of Adapter Package
+lmage
+IEngineTask
+IAction
+IPDFRenderOption
+DO
+IRenderOption
+IHTMLActionHandler
+•
+pPageHandlef
+ParameterDein
+ParameterGroupDefn マ
+ParameterSelectionChoice
+*getvatue（）
+*getLaber）
+●
+RRenderTask
+ICascading ParameterGroup
+图4-5 API包中类图
+Figure 4-5 Class Diagram of APl Package
+34
+===== PAGE p-41.png
+报表引擎系统设计
+IStyle
+（from content）
+IReportContent
+（irom cantenl）
+Dimension
+PoaMigp
+boint
+IContentVisiior
+（trem conenl）
+IimageContent
+（trom content）
+IIsIGroupContent
+（mom content）
+ITableGroupContent
+KTrom contemry
+ContentFactory
+（imom conkent）
+ContentVisitorAdapter
+from contenty
+IRowContent
+（irom conlenty
+IContalnerContent
+frm content）
+LAutoTexIContent
+（irom conienl）
+BandContent
+（from content）
+Column
+（rom content）
+*CellContent
+（tiom conlent）
+KContent
+（trom/conlent）
+DateContent
+from conlenty
+IDrilThrpughAction
+（from'ponteny
+fElement
+（from contenty
+wForeignContent
+（Trom conienl）
+KGroupContent
+/mom content）
+IHyperlinkAction
+from content）
+iLabelContertt
+（from contenly
+tistBandContent
+（rom conter）
+IListContent
+（fom content）
+PageContent
+（om conient）
+「TableBandContertableContent
+（rom contenl）
+（Irom conlent）
+IextContent
+（rom content）
+CIn.com
+Rectangie®
+Trom contert
+图 4-6 content包中的类图
+Figure 4-6 Class Diagram of Content Package
+35
+===== PAGE p-42.png
+西安理工大学硕士学位论文
+StyleConstants
+（from engine）
+CellComputed Style
+（from dom）
+•CellComputedStyle（）
+BresolveProperty（）
+&IsBackground Properties（）
+PropertyManagerFactory
+（fom engine）
+ComputedStyle
+（from dom）
+vms！
+ValueManager
+（from engine）
+StyleDeclaration
+（from dom）
+BIRTCSSEngine
+（from engine）
+•BIRTCSSEngine（）
+BIRTPropertyManagerFactory
+（from engine）
+SBIRTPropertyManagerFactory（
+SgetNumberOfProperties（）
+fgetPropertyIndex（）
+PgetValueManager（）
+MgetPropertyNamed
+CSSEngine
+（from engine）
+PerfectHash
+（from engine）
+•PerfectHash（）
+hash（）
+Sin_word_setO
+-cell
+CSSStylableElement
+（Irom engine）
+&getCSSEngine（）
+fgetComputed Style（）
+&getStyle（）
+图4-7 CSS包中的类图
+Figure 4-7 Class Diagram of Css Package
+CiT.cOm
+DataEngineFactory
+（from data）
+e DataEngineFactory（）
+getinstance（）
+•createDataEngine（）
+#$smLinstance
+图4-8 Data包中的类图
+Figure 4-8 Class Diagram of Data Package
+IDataEngine
+（from data）
+36
+===== PAGE p-43.png
+报表引擎系统设计
+ContentEmitterAdapter
+BufferedReportEmitter
+（from omiteo
+ContentE mittert
+IEmitterServices
+（from emitten
+ContentpoMVlsitor
+（from omitten
+DOMBullderEmitter
+（from omitten
+EngineEmitterS onvices
+TCmOm OmINOG
+IContentEmitter
+ctrom omitten
+图4-9 emitter 包中的类图
+Figure 4-9 Class Diagram of emitter Package
+GroupExecutor
+YereatePageExecutor（）
+fexecutel
+•closeo
+•hasNextChiido）
+fgetNextChild（）
+ReportttemExecutor
+Styleditom Exocutor
+wStyledttemExecutor（）
+TprocesStyleo
+TproceseColumnstyleo
+SrereateHightightStylec）
+process MeppingValued
+AutoTextitemExecutor
+SAutoTextttemEx
+eexecuteO
+ScriptUtit
+CellExecutor
+（from executon
+acellid in
+currentttem :Inf
+TCellExecutor（）
+Wexecule6
+Sclose0
+YhasNextChiido
+wgetNextcniat
+Datae ngineFactory
+（rrom aata）
+ExtendedltemExecutor
+Ktrom oxeoutork
+MExtendedttemExecutoro
+Pclose0
+SgotQ ueryResuttso
+eaetParentc）
+In.com
+GriaittemExecutol
+HTOW GXOOUTOF
+DcurRowDesian:in
+PcurRowContent:int
+•GridttemExecutor（）
+Sexecutel
+Sclose（）
+hasNextChild（）
+SgetNextChildo
+Oueryttom Executor
+fromexacutor
+RorsetEmpty: boolean
+mQueryltemExecutorc）
+f~closeQuery（）
+WexecuteQueryo
+WaccessQuery（
+Dataitem Executor
+《DatattemExecutort
+Soxecuted
+Sclosed
+IDataEngine
+区4-10
+executor 包中的类图
+Figure 4-10 Class Diagram of executor Package
+37
+===== PAGE p-44.png
+西安理工大学硕士学位论文
+QueryResultSet
+（Trom extenson）
+Size
+（from extenson）
+RowSet
+（trom intemat）
+SingleRowSet
+（from Intemal）
+Report/temExecutorBase
+（from extenson）
+Phandle : Object
+executorContext
+IExecutorContext
+（Trom extension）
+IReportitemGeneration
+（from extension）
+DataContent
+（mm wap）
+ForeignContent
+Trom wrapy
+BaseResultSet
+（from extenson）
+parent-
+IReportitemExecutor
+（from extension）
+图 4-11 extension 包中的类图
+Figure 4-11 Class Diagram of extension Package
+CellContentwrapper
+（from wrap）
+TextContent
+（1om wrap）
+OCN
+AbstractContentwropper
+Kfrom wrapy
+LabelContent
+ImageContent
+（from wrapy
+im
+三（oom wrop）
+TableBandContentW rapper
+（from wrap）
+RowContentWrapper
+TableContentWrapper
+（rom wrap）
+图4-12 intemnal包中的类图
+Figure 4-12 Class Diagram of internal Package
+38
+===== PAGE p-45.png
+BandDesign
+DataitemDesign
+DynamicTextitemDesign
+tfoomin
+FreeFommttemDesion
+fomin
+HighlightDesjon
+（fom in/
+IReportttomVieitor
+ttromin
+报表引擎系统设计
+AutoTextitemDesign
+ActionDesign
+ColumnDesign
+（from in
+CollDesign
+（from in
+DefauitReportitemVisitorimpi
+（trom in
+EnginelRWriter
+GraphicMasterPageDesign
+（fom in
+ImagettemDesign
+HighlightRuleDesign
+（from 1n
+monrhrosaeh Dauirougha ctionDesten
+CompareUtils
+（fromin
+group
+GroupDesign
+ExtendedtemDesign
+Grid ltemDesign
+fromin
+IOConetants
+tfromin
+图4-13 IR包中的类图
+Figure 4-13 Class Diagram of IR Package
+HmageArea
+com area）
+ITemplateArea
+（from area）
+LArea
+（from area）
+ITextArea
+LAreaVisitor
+IBlockStackingLa
+youtManager
+（from tayout）
+TextStyle
+MgetText0
+SgetFontinfoo
+CompositeLayoutPageHandler
+（tfrom layouty
+ILayoutManager
+（from layouty
+4
+IContainerArea
+（from areay
+iiheStackingLayoutManager
+ILayoutContext
+（from fayouny
+IReportLayoutEngine
+（from tayeut）
+IPDFTableLayoutManager
+（from layout
+ILineS tackingLayoutManager
+ILayoutPageHandier
+（rom tayouty
+（from layour）
+ITextLayoutManager
+（from layouty
+LayoutEngineFactory
+ffrom fayouty
+PDFConstants
+（from layout）
+IStackingLayoutManager
+（from layoot）
+图4-14 layout包中的类图
+Figure 4-14 Class Diagram of layout Package
+39
+===== PAGE p-46.png
+西安理工大学硕士学位论文
+ReportDesignW riter
+（Irom parser）
+•ReportDesignWriter（）
+•write（）
+TableltemDesignLayout
+（Irom parser）
+•TableltemDesignLayout（）
+MlayoutO
+Pnommalize（）
+MlayoutO）
+→layoutBand（）
+MlayoutRow（）
+图 4-15 parser 包中的类图
+Figure 4-15 Class Diagram of parser Package
+ContentEmittervisitor
+（from presentation）
+CompositePageHandler
+（from presentationy
+LocalizedContentVisitor
+（Trom presentation）
+Instancelndex
+（from presentation）
+IPageHint
+（from presentation）
+wwW.ddCif
+UnresofvedRowHint
+（from presentationy
+PageSection
+Page
+（from presentation）
+PageRegion
+（from presentation）
+rootRegion
+PageHint
+（from presentation）
+ReportDocumentBuilder
+（fnom presentation）
+盛 4-16 presentation 包中的类图
+Figure 4-16 Class Diagram of presentation Package
+40
+===== PAGE p-47.png
+报表引擎系统设计
+Actioninstance
+（Trom Inaance）
+AutoTextinstance
+（rom Insance）
+Cellinstance
+DataitemInstance
+（rom Insanee）
+BrilfThroughinstance
+Forign Textinstance
+Gridinstance
+rom InKance
+Imageinstance
+（rom insance
+ScriptExecutor
+（trm. intematy
+Listinstanca
+ReportElementinstance
+（from insance）
+Reportiteminstance
+（rom Inannce）
+Textiteminstance
+drominsance.
+ReportContextimpl
+DocumentTOCTree
+（from toc）
+•DocumentTOCTree（
+Rinitialize（）
+图4-17 script包中的类图
+Figure 4-17 Class Diagram of script Package
+TOCBuilder
+（from toc）
+0OC
+-rootEnitry
+TOCEntry
+（from foc）
+WhiddenFomats: String
+parent
+-tocTree
+TOCTree
+（from toc）
+mrode
+TOCTreeNode
+（from toc）
+图4-18 toc 包中类图
+Figure 4-18 Class Diagram of toc Package
+41
+===== PAGE p-48.png
+西安理工大学硕士学位论文
+ExportManifestUtils
+（from util）
+T>API JAR PATTERNSII: String
+•ExportManifestUtils（）
+•main（）
+TisApiJar（）
+•exportPackages（）
+toutputEntry（）
++createEntry（）
+wcreateEntry（）
+FastPool
+（from util）
+Spooll］：Object
+BpoolSize ：int
+SFastPool（）
+MisEmpty（
+Vadd（）
+Vremove（）
+图4-19 util包中类图
+Figure 4-19 Class Diagram of util Package
+4.2.3类描述
+类图很好的描述了类执行的必要信息，但是察看类图和决定一个特殊的类是怎样适合
+总体设计是很困难的。类描述提供了类能干什么，以及怎样在设计中使用类的文本描述。
+下面是本系统中重要类的描述。
+CatchedImage
+该类是一个普通类，它包括图像的标识符、图像的 URL.地址、多功能 Internet 邮件
+扩充服务、图像映射。它功能是为引擎系统中处理图像时为图像提供一个缓存地址。
+DataSetlD
+该类是一个普通类，它包括父数据集的标识符、行标识符、查询名称和数据集名称。
+它的功能是处理从报表设计文件中提取相应的数据信息，再把它们组合成为一组相关信
+息供系统处理模块使用。
+EngineConfig
+该类是一个普通类，它封装了报表引擎的配置信息，为用户设计报表引擎提供必要的
+接口。它允许开发者设置引擎、数据源、图像的存放位置，自定义数据相关数据，也允许
+引擎为图像、超链接和字体处理自定义执行。
+EngineConstants
+该类是一个普通类，它封装了引擎所需要的多种常量。其中的所有变量都是静态的，
+以方便客户端直接按类名调用。
+HTMLCompleteImageHandle
+该类是一个普通类，它包括用于行为处理的基本 URL、用于图像处理的基本 URL、
+42
+===== PAGE p-49.png
+报表引擎系统设计
+用于存储被浏览器所支持的图片格式、存储图片路径、HTML修饰选项。其功能是在
+HTML发射器中为修饰报表定义上下文。
+IAction
+该类是一个接口，它包括超链接行为、书签行为、下转行为。它主要功能是为引
+擎传送超链接信息传送到发射器中定义一个接口，也允许用户自定义超链接信息。
+IDataE.xtraction Task
+该类是一个接口，主要功能是为引擎从报表中获取数据提供接口，返回的是元数据和
+来自于数据引擎的数据。
+IReportEngine
+该类是一个接口，为报表引擎实现各种报表功能提供各种入口点。它是用户自定义生
+成和修饰的地方，也是引攀统计数据收集地方。
+ExpressionUril
+这个类帮助操作表达式进行一系列转换。如 getParseIndicatorO方法为下一步解析提供
+必要的信息，transformConditionalExpressionO负责增加属性前缀， prepareTotalExpression
+将表达式 row 转化成了 dataSetRow。
+IColumnBinding
+这是一个接口，其实例定义了一个列绑定命名表达式对。getResultSetColumnName（
+方法获得结果结合中的列名称，getBoundExpression（方法获得范围表达式。
+IlotalExprBindings
+这个类的实例定义了数据引擎需要的数据结构。方法 getNewExpressionO将所有
+"Total“表达式替换为“rOw“表达式，getColumnBindingsO方法返回了接口 IColumnBinding
+组实例，这些实例列名会出现在getNewExpression（的返回值中。
+HodelDteApiAdapter
+这个适配器类从为数据集以及数据源定义服务 model.api 中创建了数据引擎接口
+对象。调用这个适配器的客户可有选择的提供上下文执行对象与 javascript 视图。
+ExecutionContext 为数据源执行与数据集事件句柄的执行提供了上下文坏境。JavaScript
+视图可以用来评估 data source 与 data set綁定的表达式。
+AbstractReportContentWriter
+这是一个抽象类，创建读写器钓内容流。其方法 writeFullContent 输出完整的内容。
+它有一个内部类 ContentWriterVisitor，将内容输出到磁盘中。
+DocumentExtension
+是文档操作类，其中有12个方法，用来遍历文档树结构。getIndex（获取节点的字号；
+setIndex（设置节点序号（）；getFirstChildO获得第一个孩子节点。setFirstChildO设置第一个
+孩子节点O：getParentO获得父节点等。
+ActionDesign
+43
+===== PAGE p-50.png
+西安理工大学硕士学位论文
+该类包括了行为的整数型超级链接，行为的书签，行为穿透，行为类型，字符串目
+标。它的功能是设置超链接，穿透和书签。
+Auto TextltemDesign
+该类包括了字符串文本，字符串文本键值，字符串自动文本类型。它的功能是定义一
+个动态文本项。
+CellDesign
+该类包括了整数型列，列间距，行间距，字符串丢弃。它的功能是对行这个基本单位
+进行定义，基本单位是组成图表或网格的基本元素。
+ColumnDesign
+该类包括了维类型宽度，可视性。它的功能是对列这个基本单位进行定义。
+CompareUtils
+该类的功能是用格式来比较两种格式的相关属性。
+DataItemDesign
+该类包括了字符串值，绑定列，帮助文本，帮助文本的键值。它功能是对数据项进
+行定义，涉及到报表概要的定义。
+DefauitReportltem Visitorlmpl
+该类的功能是在默认状态下完成对接口 IReportItemVisitor 的实现。
+DimensionType
+该类包括了整数型类型，字符串选择，双精度型测量。它的功能是定义了维类型。
+DrillThroughActionDesign
+该类包括了字符串报告名称，书签，格式，布尔类型书签。其功能是定义穿透的行为。
+EngineIRConstants
+该类功能是定义各种引擎能用到的常量。
+Expression
+该类包括表达式ID，组名称，表达式，整数型数据类型。其功能是定义表达式。
+ExtendedItemDesign
+该类的功能是完成对扩展项的定义。
+FreeFormItemDesign
+该类的功能是定义自由表单项设计。
+GraphicMasterPageDesign
+该类包括维类型列间隙，序列页面内容。它功能是定义图表的主要页面。
+GridltemDesign
+该类包括序列行和列。它钓功能是定义栅格项。栅格项是静态的表格，它包含对列的
+定义，许多的行以及行所包含的基本单位。
+GroupDesign
+44
+===== PAGE p-51.png
+报表引擎系统设计
+该类是一个抽象类。它包括整数型数组水平，字符串属性前的页中断点和属性后钓贡
+中断点，布尔类型隐藏的细节，布尔类型重复的头。它的功能是定义组的类型，这被用于
+列和图表中。
+HighlightDesign
+该类的功能是对重点进行定义。
+HighlightRuleDesign
+该类的功能是定义重点的规则。
+ImugeltemDesign
+该类包括图片的 URI，图片名称，图片表示，图片格式，与图片相关的文本，与图片
+相关的文本的键值，帮助文本，帮助文本的键值。它的功能是定义图片项。
+IReportftem Visitor
+该类是一个接口。它的功能是表示此接口是报表设计内容访问类的说明。
+Labelftem Design
+该类包括字符串文本，字符串文本键值，字符串帮助文本，字符串帮助文本键值。它
+前功能是定义表项。
+ListBandDesign
+该类功能是定义列表区域。
+ListGroupDesign
+该类包括了表头和表尾。它的功能是表设计列表组。
+ListingDesign
+该类是一个抽象类。它包括布尔类型重复页头，列表设计的表头，列表设计的表尾，
+列表设计的细节，整数型页中断点间隔。它的功能是对列表进行定义。
+ListltemDesign
+该类说明列表在报表的设计中是一个基本的元素，它由查询，许多组，页头，页脚，
+和细节组成。在创建过程中，一个列表将变为一个页头，一个页脚和许多前细节。
+MapDesign
+该类包括序列规则。它的功能是定义地图。
+MapRuleDesign
+该类包括字符串显示键值，字符串显示文本。它的功能是定义地图的相关规则。
+MasterPageDesign
+该类是一个抽象类。它包括字符串页面类型，维类型页面宽度，维类型页面高度，维
+类型左页白，维类型右页白，维类型底页白，维类型顶页白。它的功能是定义主要页面。
+MultiLineItemDesign
+该类包括了字符串内容类型，字符串内容。它的功能是设计多行项。
+PageSequenceDesign
+45
+===== PAGE p-52.png
+西安理工大学硕士学位论文
+该类包括用来存储页面排序的哈希地图 pageRefs。它的功能是按照页面功能，对主页
+面中包含的页进行排序。
+PageSetupDesign
+该类包括序列主要页面，页面地图，序列页面排序，排序地图。它的功能是定义页面
+加载。
+Report
+该类包括报表设计，字符串单元，序列格式，序列格式表，字符串根格式名称，序列
+查询，序列查询ID，哈希地图变换数据结果，页面加载，序列内容。它功能是说明报
+表是设计的根元素。
+ReportElementDesign
+该类是一个抽象类。它包括数据元素的处理，长整形ID，字符串姓名，字符串扩展，
+字符串 java类，客户属性，已命名的表达式。它的功能是说明在报表设计中所有元素的
+基本类。
+ReportftemDesign
+该类定义维类型 x,y，宽度，高度，字符串书签，字符串内容树，字符串建立，字符串交纳，
+字符串页中断点，可视性，行为，查询，执行状态。它的功能是用来对报表项目进行定义。
+RowDesign
+该类包括了组成行的基本单位。它的功能是对行进行定义。
+RuleDesign
+该类是一个抽象类，它包括字符串测试表达式，字符串值1和值2，字符串操作者，
+字符串表达。它的功能是定义规则。
+SimpleMasterPageDesign
+OCIn.
+COm
+该类包括序列页头和序列页脚，布尔类型显示第一页页头，布尔类型显示最后一页页
+脚，布尔类型显示在页目录下页脚，维类型页头的高度，维类型页脚高度。它的功能
+是一个简单的主要页面包括一个页头和一个页脚，并对这个简单的主要页面进行定义。
+StyledElementDesign
+该类是一个抽象类，它包括字符串格式名称，地图，重点。它的功能是对元素的格式
+进行定义。
+StylePropertMapping
+该类包括由哈希地图定义的地图名称。它的功能是用来搜集格式属性的格式。
+4.3 流程设计
+时序图是描述消息时间顺序的交互图。它描述用户与系统以及系统操作的协作关系，
+显示用来完成一项任务所要求的操作顺序。在决定在一个类中需要什么函数时，时序图起
+至关重要作用。在图形上，时序图是一张表，其中显示的对象沿着横轴排列，从左到右
+分布在图的顶部：而消息则沿纵轴时间顺序排序。
+46
+===== PAGE p-53.png
+报表引辇系统设计
+时序图以两种形式出现，顶层时序图描达系统所需要的类的总体图。顶层时序图还可
+用来决定类之间的操作是否分开。底层时序图用来描述一个操作的所有步骤。通过底层时
+序图可发现每一个类中的方法。
+本系统的（顶层）时序图如下所示：
+Itertacs
+Rectver
+PlatformConfig
+EmitterConia
+input infomation
+Figure 4-20
+图4-20 配置引擎用例钓时序图
+Sequence Diagram of Configuration Engine Use Case
+herac
+i DevelopeUser
+give a Interace
+Input inforation
+Accept Information》
+pul hypelink Infomatior
+； Input into emitter
+图4-21 处理超链接用例时序图
+Figure 4-21 Sequence Diagram of Dealing with Hyperlink Use Case
+47
+===== PAGE p-54.png
+西安理工大学硕士学位论文
+DataExtractor
+datasource
+report fife
+： DevelopeUser
+Bn Te datasource orcol
+data
+put the data to the report file
+图4-22提取数据用例时序图
+Figure 4-22 Sequence Diagram of Extract Data Use Case
+eremeteranaly
+ser
+ReportEngine
+：DevelopeUser
+CIn.Com
+error
+refer the parameter informtion to the engine
+图4-23 获取参数定义用例的时席图
+Figure 4-23 Sequence Diagram of Getting Parameter Definition Use Case
+48
+===== PAGE p-55.png
+报表引擎系统设计
+analyse the information
+图4-24 报表提交任务用例的时序图
+Figure 4-24 Sequence Diagram of Referring Task Use Case
+Analyser
+Jocker
+Report file
+：DavelopeUser
+fle information
+error
+OcIn.com
+serch file
+refer file infomation
+lock file
+图4-25锁定文件用例时序图
+Figure 4-25 Sequence Diagram of Locking File Use Case
+49
+===== PAGE p-56.png
+西安理工大学硕士学位论文
+Analyser
+unlacker
+Report fle
+：Developelser
+file infommation
+error
+refer file inforation
+mnock fite
+图4-26文件解锁用例时序图
+Figure 4-26 Sequence Diagram of Unlocking File Use Case
+vel Syst
+Intesion.
+System
+： DevelopeLser
+send a information
+start a factory
+Create a engine
+refer the engine to the Intesion system
+图4-27 创建报表引擎用例钓时产图
+Figure 4-27 Sequence Diagram of Creating Report Engine Use Case
+50
+===== PAGE p-57.png
+报表引擎系统设计
+SK8tem
+图4-28 处理报表设计文件用例时序图
+Figure 4-28 Sequence Diagram of Dealing with Report Design File
+： DeyelopeUser
+OCIniCom
+refer the documant
+proc
+Ceoes plerure
+he node infomation
+efer the proce
+fe the report nle
+图4-29 处理报表文档文件用例时序图
+Figure 4-29 Sequence Diagram of Dealing with Report Document File
+51
+===== PAGE p-58.png
+西安理工大学硕士学位论文
+genemtor
+Emilter
+Deyelopelser
+refer Ihe report design file
+contg the engine
+refer the design fl
+process the node information
+generate the reportt Fle
+refer the report
+图4-30 直接生成报表用例时序图
+Figure 4-30 Sequence Diagram of Directly Gienerating Report
+com
+4.4 内部接口设计
+因为本系统只是报表工具的一个重要模块，所以必须提供一定数量的接口供报表工具
+其它部分访问。
+1） 引擎配置接口
+接口方法：void setEngineHome（string path）
+输入参数：Path----_-报表引擎所安装的路径
+返回值：无
+接口说明：
+当用户使用报表引攀解析己存在的报表设计文件时，首先必须知道该引擎所在位置，
+该接口就是为用户设置引擎的路径提供一个接口。用户设置路径时一定要使用标准的 URI
+格式的路径，且必须是绝对路径。
+调用者：报表设计器、报表发射器、二次开发者。
+2） 报表设计文件配置接口
+52
+===== PAGE p-59.png
+报表引擎系统设计
+接口方法：IReportRunnable openReportDesign（string path）
+输入参数：Path------报表设计文件所在钓路径
+返回值：可运行的报表对象
+接口说明：
+当用户把已确定的报表设计文件交给报表引攀解析时，首先必须让引擎探测到报表设
+计文件所在的物理位置，该引擎就是为用户设置报表设计文件的路径提供通道。
+调用者：报表设计器、报表发射、二次开发者。
+www.docin.com
+53
+===== PAGE p-60.png
+西安理工大学硕士学位论文
+www.docin.com
+54
+===== PAGE p-61.png
+报表引擎系统实现
+5 报表引擎系统实现
+前面已经指出，报表引攀系统可以划分为请求、定义、信息提取、中间代码生成等功
+能模块（见图 4-2）。请求功能模块中含有报表请求器：定义功能模块中含有格式定义器
+和引擎定义嚣；提取信息功能模块中含有策略引攀和数据引擎：生成功能模块中含有生成
+引擎和展现引擎。这些功能模块的实现，需要复杂而庞大的软件系统。限于篇幅的原因，
+本文只能对最为核心模块，即生成引擎和展现引擎的实现进行阐述。
+5.1 生成引擎模块的实现
+根据第四章关于报表引擎的设计描述，可知生成引攀模块应该具有以下功能：读取和
+翻译报表设计文件，从报表设计文件所指定的数据源中读取数据，输出中间二进制格式的
+报表文档文件。实现这些功能模块的类图如图4-10所示。下面介绍其中典型类的实现算
+法与编码过程。
+从图4-10可知，当一个报表设计文件进入到报表引擎生成引擎模块的时候，首先
+必须由 ExectorManager 类进行管理，该类应用工厂方法【30. 311设计模式【32-36，调用相应
+项目生成类，对报表设计文件中的相应项目进行生成操作。生成脚本项目时，调用
+ScriptUtil类进行相应的脚本处理；生成数据项目时，必须调用 IDataGiengine 产生数据引
+擎，完成对数据的填充。下面分别对每个类的作用进行简要介绍。
+ReportItemExecutor：是一个抽象类，代表报表项目执行者。报表项目执行者执行报
+告项目设计，生成一个报告项目事例。
+GroupExecutor：是一个抽象类，是报表项目执行类的一个子类。它定义了多个布尔
+型变量，组执行器，进行分页处理。
+StyledItemExecutor：是一个抽象类，定义了所有元素执行者钓抽象基类，包括数据项
+处理器，文本项处理器。此类为样式操作提供方法，如样式规则等。
+Auto TextItemExecutor：是一个普通类，其功能是执行 Auto Text 并且输出 AutoText 项
+目内容，处理行动，书签，样式，以及文本可见性。
+CellExecutor：为处理报表设计文件中的处理单元格信息提供相应的方法。
+QueryItemExecutor：是一个抽象类，假如数据集不空，则关闭数据集。
+DataltemExecutor：是一个普通类，其功能是完成对数据设计项中表达式计算，生
+成资料内容事例，评估样式、书签、行为属性，以及通过事例到输出器。
+GridItemExecutor：是一个普通类，完成对报表设计文件中的栅格项目进行生成的工
+作，并调用相应的发射器发射到下一个模块中去。
+由于该模块类的数量较多，下面对最为复杂，实现最困难的几个类的实现算法及其实
+现过程进行详细描述。
+55
+===== PAGE p-62.png
+西安理工大学硕士学位论文
+5.1.1 ReportItemExecutor 类的买现
+该类是一个抽象类，是所有项目执行类的超类，包含一系列类所含有的通用功能及其
+共有属性，这些属性记录了该类在运行过程中的所产生的异常信息，为日后的维护工作提
+供重要依据。它根据传输进来的报表设计和当前环境信息，该类计算报表设计文件中的表
+达式、从数据源中获取数据填充到报表项目实例中去并设置相关属性。
+该类含有一个项目运行管理器，负责管理器项目的执行，提供环境信息和将要使用到
+的发射器。发射器用来将运行后的报表项目发射到下一个模块中去。它通过一个父项目执
+行器来与该项目执行嚣进行实时信息交互。
+该类含有一个内容属性，用来暂时存放已运行报表项目；含有一个报表项目设计属性，
+用来存放系统接收到的报表设计文件。为了表示报表各种项目之间的关联，该类有一个树
+形文档目录实体。
+确定该类的属性之后，接着要考虑该类中方法实现。该类含有一个项目执行的方法，
+是项目执行的主体。该方法的实现如下：
+1） 调用子类中执行器，执行该项目的运行任务；
+2） IF（该项目有子项目节点）
+3）
+IF（只是环境被注销）
+4）
+关闭执行器
+5） 获取该项目下一个子项目节点
+6） 实现子项目节点运行任务
+7） 跳转到步骤2
+项目执行方法的代码实现片段如下：
+ocin.com
+public void execute（ReportitemDesign item, IContentEmitter emitter）
+｛
+execute（）；
+while （hasNextChild（））
+｛
+if （context.isCanceled（））
+｛
+break；
+ReportItemExecutor child= （ReportItemExecutor） getNextChild（）；
+child.execute（ child.getDesign（）， emitter）；
+close（）；
+除了上述方法之外，ReportItemExecutor类还有一个专门用于处理书签的方法。该方
+法的主要功能是对进入运行引擎中的报表项目的书签选项，进行运算和解析工作。还有一
+个处理可见行方法，用于控制报表设计文件中行隐藏和显现。
+56
+===== PAGE p-63.png
+报表引擎系统实现
+总之 ReportitemExecutor 是一个抽象类，它只不过实现了一些常用报表项目运行功
+能，针对各种特殊的报表项目还必须用特殊类来完成其特殊的运行功能。
+5.1.2 AutoTextItemExecutor 类的实现
+AutoTextItemExecutor 类是 ReportItemExecutor 类的子类，它所要求的属性在超类中
+已经得到了设置，它只是针对自动文本特殊性而重写运行方法。该方法的实现如下：
+1） 获得报表项目的详细设计信息
+2） 在报表内容中创建自动文本内容用于存放处理过的自动文本项目
+3） 设置、保存并初始化内容
+4） 处理报表中的样式和报表项目可见性
+5） 从被执行的报表项目中获取自动文本的类型。
+6）
+FF能够得到当前页的信息
+在自动文本内容中设置页号
+Else IF 能得到自动文本总页数
+设置自动文本总页数
+7 IF 发射器处在
+调用发射器执行发送自动文本的工作
+8） 返回自动文本内容
+5.1.3 ExecutorManager 类的实现
+因为在引擎运行过程中会遇到各种类型的报表项目，所以必须用一个类来管理它们的
+创建，以及运行它们的项目执行嚣。ExecutorManager类就可完成该功能。在该类创建
+过程中，我们用一个代号给报表项目执行器编号。本系统有17个报表执行项目，所以该
+类使用了17个编号。执行环境记录了报表项目执行的上下文环境信息；执行器工厂用工
+厂模式来执行各种报表项目执行器的创建工作；内容发射器把已被本模块运行好的内容发
+送到下一个模块中去。
+ExecutorManager 类在管理项目执行器的执行过程概括如下：执行器管理类收到一个
+待执行的报表项目的触发之后，分析它所需要报表项目执行器钓类型：然后调用执行器
+工厂产生相应的报表项目执行器；报表项目执行器根据所处的环境信息进行报表解析工
+作；最后调用相应的发射器把被执行的报表项目发射到下一个模块中去。
+该类在处理相应的报表项目时，会遇到文件权限问题，处理文件权限的方法如下：当
+用户想独立使用每一个文件时，就必须有一个锁【371控制机制禁止其它用户使用该文件。
+具体做法是：在被使用文件目录下建立一个同名，且后缀名为.Ick的文件，当别韵用户
+想访问时，如果看到.Ick【381文件就进入到等待状态。实现过程所用的如下：
+1） 接受模块查询独立使用文件的详细信息
+2）IF文件被占用
+57
+===== PAGE p-64.png
+西安理工大学硕士学位论文
+等待：
+3） ELSE
+在该文件的同名名录下新建一个与该文件同名的.Ick文件：
+对文件实施加锁操作：
+4） 用户独立使用该文件；
+5） 删除Ick文件
+对文件实施解锁操作。
+该算法核心思想是在同名目录下建立一个与被使用的文件名字相同的.Ick文件，以
+后其它用户想访问该文件时，需要运行一段判断.Ick 文件是否存在的程序。Ick 文件就是
+一把锁，Ick 文件的存在表示该文件被实施了加锁操作，要使用该文件必须等待锁的释
+放：Ick文件不存在表示该文件未被加锁或已解锁，用户可以使用该文件。
+5.2 展现引擎模块的实现
+根据第四章的描述可知展现引擎模块应该具有以下功能：接收来自于生成引擎模块传
+送过来二进制格式的报表文档文件，并生成指定格式的报表。展现引擎生成报表的过程
+如下：展现引擎模块接收报表文档文件，然后调用相应的数据引擎从文档文件中提取数据，
+最后调用发射器生成指定格式的报表。实现这些功能模块的典型类图如图 4-16所示。下
+面介绍其中典型类的实现算法与编码过程。
+从类图中可知，当一个报表文档文件进入展现引擎模块时，首先必须用类
+ReportDocumentBuilder 进行管理：再调用类 LocalizedContentVisitor 访问报表文档文件，
+把访问的信息用类 Page 来存放：然后通过 PageHint 建立相应的页项目索引；最后调用
+ContentEmitter Visitor 类来访问发射器，发射相应格式的报表。下面对模块中所用类的功
+能做简要介绍。
+Page类：暂时存放文档文件中的信息，并指定相应前发射器。
+PageRegion 类：初始化 page类中的发射器。
+CompositePageFiandler 类：管理发射器模块所接收的文档，包括注册和注销。
+ContentEmitter Visitor类：调用相应的发射器，完成发射功能。
+由于该模块类的数量较多，下面仅对几个最复杂，实现最困难的类的实现算法进行详
+细描述。
+5.2.1 ReportDocumentBuilder 类的实现
+因为上一个模块（生成引擎模块）传送过来的不是一张报表内容，而是一个个经过处
+理过的报表文档项目内容，所以必须有个类能把它们组合成一张完整的报表文档文件。
+ReportDocumentBuilder 类就能完成此功能，它把组装好的报表文件传送到发射器中，生
+成用户指定格式的报表。
+58
+===== PAGE p-65.png
+报表引擎系统实现
+该类有一个日志记录器来记录该类运行时发生各种异常信息，为以后维护提供方
+便：一个执行环境的上下文，接受来自运行引擎模块的上下文信息，一个报表文档读写器，
+便于读取或写入报表文档文件信息。
+由于页号和页偏移量共同决定页中的内容，该类使用一个哈希表来存储书签的索引号
+为以后页的索引提供方便。因为经常要用到各式各样的发射器，该类把保存报表内容到内
+容流中的发射，以及保存主页框架的发射器，当成本类的内部类，省去了类之间调用所
+花费的时间和空间，提高了系统运行速率，减少了系统对资源的消耗。
+该类的一个重要功能是对图片项目处理。系统中图片存储的格式有：URL格式、
+文件格式、文件名格式、表达式格式。对不同格式的图片系统调用不同的程序处理。下面
+描述对图片项目的处理方法实现。
+获得图片的存储形式：
+1）TF 图片存储格式为 URL
+获得图片的 URL地址；
+处理 URL 格式的图片；
+2）
+ELSE IF 图片以文件形式存在
+获取图片所在地址；
+处理以文件形式存在的图片；
+3）
+ELSE TF 图片以嶯入报表方式存在
+获取图片的名字；
+处理以该格式存在的图片；
+获取 SQL 语句；
+处理以数据库表达式形式存在的图片。
+该方法的实现代码片段如下：
+switch （imageDesign.getimageSource（））
+case ImageItemDesign.IMAGE_URI: // URI
+String imageExpr =imageDesign.getImageUni（）；
+if （imageExpr ！=null）
+handleURIimage（ imageExpr, imageContent）；
+break；
+Case ImageitemDesign./MAGE_FLLE:// 文件
+String fileExpr = imageDesign.getImageUri（）；
+assert fileExpr ！=nul；
+handleFileExpressionImage（ fileExpr, imageContent）；
+break；
+59
+===== PAGE p-66.png
+西安理工大学硕士学位论文
+case ImageItemDesign.IMAGE_NAME:// 厥入式图片
+String imageName = imageDesign.getImageName（）；
+assert imageName ！= null，
+handleNamedImage（ imageName, imageContent）；
+break；
+case ImageltemDesignIMAGE_EXPRESSION:11 从数据库中获取到的图片
+String imgExpr =imageDesign.getImageExpression（）；
+String fmtExpr = imageDesign.getimageFormat（）；
+assert imgExpr ！=null；
+handleValueImage（imgExpr, fintExpr, imageContent）；
+break；
+default：
+logger.log（Level.SEVERE，
+"［ImageItemExecutor］ invalid image source" ）；
+//默认处理
+context.addException（ imageDesign.getHandle（）， new EngineException（
+MessageConstants./NTALID_IMAGE_SOURCE_TYPE_ERROR））；
+assert false；
+5.2.2 LocalizedContentVisitor 类的实现
+通过该类，客户程序可访问报表文档的各个项目，访问列表、表格、行、单元格、数
+据项、标签、图片、文本、外部文件等报表文档文件子项目。为了通用，我们在此类中
+使用了访问者设计模式。实现该类时，必须有保存执行环境信息、保存本地环境信息、输
+出格式、保存模板的哈希报表属性。
+为了方便客户端程序清晰的调用，我们为不同报表文档项目的访问，分别建立了对应
+的方法。下面着重介绍对图片项目的访问方法，其实现方法如下：
+1） 创建一个图像内容；
+2） 把图片项目入栈：
+3）打开查询并游历到第一条数据；
+4）初始化内容；
+5） 处理图片项目所必须的基本元素；
+6） 访问处理图像内容；
+7） TF 执行环境存在工厂
+执行图片的展现功能：
+8） 返回图片对象。
+该方法主要功能是完成对一个图片项目的访问，如有发射器存在就把它放到发射器
+中去。
+60
+===== PAGE p-67.png
+报表引擎系统实现
+5.2.3 滑动窗口协议思想在报表引擎系统中的实现
+滑动窗口协议是一种数据传输协议，根据具体应用又可把它细分成多种协议：比特滑
+动窗口协议、后退n协议、选择重传协议。本系统应用的是选择重传协议，下面详细介绍
+这个协议。
+窗口机制：滑动窗口协议的基本原理是在任意时刻，发送方都维持一个连续的允许发
+送帧的序号，称为发送窗口：同时收方也维持了一个连续的允许接收帧的序号，称为接收
+窗口。发送窗口和接收窗口的上下界不一定相同，甚至大小可以不同。不同的滑动窗口协
+议，其窗口大小一半不同，发送窗口内的序号代表了那些已经被发送，但是还没有被确认
+的帧。
+选择重传协议：发送方发完一个数据后不是停下来等待应答帧，而是连续发送若于个
+数据帧，即使在连续发送过程中收到了接收方发过来的应答帧，也可以继续发送。接收方
+发现收到的帧出错时，其后继发过来的帧不能立即提交给接收方的高层，但接收方仍然可
+以接收下来，存放在一个缓冲区中，同时要求发送方重新传送出错的那一帧。一旦收到重
+新传来的帧后，就与原存于缓冲区的其余的帧一起按正确的顺序递交高层。
+通过本文前面对报表引擎系统的介绍，我们知道报表引擎系统分为七个模块，每个模
+块在指定时间处理报表的相应部分，如果没有合适调度算法，就会使得系统中后面模块
+的等待时间过长，从而使报表引擎系统的效率大大降低。如果在实现时加入一定的调度算
+法，协调报表引擎各组成模块的工作，就会使得各个模块之间等待时间大大减少，从而
+提高报表引擎钓运行速度。
+为了提高系统的速度，本系统采用了前面提到的选择重传协议，用来控制报表引擎各
+个模块的工作。本系统应用选择重传协议的基本思想是：首先，发送模块从上游模块接收
+已经被上游模块处理的报表模块，并在本引擎模块对报表模块进行相应的处理，为每个报
+表模块设定定时器；然后把已设定好定时器的模块发送到下游模块，并把己发送模块放入
+到缓冲区缓存起来，发送模块随即进入监听状态；接收模块收到报表模块立即向发送方发
+出确认信息，如果没有收到发送出错信息；接受模块收到确认信息，立即清除缓冲区对应
+的模块。如果定时器超时或收到出错信息，立即从缓冲区中取出相应模块重新发送。
+下面就以七个模块中的引擎定义和引攀运行器为例，介绍选择重传协议如何应用于
+报表引擎系统。应用选择重传协议的报表引擎系统原理如图 5-4所示：
+61
+===== PAGE p-68.png
+西安理工大学硕士学位论文
+引準定义醬已处理充前报表横块
+已接受的报表模块
+出错傍息
+引業福行蹄
+博发出惜或超时棋块
+图5-4 滑动窗口协议在报表引擎系统中的应用原理示意图
+Figure S-4 Sliding Window Protocol in reporting engine system schematic diagram
+5.2.4 算法描述
+由于选择重传协议涉及到两个模块的协议，所以我们分别从发送模块和接收模块对算法
+进行描述。
+发送方算法：
+1）处理已接受的报表文件的各个报表文件块。
+2）依次发送已接受本模块处理的报表文件块。
+3） 对各个报表文件块设置要求确认的标记，启动定时。
+4） 如果收到确认
+If（确认信息）
+释放已经得到确认缓冲区
+Tf（出错信息）
+重新发送出错模块
+OCIn.com
+5）定时器时间到
+6） 依次重发确认超时的报表文件块
+7）继续步骤（3）
+接收方算法：
+1） 收到报表文件块
+2） 判断报表文件块是否符合要求
+3） If 报表符合要求
+4） If有待发返回信息
+捎带确认
+返回
+5） else 不符合要求报表文件块
+6） 发送出错信息
+62
+===== PAGE p-69.png
+报表引擎系统实现
+5.2.5
+算法试验及其分析
+本算法实验的测试环境为：Windows Server 2003 操作系统，Intel pentium 2.4 CPU，
+768MB 内存。测试方案为，对系统没有滑动窗口协议控制，以及有滑动窗口协议控制时，
+分别进行测试。测试分别生成同样大小的报表，计算它们所用的时间。测量出来的数据如
+下面两个表所示。
+表5-1表没有滑动窗口协议算法控制的报表引擎得出的实验数据，表5-2代表含有滑
+动窗口协议算法控制的报表引擎得出的实验数据。
+表5-1 没有滑动窗口协议算法的报表引擎实验数据
+Table 5-1 experimental data of reporting engine without Sliding Window Protocol
+表格（kb）
+耗时（ms）
+表格（kb）
+耗时（ms）
+15
+50
+10
+300
+13
+500
+100
+18
+1000
+200
+29
+40
+52
+25
+3000
+103
+表5-2 含有滑动窗口协议算法控制报表引孳約实验数据
+Table 5-2 experimental data of reporting engine without Sliding Window Protocol
+表格（kb）
+耗时（ms）
+表格（kb）
+耗时（ms）
+15
+10
+300
+26
+50
+12
+500
+36
+100
+19
+1000
+40
+200
+20
+3000
+80
+om
+以上数据通过 Matlab 拟合成两条曲线，如图 5-5 所示：
+140
+120-
+100-
+80
+60
+50 100 1500 2i0 2 s0i0 3500 4000
+图5-5实验结果曲线图
+Figure S-5 The experimental results curves
+63
+===== PAGE p-70.png
+西安理工大学硕士学位论文
+上图中，曲线1由表5-1数据生成，曲线2由表5-2数据生成。通过两条曲线的比较，
+可得出以下结论：当报表文件较小时，没有滑动窗口控制算法的系统和有滑动窗口控制算
+法的运行时间相差不多，但是，随着报表文件增大，含有窗口控制算法的系统，处理报
+表文件所花费时间大大减少。所以，在报表引攀系统应用这个控制算法，可提高系统处理
+大报表文件的效率。
+滑动窗口协议算法本来是计算机网络传输层中应用的一种算法，但是，它却在本系统
+中得到很好的使用，这主要得益于它在处理模块之间超强的调度能力。应用此算法之后，
+彻底地解决了报表系统在处理大型复杂报表的处理速度地的瓶颈。从而提供了系统的工
+作速度，提高报表系统的竞争能力，更好的为用户解决报表处理问题。滑动窗口协议算法
+本来是计算机网络传输层中应用一种算法，但是，它却在本系统中得到很好的使用，这
+主要得益于它在处理模块之间超强的调度能力。应用此算法之后，彻底地解决了报表系统
+在处理大型复杂的报表处理速度地的瓶颈。从而提供了系统的工作速度，提高报表系统
+的竞争能力，更好的为用户解决报表处理问题。
+www.docin.com
+64
+===== PAGE p-71.png
+报表引擎系统运行实例
+6 报表引擎系统运行实例
+6.1
+系统直接解析报表设计文档
+下面以某电信公司实际应用的报表为例，描述报表引擎功能。该报表要求根据本公
+司的销售情况分类统计本市城八区各种业务，并进行排名。
+1.系统接受来自报表系统的表表设计器传送过来的一份报表设计文档。该设计文档
+格式如下：
+<？xml version="1.0" encoding="UTF-8"？>
+《report xmlns="http://www.eclipse.org/birt/2005/design" version="3.2.7"id="1">
+<property name="createdBy">Eclipse BIRT Designer Version 1.0.1 Build &lt,20051130-1157></property>
+Sproperty name="units">in</property>
+<property name="comments'">Copyright （c） 2006 &lt； &clt; Your Company Name here>></property>
+<data-sources>
+<oda-data-source extensionID="org.eclipse.birt.report.data.oda.jdbc" name="Data Source" id="41">
+<text-property name="displayName"></text-property>
+<property name="odaDriverClass">org.eclipse.birt.report.data.oda.sampledb.Driver</property>
+<property name="odaURL">jdbc:classicmodels:sampledb</property>
+<property name="odatJser">ClassicModels</property>
+＜/oda-data-source>
+</data-sources>
+<data-sets>
+<oda-data-set extensionID="org.eclipse.birt.report.data.oda.jdbc.JdbcSelectData Set" name="Data Set"
+id="42">
+<structure name="cachedMeta Data">
+《list-property name="resultSer">
+<structure＞
+ocin.com
+<property name="position">1</property>
+<property name="name">CUSTOMERNAME</property>
+<property name="dataType"'>string</property>
+＜/structure＞
+＜structure>
+<property name="position">2</property>
+<property name="name">CONTACTLASTNAME</property>
+<property name="dataType">string</property>
+＜/structure＞
+<structure＞
+<property mame="position">3</property>
+<property namc="name">STATE</property>
+<property name="data Type">string</property>
+</structure>
+＜/list-property>
+</structure>
+<property name="dataSource">Data Source</property>
+65
+===== PAGE p-72.png
+西安理工大学硕士学位论文
+2.报表引擎系统通过下面流程（见图6-1）对这个文件进行解析并处理：
+开始
+创建引業配蜜
+创建运行任务
+创建展现任务
+设置輪出格式
+创建报表引業
+得到顶层树形市点
+得到输出格式前报表
+打开报表
+是示子节点信息
+www8
+Doin.Com
+图6-1 报表引擎直接解析运行流程图
+Figure 6-1 The Flow Chart of Run on Reporter Engine
+3.经过报表引擎系统的运行，得到图 6-2 所示的输出报表：
+城人区电信销皆統计表
+地区
+相降
+本合
+海條
+お景中
+合计
+销售額
+STR,102.101.00
+196,028.511.00
+12.S16.819.00
+72,399、706.00
+101.182.940.09）
+161.115.195.00
+13,003.779.00
+22,898.007.00
+固定电话
+株各
+特售锁
+｜特名
+2,879、886.00
+$，567.657.00
+3.452,345.00
+T646.346:00
+S
+5A345,T68.00
+•X87袋，8$8.00
+5,668 T46.00
+9.0T6,751.00
+销售数：
+「排名
+e9T.e8e.567.00
+.849.090.00
+B.ee7 578.00
+78575.00
+税9,T88,585/00
+63.54Y.869.00
+887、575.00
+$.A85.836.00
+き
+前三名城区有吉器效者：1300
+城八区卢北京市前销售比创：79.49x
+图 6-2 城八区电信统计表
+Figure 6-2 Statistics Table of Eight City Areas
+不动电
+销售額
+54.353 748.00
+BT.5T4.564.00
+96.896.00
+B4、674、T85:00
+5,668.58T:00
+B1.B6T,458.00
+$.467.458.00
+6.S35.354.00
+排名
+66
+===== PAGE p-73.png
+报表引辇系统运行实例
+6.2 系统直接嵌入到报表工具中
+下面以某个单位员工的详细信息报表为例，展示嵌入到报表工具的报表引攀如何对报
+表设计文件进行解析和展现。
+1.首先打开报表设计器，如图 6-3 所示。
+图 6-3 报表设计开始界面
+Figure 6-3 The Starting Interface of Report Designer
+2.打开文件菜单中的新建按钮，弹出一个一个新建对话框，系统将出现一个新建报表
+对话框，输入所要新建的报表设计文件名，再单击下一步，将出现报表模板对话框（如图
+6-4所示）在模板列中选择我的一个报表选项，在预览中能够看到效果图，单击 finish就
+可以出现报表设计器。
+※新建报表
+新建报装
+选择一个用手复制的报表
+报裴模板：
+预觉：
+下我裝
+簡乳裝
+Date
+描述：
+用于定义钓内容创建一空报表
+＜Back
+WEinish
+Cancel
+图64 报表模板选择界面
+Figure 6-4 The Selecting Interface of Report Template
+67
+===== PAGE p-74.png
+西安理工大学硕士学位论文
+3.在报表设计器中，按照自己的需求设计特定格式的报表，设计之后的效果如图 6-5
+所示。
+智能报表设计留
+文件（E）编辑（E 插入（D 页（a） 元续①）数花（D）Bun Searc西日（W）帮助（L）
+D・110-3-0-9万246-3716
+BOvtine X
+日E 新建报表 1.rptdesign
+国・卵数据源
+中@数据集
+报表参数
+一回X
+我测试报表
+株式
+嵌入式图僚
+头行
+有头行
+［OFFICECODEI
+工作职位］圆工号
+姓氏
+名字
+电子邮件
+DOBTITLE］
+［EMPLOYEENUMBER］
+LLASTNAME］［FIRSTNAME］［EMAILI
+FPackage Ex.. X Herarchy
+日公
+维縣注行
+淮注行
+弊注行
+は Master Page Srot 0 Source Preview
+rotkems Javadoe| Decle stion Dita Exploxer Gh Palette X3
+图6-5 设计好报表
+Figure 6-5 The Designed Rcport
+4.单击文件菜单中的在“报表查看嚣”中查看菜单，调用报表引擎生成一份 Html
+格式的报表。在报表查看嚣中显示出来的报表效果如图6-6 所示。
+报表查看露
+我測武报表
+工作职位员工号
+姓氏
+名字
+President
+1002
+Mumphy
+Diane
+dmurphy@/cfassicmodelcars.com
+Sale Manager 1102
+（EMEA）
+Bondur
+Gerard
+gbondur @ classicmodefcars.com
+Sales
+Manager
+（APAC）
+1088
+Patterson
+William
+wpatterson@classicmodelcars.com
+Sales
+Manager
+（NA）
+1143
+Bow
+Anthony
+abow@classicmodelcars.com
+Sales Rep
+Sales Rep
+1165
+1166
+Jennings
+Thompson
+Leslie
+Leslie
+ljennings（iclassicmodelcars.com
+Ihompson @classicmodelcers.com
+Sales Rep
+Sales Rep
+1188
+1216
+FirrelEi
+Patterson
+Julie
+Steve
+jfinrelli @ classicmodelcars.com
+spatterson@classicmodelcars.com
+图6-6 HTML格式报表
+Figure 6-6 HTML Format Report
+68
+===== PAGE p-75.png
+报表引擊系统运行实例
+5.点击文件菜单中的“在 PDF 中查看报表”菜单，调用报表引擎，生成一份 PDF
+格式的报表，它在PDF软件中的显示如图6-7所示。
+5111/2
+59160.4%
+B图 President
+き1
+日國 Sale Manager （EMEA）
+图4
+只間 Sales Manager （APAC）
+團。
+日間 Sales Manager （NA）
+图1
+白間 Sales Rep
+2
+3
+固s
+コス
+日間 VP Marketing
+图1
+日間 VP Sales
+辉
+1337
+1P70
+140：
+1903
+1631
+143S
+1633
+470
+图 6-7 PDF格式的报表
+Figure 6-7 PDF Format Report
+完成上述步骤之后，嵌入在报表工具的报表引擎就完成了对报表设计文件的解析工
+作，并生成了 HTML以及 PDF格式的报表。
+6.3 系统生成含图表格式的报表
+下面通过一个交通工具的分布图，来展示报表引擎解析含图表格式报表功能。
+1．在报表设计器中设计一份带图表的报表，如图6-8所示。
+照报表查看
+1区
+餅图
+Pie Chart Title
+-35.582
+12,778
+11,872-
+8,532
+2,818
+11.001
+・22,933
+Classic Cars
+Motoreye les
+Plarves
+Shipe
+Trains
+Truc ks and Buses
+Vintage Cars
+2008-9-11下午2:41
+图6-8设计器中饼状图
+Figure 6-8 Pie Diagram of Designer
+69
+===== PAGE p-76.png
+西安理工大学硕士学位论文
+2.调用报表引擎完成对此报表的解析工作，解析效果如图 6-9所示。
+隨区
+饼状图
+Pie Chart Title
+35,582
+12,778
+11,872
+8,532
+2,818
+11,001
+•22,933
+Classic Cars
+Motoreycles
+Plancs
+Shps
+Trains
+Trucks and Buses
+Vintage Cars
+图6-9 报表引擎生成的饼状图
+Figure 6-9 The Generating Pie Diagram
+3.点击报表设计器菜单中的转换按钮，把饼状图转化为柱状图，如图6-10所示。
+Shp://127.0.0.1:50B40/VieM
+SKPOrE =DRp3ADSErUntImEREc DpRCAnpIcstion
+Bar Chart Title
+40000
+35000
+30000
+25000
+20000
+15000
+10000
+5000
+35,582
+■
+8,532
+Classic Cars
+Tmcke and Beses
+Vintape Cars
+图 6-10 报表引擎生成柱状图
+Figure 6-10 The Generating Histogram
+70
+===== PAGE p-77.png
+结束语
+结束语
+作者经过对报表引擎工作原理的深入学习，基于面向对象的软件设计思想，应用
+Eclipse 集成开发环境和 Java 语言，设计实现了一个具有一定特色报表引擎。
+报表引攀是一个大型复杂软件系统，为了方便开发，作者把整个报表引擎按功能划分
+为报表请求、格式定义、引擎定义、引攀运行、策略引擎、引攀监控、引擎展现七个子系
+统。然后应用 Eclipse 的插件开发技术，把每一个子系统作为一个插件工程实现。这样做
+能够保证子系统之间的松散耦合，使得系统某一部分变化部分不会影响到系统的其它部
+分，使得系统维护以及软件模块复用更加容易，团队合作开发也更加方便。
+此外，为了把报表设计信息长期保存下去，以便后来复用，本系统采用 XML技术保
+存报表的设计信息。利用这些设计信息，有用户就可以方便地使用或修改以前所设计报
+表格式，而不用费时、费力的重新设计了。
+目前，该系统已经能够进行一些基本的报表解析工作，但是对于一些复杂的报表解
+析，特别是流行于中国式报表中的交叉格式报表的解析还是显得捉襟见肘。因此下一步的
+工作是继续努力，攻克复杂报表解析这一难题。
+www.qocin.com
+71
+===== PAGE p-78.png
+西安理工大学硕士学位论文
+www.qocin.com
+72
+===== PAGE p-79.png
+致谢
+致谢
+首先，衷心的感谢我的导师张璟教授。从论文的选题、研究到最后完成整个过程，
+最难以忘却的是张老师悉心指导的身影和谆谆教诲的良言。张老师渊博的学识、严谨学
+风、孜孜不倦的工作态度、平易近人的生活作风给我留下了难以磨灭的深刻印象，我将终
+生难忘！
+其次，衷心的感谢李军怀老师，一直以来李老师全方位的指导我的理论知识的学习和
+具体项目的实施。他的教导使得我的学习有了质的飞跃。
+再次，衷心感谢同实验室的赵树林、程明、刘嘉、黄蔚、赵晓辉、吕望、王瑾和张彬，
+同宿舍陈恩慧、郭晓军、乔宏利、焦威、秦严，是他们陪伴我度过了宝贵而令人难忘
+三年研究生生活，和他们在一起的欢乐时光将是我今后难以忘怀的美好回忆。
+最后衷心感谢我的家人和朋友，他们对我无尽的关怀和爱护是我终生的财富更是我
+前进的源动力。
+www.qocin.com
+73
+===== PAGE p-80.png
+西安理工大学硕士学位论文
+www.aocin.com
+74
+===== PAGE p-81.png
+参考文献
+参考文献
+【1】陈国华.基于 Excel 的报表引擎研究与设计门.计算机工程与设计，2004，25 （4）：526-529.
+【2】汤丹，胡志刚.基于消息队列的工作流引擎及其容错设计［.计算机工程，2008，34 （19）：49-52.
+【3】Uche Ogbuji. Thinking XML［EB/OL］.http://www.ibm.com/developerworks/library /x-think20.html? s_
+TACT=10SAGX52&S_CMP=cn-a-X,2003-10-07.
+【4】 NOby.CSV文件的生成与分析［EB/OL］. http://www.blueidea.com/tech/ program/2008/ 5247.asp, 2006-12-1.
+【5】裴玉，基于SVG钓自适应软件界面开发工具设计与实现门，计算机科学2008,35（1）：272-273.
+【6】 Anne-Marie Wright .Using Crystal Reports［EB/OL］. http://www.wbexplorer.com/
+VBExplorer/vb_feature/august2000/using_crystal_reports.asp,2007-9-8.
+【7】 BussinessObject. Intruduce Crystal Report［EB/OL］.
+http://www.businessobjects.com/product/catalog/crystalreports_visualstudio/，2008-12-10
+【8】 WindwardReport.Intrudece WindwardRepor（EB/OL］. http://www.windwardreports.com/，2003-3-2.
+【9】用友华表公司Cell软件介绍［EB/OL］. http://www.cellsoft.ec/ufhbsite/chinese vet,2007.
+【10】锐浪.易语言使用Grid+ +Report起步［EB/OL］，http://www.rubylong.cn/Doc/etutorial.htm,2009-1-1.
+【11】 叶江.EOS 报表：高效率的中式报表工具［EB/OL］.
+http://webservices.ctocio.com.cn/wpsum/203/7475203.shtml,2007-08-06.
+【12】润乾.快速了解润乾报表［EB/OL］.http://www.runqian.com.cn/rqrpt/rqwebrpt_fea.htm,2005-1-8.
+【13】 Bruce Eckel. Java编程思想［M］.北京：机械工业出版社.2001.
+【14】杨中科。自己动手写开发工具基于Eclispe的工具开发［M］，北京：清华大学出版社，2007.
+【15】 Steve Holzner. Eclipse - A Java Developer's Guide［M］. O'Reilly, April 2004:5-20.
+【16】 Erich Gamma, Kent Beck.Contributing to Eclipse: Principles, Patterns, and Plug-Ins［M］. Addison
+Wesley. October 20, 2003:88-120.
+【17】 Eclipse. Eclipse Java development tools （JDT） Overview［EB/OL］.http://www.eclipse.org/jdt/ overview.
+php,2005-10-3.
+【18】孙力军.基于OSGI前自适应软件架构［DI.中科院硕土论文，2006.
+（19】 Jeff McAffer, Jean-Michel Lemieux,Eclipse Rich Client Platfor: Designing, Coding, and Packaging
+JavaTM Applications［M］.Addison Wesley Professional, October 17, 2005.
+【20】孙更新，裴红义，杨金龙、XML完全开发指南［M］、北京：科学出版社，2008.
+【21】 W3cSchool.XML Dom教程［EB/OL］.http://www.w3school.com.cn/xmldom/index.asp,2006.
+【22】 Schema规范［EB/OL］. http://www.w3c.org/XML./Schema w3c, 2007.
+【23】iText介绍［EB/OL］、 http://www.lowagie.com/iText/iText, 2003.
+【24】XSL-FO基础知识［EB/OL］. http://www-128.ibm.com/developerworks/cn/xml/，2007.
+【25】谢星星，沈懿卓、UML基础与Rose建模实用教程［M］.北京：清华大学出版社，2008.
+【26】刁成嘉，UML系统建模与系统分析［M］.北京：机械工业出版社，2007.
+（27】 Birt Giroup. BIRT Report Object Model［M］. Actuate company,2005.
+75
+===== PAGE p-82.png
+西安理工大学硕士学位论文
+【28】 Michael Blaha, James Rumbaugh. UML.面向对象建模与设计［M］.北京：人民邮政出版社，2006.
+【29】赵字峰、面向对象软件静态测试自动生成类图的研究［D］.西安理工大学硕士论文，2003.
+【30】 Erich Gamma、 Richard Helm、Ralph Johnson、John Vlissides書，李英车等译，设计模式［M］，北
+京：机械工业出版社，2000.
+【31】 Jason,Weathersby,Don,French. Tor,Bondur,Jane, Tatchell, TanaChatalbasheva,Integrating and Extending
+BIRT［M］、Safari Enabled,2006.
+【32】 Diana Peh,Alethea Hannemann,Nola Hague. BIRT: A Field Guide to Reporting［M］. Safari
+Enabled,2006.
+【33】 Martin Fowler，分析模式可复用面向对象模型［M］.北京：机械工业出版社，2004.
+【34】 Joshua Kerievsky, Refactoring to Pattems/M］.北京：人民邮政出版社，2006.
+【35】 Erich Gamma, Richard Helm,Ralph Johnson, Hohn Vlissides. Design Patterns Elements of Reusable
+Object-Oriented Software［M］.北京：机械工业出版社，2007.
+【36】王咏武，王咏刚.道法自然面向对象指南［M］.北京：电子工业出版社，2004.
+【37】高广军，梁俊明，尤永祥，软件锁相环设计与仿真门，中国新通信，2008,19（12）：38-39.
+【38】朱叶峰，杨煜普，朱益.利用Ick实现foxpro下数据库加密门微计算机与应用，1997, 18 （5）， 1997-5.
+【39】 Jennifer Vesperman, Essential CVS［M］.O'Reilly & Associates,2003.
+www.qocin.com
+76
+===== PAGE p-83.png
+在校期发表论文情况
+论文发表
+微电子学与计算机《基于滑动窗口协议思想的报表引擎设计与实现》已录用
+www.docin.com
+77
+===== PAGE p-84.png
+报表引擎系统研究开发
+作者：
+学位授予单位：
+裴晓华
+西安理工大学
+日原原警猴
+FANODATA 文献链换
+引用本文格式：裴晓华 报表引擎系统研究开发［学位论文］硕士 2009
+doc Gin
+豆丁
+www.aocin.com
