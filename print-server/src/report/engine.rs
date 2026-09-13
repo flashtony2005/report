@@ -9,7 +9,7 @@
 use crate::report::expr::{self, BinOp, CmpOp, Coord, Expr, Prop};
 use crate::report::model::*;
 use serde_json::Value as JsonValue;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// 布局递归深度上限（防御异常模板导致的深递归）
 const MAX_LAYOUT_DEPTH: usize = 256;
@@ -601,8 +601,18 @@ impl Engine {
                             None => all_rows.clone(),
                         };
                         if let Some(cp) = col_parent {
-                            let cv = self.insts[*cp].rows.clone();
-                            view.retain(|r| cv.contains(r));
+                            // 行列主格求交。`rows` 是升序的（见 group_by_field / view 的构造），
+                            // 所以用二分而不是 `cv.contains(r)`：这段在 row_parents × col_parents
+                            // 双循环里，线性扫会退化成 (R×M)²（交叉表 160×80 时约 8e7 次比较）。
+                            let cv = &self.insts[*cp].rows;
+                            // 二分的前提：rows 严格升序。将来若有人改成非有序构造，
+                            // 这里会立刻炸，而不是静默少取数（少取数是「合计悄悄变小」，
+                            // 比崩溃难查得多）。
+                            debug_assert!(
+                                cv.windows(2).all(|w| w[0] < w[1]),
+                                "insts[..].rows 必须严格升序，否则下面的二分取交会算错"
+                            );
+                            view.retain(|r| cv.binary_search(r).is_ok());
                         }
                         let created = self.make_insts(&pos, r, c, *parent, *col_parent, &view, cell, &model);
                         for (idx, inst_idx) in created.iter().enumerate() {
@@ -1187,14 +1197,15 @@ impl Engine {
             return;
         }
         // 按 (tpl_row, 行主格) 稳定分组：跨行分支的同列单元格必须落在同一列
-        let mut keys: Vec<(usize, Option<usize>)> = Vec::new();
         let mut groups: Vec<Vec<usize>> = Vec::new();
+        // 哈希索引代替 `keys.iter().position(..)`：列子格多时那是平方级
+        let mut index: HashMap<(usize, Option<usize>), usize> = HashMap::new();
         for k in kids {
             let key = (self.insts[k].tpl_row, self.insts[k].parent);
-            match keys.iter().position(|x| *x == key) {
-                Some(p) => groups[p].push(k),
+            match index.get(&key) {
+                Some(&p) => groups[p].push(k),
                 None => {
-                    keys.push(key);
+                    index.insert(key, groups.len());
                     groups.push(vec![k]);
                 }
             }
@@ -1721,8 +1732,15 @@ impl Engine {
 }
 
 /// 按字段分组（保持首次出现顺序，等价于 SQL group by 的分组展开）
+/// 按字段分组去重，**保持首次出现顺序**。
+///
+/// 用哈希索引定位已有分组：原来写的是 `out.iter_mut().find(|(k, ..)| *k == key)`，
+/// 那是「行数 × 组数」的平方级开销——16000 个唯一值时要跑约 1.3e8 次字符串比较，
+/// 而这段又在每个展开格的展开路径上。换成索引后是 O(行数)。
+/// 分组顺序不受影响（仍是首次出现顺序），只是查表不再线性扫。
 fn group_by_field(ds: &DataSet, view: &[usize], field: &str) -> Vec<(JsonValue, Vec<usize>)> {
-    let mut out: Vec<(String, JsonValue, Vec<usize>)> = Vec::new();
+    let mut out: Vec<(JsonValue, Vec<usize>)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
     for r in view {
         let val = ds.get(*r).and_then(|row| row.get(field)).cloned().unwrap_or(JsonValue::Null);
         let key = match &val {
@@ -1730,12 +1748,15 @@ fn group_by_field(ds: &DataSet, view: &[usize], field: &str) -> Vec<(JsonValue, 
             JsonValue::String(s) => format!("s:{s}"),
             other => format!("v:{other}"),
         };
-        match out.iter_mut().find(|(k, _, _)| *k == key) {
-            Some((_, _, rows)) => rows.push(*r),
-            None => out.push((key, val, vec![*r])),
+        match index.get(&key) {
+            Some(&i) => out[i].1.push(*r),
+            None => {
+                index.insert(key, out.len());
+                out.push((val, vec![*r]));
+            }
         }
     }
-    out.into_iter().map(|(_, v, rows)| (v, rows)).collect()
+    out
 }
 
 fn as_number(v: JsonValue) -> Option<f64> {
