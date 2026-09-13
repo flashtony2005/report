@@ -47,6 +47,7 @@ import {
   stripArrayPrefix,
   toWorkbookData,
   withExportFormula,
+  withExpandControl,
   type AggType,
   type CellFormatSpec,
   type RenderRequest,
@@ -268,6 +269,16 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
    * 分页导出时会自动回落写值（公式坐标按整表生成，逐页复制后行号对不上）。
    */
   const [exportFormula, setExportFormula] = useState(false)
+  /**
+   * 展开控制。三个值打在不同层级，不是随便挑的：
+   * - 最少行数 → 最内层明细格（「每组至少 N 行」；打外层会变成「至少 N 个分组」）
+   * - 最多条数 → 最外层分组格（「TOP N」；打内层会变成「每组只显示 N 行」）
+   * - 空数据保留 → 所有行展开格（逐级保留，空报表才有空行撑着表头）
+   * 0 表示不限制。多级分组下这三个是逐级生效的。
+   */
+  const [expandMin, setExpandMin] = useState(0)
+  const [expandMax, setExpandMax] = useState(0)
+  const [keepExpandEmpty, setKeepExpandEmpty] = useState(false)
   /** 调试：让服务端回传展开中间结果（层次坐标 / 父格）与模板告警 */
   const [dump, setDump] = useState(false)
   const [dumpText, setDumpText] = useState('')
@@ -373,8 +384,13 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       })
     }
 
-    // 导出公式：统一后处理，不动三个构造器的签名
+    // 导出公式 / 展开控制：统一后处理，不动三个构造器的签名
     template = withExportFormula(template, exportFormula)
+    template = withExpandControl(template, {
+      minCount: expandMin,
+      maxCount: expandMax,
+      keepEmpty: keepExpandEmpty,
+    })
 
     const { database, table, engine } = dbSelection
     if (!database || !table) return { kind: 'error', message: '请先在数据源里选择库和表' }
@@ -410,6 +426,9 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     paramText,
     page,
     exportFormula,
+    expandMin,
+    expandMax,
+    keepExpandEmpty,
     dump,
     dbSelection,
   ])
@@ -835,6 +854,39 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
                 />
                 <Typography.Text style={{ fontSize: 12 }}>导出公式</Typography.Text>
               </Space>
+              <Space size={4}>
+                <Typography.Text style={{ fontSize: 12 }}>最少行数</Typography.Text>
+                <InputNumber
+                  size="small"
+                  style={{ width: 64 }}
+                  min={0}
+                  max={999}
+                  value={expandMin}
+                  onChange={(v: number | null) => setExpandMin(v ?? 0)}
+                  data-testid="grid-report-expand-min"
+                />
+              </Space>
+              <Space size={4}>
+                <Typography.Text style={{ fontSize: 12 }}>最多条数</Typography.Text>
+                <InputNumber
+                  size="small"
+                  style={{ width: 64 }}
+                  min={0}
+                  max={9999}
+                  value={expandMax}
+                  onChange={(v: number | null) => setExpandMax(v ?? 0)}
+                  data-testid="grid-report-expand-max"
+                />
+              </Space>
+              <Space size={4}>
+                <Switch
+                  size="small"
+                  checked={keepExpandEmpty}
+                  onChange={(v: boolean) => setKeepExpandEmpty(v)}
+                  data-testid="grid-report-keep-empty"
+                />
+                <Typography.Text style={{ fontSize: 12 }}>空数据保留</Typography.Text>
+              </Space>
             </Space>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               分页按「数据行」计数，不含每页重复的表头/表尾。预览区始终展示未分页的完整表；
@@ -844,6 +896,13 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
                   {' '}
                   导出公式：小计 / 合计落成 Excel 公式，导出后改明细会自动重算；
                   <b>分页导出时会自动回落写值</b>（公式坐标按整表生成，逐页复制后行号对不上）。
+                </>
+              )}
+              {(expandMin > 0 || expandMax > 0 || keepExpandEmpty) && (
+                <>
+                  {' '}
+                  展开控制（0 = 不限制）：<b>最少行数</b>作用于最内层明细（每组至少 N 行），
+                  <b>最多条数</b>作用于最外层分组（TOP N 个分组）；多级分组下逐级生效。
                 </>
               )}
             </Typography.Text>

@@ -11,6 +11,7 @@ import {
   parseParams,
   stripArrayPrefix,
   toWorkbookData,
+  withExpandControl,
   type ReportTemplate,
 } from './grid-report'
 
@@ -427,5 +428,90 @@ describe('数值列格式', () => {
     expect(hits.length).toBe(1)
     expect(hits[0]!.kind).toBe('int')
     expect(hits[0]!.field).toBe('amount')
+  })
+})
+
+describe('展开控制：min / max / keepEmpty 打在不同层级', () => {
+  /** 三级分组：明细行是 A3(region) → B3(city) → C3(salesman) */
+  const threeLevel = () =>
+    buildGroupTemplate({
+      ds: 'ds1',
+      groupFields: ['region', 'city', 'salesman'],
+      valueField: 'amount',
+    })
+
+  /**
+   * 明细行 = 行展开格最多的那一行。
+   * 不能写死下标：有没有 title 会让明细行的行号差 1。
+   */
+  const detailModels = (tpl: ReturnType<typeof threeLevel>) => {
+    const rows = tpl.sheets[0]!.rows
+    let best = rows[0]!
+    for (const r of rows) {
+      const n = r.cells.filter((c) => c.model?.expand_type === 'r').length
+      if (n > best.cells.filter((c) => c.model?.expand_type === 'r').length) best = r
+    }
+    return best.cells.map((c) => c.model!)
+  }
+
+  it('minCount 只打在最内层（明细级），maxCount 只打在最外层', () => {
+    const models = detailModels(withExpandControl(threeLevel(), { minCount: 5, maxCount: 10 }))
+
+    // A3 最外层：拿 max，不拿 min
+    expect(models[0]!.expand_max_count).toBe(10)
+    expect(models[0]!.expand_min_count).toBeUndefined()
+    // B3 中间层：两个都不拿
+    expect(models[1]!.expand_max_count).toBeUndefined()
+    expect(models[1]!.expand_min_count).toBeUndefined()
+    // C3 最内层：拿 min，不拿 max
+    expect(models[2]!.expand_min_count).toBe(5)
+    expect(models[2]!.expand_max_count).toBeUndefined()
+  })
+
+  it('keepEmpty 打在所有行展开格上（空报表也要撑住表头）', () => {
+    const models = detailModels(withExpandControl(threeLevel(), { keepEmpty: true }))
+    expect(models.slice(0, 3).map((m) => m.keep_expand_empty)).toEqual([true, true, true])
+    // 数值格不展开，不该被带上
+    expect(models[3]!.keep_expand_empty).toBeUndefined()
+  })
+
+  it('0 / undefined 视为不限制，不写进模板', () => {
+    const models = detailModels(withExpandControl(threeLevel(), { minCount: 0, maxCount: 0 }))
+    expect(models[0]!.expand_max_count).toBeUndefined()
+    expect(models[2]!.expand_min_count).toBeUndefined()
+  })
+
+  it('三个都不给时原样返回（同一个对象引用）', () => {
+    const tpl = threeLevel()
+    expect(withExpandControl(tpl, {})).toBe(tpl)
+    expect(withExpandControl(tpl, { minCount: 0, maxCount: 0, keepEmpty: false })).toBe(tpl)
+  })
+
+  it('单级分组：min / max 落在同一个格上', () => {
+    const tpl = buildGroupTemplate({ groupFields: ['region'], valueField: 'amount' })
+    const m = withExpandControl(tpl, { minCount: 3, maxCount: 8 }).sheets[0]!.rows[1]!.cells[0]!
+      .model!
+    expect(m.expand_min_count).toBe(3)
+    expect(m.expand_max_count).toBe(8)
+  })
+
+  it('交叉表：只作用于行展开格，列展开格不受影响', () => {
+    const tpl = buildCrossTemplate({
+      ds: 'ds1',
+      rowFields: ['region'],
+      colFields: ['month'],
+      valueFields: ['amount'],
+    })
+    const out = withExpandControl(tpl, { minCount: 2, maxCount: 7, keepEmpty: true })
+    const all = out.sheets[0]!.rows.flatMap((r) => r.cells.map((c) => c.model!))
+    const rowExp = all.filter((m) => m.expand_type === 'r')
+    const colExp = all.filter((m) => m.expand_type === 'c')
+    expect(rowExp.length).toBeGreaterThan(0)
+    expect(colExp.length).toBeGreaterThan(0)
+    expect(rowExp.every((m) => m.keep_expand_empty === true)).toBe(true)
+    expect(rowExp.some((m) => m.expand_max_count === 7)).toBe(true)
+    // 列展开格一个都没被带上
+    expect(colExp.every((m) => m.keep_expand_empty === undefined)).toBe(true)
+    expect(colExp.every((m) => m.expand_min_count === undefined)).toBe(true)
   })
 })

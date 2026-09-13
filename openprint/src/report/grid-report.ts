@@ -687,3 +687,72 @@ export function withExportFormula(tpl: ReportTemplate, on = true): ReportTemplat
     })),
   }
 }
+
+/**
+ * 展开控制：最少条数 / 最多条数 / 空数据集时是否保留。
+ *
+ * 三个属性**打在不同层级上**，这是本函数存在的唯一理由：
+ *
+ * - `minCount`（补空行）→ **最内层**行展开格。
+ *   「每组至少留 5 行」说的是明细级，打在外层会变成「至少 5 个分组」。
+ * - `maxCount`（只显示前 N 条）→ **最外层**行展开格。
+ *   「TOP 10」说的是分组数；打在明细级会变成「每个分组只显示前 10 行」。
+ * - `keepEmpty` → **所有**行展开格。逐级保留是想要的：空报表也要有一行空行撑着表头。
+ *
+ * 为什么不能一律打在所有行展开格上：分组模板里每个分组格都带 `expand_type:'r'` 且用
+ * `row_parent` 链式嵌套，逐级生效会让条数相乘——2 级分组 + 最少 5 行 = 至少 25 行。
+ *
+ * 层级的判定靠位置名：`cell()` 不写 `pos`（由服务端按行列下标推断），但构造器写
+ * `row_parent` 时用的就是 `cellPos()`，所以这里用同一个函数把位置补算回来再比对。
+ */
+export interface ExpandControl {
+  /** 展开条数下限：不足时补空行。0 / undefined = 不限制 */
+  minCount?: number
+  /** 展开条数上限：只显示前 N 条。0 / undefined = 不限制 */
+  maxCount?: number
+  /** 展开集为空时保留该格（缺省会连同子格一起删除） */
+  keepEmpty?: boolean
+}
+
+export function withExpandControl(tpl: ReportTemplate, ctl: ExpandControl): ReportTemplate {
+  const min = ctl.minCount && ctl.minCount > 0 ? ctl.minCount : undefined
+  const max = ctl.maxCount && ctl.maxCount > 0 ? ctl.maxCount : undefined
+  const keep = ctl.keepEmpty ? true : undefined
+  if (min === undefined && max === undefined && keep === undefined) return tpl
+
+  return {
+    ...tpl,
+    sheets: tpl.sheets.map((sheet) => {
+      // 先扫一遍：收集行展开格的位置，以及「谁被别的行展开格认作父格」
+      const expandPos = new Set<string>()
+      const childOf = new Set<string>()
+      sheet.rows.forEach((row, ri) => {
+        row.cells.forEach((c, ci) => {
+          if (c.model?.expand_type !== 'r') return
+          expandPos.add(cellPos(ri, ci))
+          if (c.model.row_parent) childOf.add(c.model.row_parent)
+        })
+      })
+
+      return {
+        ...sheet,
+        rows: sheet.rows.map((row, ri) => ({
+          cells: row.cells.map((c, ci) => {
+            const m = c.model
+            if (m?.expand_type !== 'r') return c
+            const pos = cellPos(ri, ci)
+            const isOutermost = !m.row_parent || !expandPos.has(m.row_parent)
+            const isInnermost = !childOf.has(pos)
+            const next: CellModel = {
+              ...m,
+              expand_min_count: isInnermost ? min : undefined,
+              expand_max_count: isOutermost ? max : undefined,
+              keep_expand_empty: keep,
+            }
+            return { ...c, model: next }
+          }),
+        })),
+      }
+    }),
+  }
+}

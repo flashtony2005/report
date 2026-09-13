@@ -242,6 +242,33 @@ fn compute_display(&mut self, i: usize) {
 | `rowTestExpr` / `colTestExpr`       | 返回 false 则整行 / 整列删除                   | ✅ 已实现（求值期 + 布局期，见下）                      |
 | `exportFormula`                     | 导出 Excel 时把 valueExpr 转成 Excel 公式     | ✅ 已实现（见下节）                                |
 
+#### 设计器暴露：三个属性打在不同层级
+
+引擎早就有了，但设计器一直没暴露。补 UI 时踩到一个**必须定死的语义问题**：
+
+分组模板里**每个分组格都带 `expand_type:'r'`**，并用 `row_parent` 链式嵌套
+（`region → city → salesman`）。三个属性如果一律打在所有行展开格上会**逐级相乘**——
+2 级分组 + 最少 5 行 = 至少 25 行，不是 5 行。
+
+定死的规则（用户已确认）：
+
+| 属性 | 打在哪一级 | 理由 |
+|---|---|---|
+| `expandMinCount`（补空行） | **最内层**行展开格 | 「每组至少留 5 行」说的是明细级；打外层变成「至少 5 个分组」 |
+| `expandMaxCount`（TOP N） | **最外层**行展开格 | 「TOP 10」说的是分组数；打内层变成「每组只显示 10 行」 |
+| `keepExpandEmpty` | **所有**行展开格 | 逐级保留是想要的：空报表也要有一行空行撑着表头 |
+
+只作用于**行**展开格（`expand_type === 'r'`），列展开格不受影响
+（否则交叉表的「最少 N 行」会顺带把列也补足）。
+
+层级判定：构造器写 `row_parent` 时用的是 `cellPos()`，而 `cell()` 本身不写 `pos`
+（位置由服务端按行列下标推断），所以 `withExpandControl()` 用同一个 `cellPos()`
+把位置补算回来，再比对「谁被别的行展开格认作父格」。
+
+实现在 `openprint/src/report/grid-report.ts` 的 `withExpandControl()`
+（与 `withExportFormula` 同款后处理，不动三个构造器的签名）；UI 在
+`GridReportModal` 的工具条：最少行数 / 最多条数 / 空数据保留。
+
 ### 展开顺序：迭代 deque + 父格优先（对应我们的环防护问题）
 
 NopReport 用 `processing` 双端队列：`poll()` 取一个格；若其 `colParent`/`rowParent` 未展开，则把「自己 + 父格」一起 `push()` 回去，LIFO 保证父格先展开。  
