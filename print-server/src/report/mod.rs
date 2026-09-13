@@ -1793,6 +1793,106 @@ mod tests {
         assert!(!text.iter().any(|l| l.contains("116,400")), "{text:#?}");
     }
 
+    /// 【规则 3】展开范围「影子」下的无父格格子要被顶层展开格收编
+    ///
+    /// 模板里 B2 向下合并一格（B2:B3），把 A2 的展开范围从「自己那一行」撑到了第 3 行。
+    /// 第 3 行的 C3 扫不到任何父格（本行 col0/col1 都是空的），
+    /// 没有规则 3 时它会挂根、只渲染一次——表现为分组明细末尾冒出一个总计 37,200。
+    #[test]
+    fn rule3_adopts_orphan_cell_in_expand_range() {
+        let text = lines(&render_rule3_template(None).sheets[0].rows);
+
+        // 收编后 C3 跟着地区展开：华东 12,000+9,900=21,900；华南 15,300
+        assert!(text.iter().any(|l| l.contains("21,900")), "{text:#?}");
+        assert!(text.iter().any(|l| l.contains("15,300")), "{text:#?}");
+        // 关键：不能再出现那个挂根的总计
+        assert!(!text.iter().any(|l| l.contains("37,200")), "{text:#?}");
+    }
+
+    /// 【规则 3 的边界】显式 `A0` 的格子**不受**规则 3 影响
+    ///
+    /// 上游的门槛是 `getRowParent() == null`，而 `A0` 在那边是 `CellPosition.NONE`
+    /// ——一个**非 null 的哨兵值**。所以「显式声明不要父格」和「什么都没写」必须区别对待，
+    /// 否则用户写了 `A0` 反而被收编，等于这个声明没生效。
+    ///
+    /// 这里把 C3 改成显式 `A0`：它就该老老实实挂根，只渲染一次、给出总计 37,200。
+    #[test]
+    fn rule3_leaves_explicit_a0_alone() {
+        let text = lines(&render_rule3_template(Some("A0")).sheets[0].rows);
+
+        assert!(text.iter().any(|l| l.contains("37,200")), "{text:#?}");
+        assert!(!text.iter().any(|l| l.contains("21,900")), "{text:#?}");
+        assert!(!text.iter().any(|l| l.contains("15,300")), "{text:#?}");
+    }
+
+    /// 规则 3 的验模板：B2 向下合并一格把 A2 的展开范围撑到第 3 行，
+    /// 第 3 行只留 C 列一个无父格格子（`c3_row_parent` 可指定它的 `row_parent`）。
+    fn render_rule3_template(c3_row_parent: Option<&str>) -> RenderResponse {
+        let mut datasets = BTreeMap::new();
+        datasets.insert(
+            "ds1".to_string(),
+            vec![
+                serde_json::json!({"region":"华东","city":"上海","salesman":"张三","amount":12000}),
+                serde_json::json!({"region":"华东","city":"杭州","salesman":"王五","amount":9900}),
+                serde_json::json!({"region":"华南","city":"广州","salesman":"孙七","amount":15300}),
+            ]
+            .into_iter()
+            .map(|v| {
+                v.as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, x)| (k.clone(), x.clone()))
+                    .collect::<BTreeMap<String, JsonValue>>()
+            })
+            .collect::<Vec<BTreeMap<String, JsonValue>>>(),
+        );
+        let txt = |v: &str| CellTpl {
+            pos: None,
+            value: Some(JsonValue::from(v)),
+            model: None,
+            ..Default::default()
+        };
+        let blank = || CellTpl::default();
+        let bind = |field: &str, expand: bool, agg: bool, merge_down: usize, row_parent: Option<&str>| CellTpl {
+            pos: None,
+            value: None,
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some(field.into()),
+                agg: if agg { Some(AggType::Sum) } else { None },
+                expand_type: if expand { Some(ExpandType::R) } else { None },
+                row_parent: row_parent.map(|s| s.to_string()),
+                ..Default::default()
+            }),
+            merge_down,
+            ..Default::default()
+        };
+
+        let tpl = ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "t".into(),
+                page: None,
+                rows: vec![
+                    RowTpl { cells: vec![txt("地区"), txt("销售员"), txt("小计")] },
+                    // B2 向下合并一格（B2:B3）→ 把 A2 的展开范围撑到第 3 行
+                    RowTpl {
+                        cells: vec![
+                            bind("region", true, false, 0, None),
+                            bind("salesman", false, false, 1, None),
+                            bind("city", false, false, 0, None),
+                        ],
+                    },
+                    // 第 3 行只有 C 列有格，且它扫不到任何父格 → 规则 3 的候选
+                    RowTpl {
+                        cells: vec![blank(), blank(), bind("amount", false, true, 0, c3_row_parent)],
+                    },
+                ],
+            }],
+            datasets,
+        };
+        render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None }).unwrap()
+    }
+
     /// `dump=true` 时返回展开中间结果，便于排查扩展 / 求值问题
     #[test]
     fn dump_returns_expansion_trace() {

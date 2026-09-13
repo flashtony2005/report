@@ -50,6 +50,11 @@ enum ParentDecl {
 /// 已解析出的父格，按 (row, col) 缓存——等价于上游回写进 model 的那份
 type Resolved = BTreeMap<(usize, usize), ParentDecl>;
 
+/// 模板级展开范围：(row, col) -> (offset, span)
+///
+/// offset 可以为负（子格排到父格上方/左方时），所以是 `isize`。
+type Ranges = BTreeMap<(usize, usize), (isize, usize)>;
+
 fn parse_parent(p: Option<&str>) -> ParentDecl {
     match p {
         None => ParentDecl::Unset,
@@ -128,6 +133,272 @@ fn default_col_parent(sheet: &SheetTpl, r: usize, c: usize, resolved: &Resolved)
         Some(ParentDecl::Ref(p)) => Some(p.clone()).filter(|p| p != &own),
         _ => None,
     }
+}
+
+/// 模板级父格解析（Pass 0）：按**行优先**顺序解析每格的父格，不建实例。
+///
+/// 为什么要把这段从建实例的循环里抽出来：规则 3（`addDefaultRowParents`）要先知道
+/// 「谁是谁的子格」才能算展开范围，而展开范围又必须在建实例**之前**就定下来。
+/// 原先边建实例边推断，拿不到这个全局视图。
+///
+/// 抽出来是**语义等价**的，因为：
+/// - 解析只读模板和**行优先序更早**的格子（向左扫同行前面的列、向上扫同列前面的行、
+///   兜底读本行最左 / 第一行同列），所以一次性预扫出的 map 与逐格边扫边填的结果一致；
+/// - 占位空格（既无值也无模型）照旧跳过，不写进 map。
+fn resolve_parents(sheet: &SheetTpl) -> (Resolved, Resolved) {
+    let mut row: Resolved = BTreeMap::new();
+    let mut col: Resolved = BTreeMap::new();
+    for (r, line) in sheet.rows.iter().enumerate() {
+        for (c, cell) in line.cells.iter().enumerate() {
+            if cell.value.is_none() && cell.model.is_none() {
+                continue;
+            }
+            let model = cell.model.clone().unwrap_or_default();
+            let rd = match parse_parent(model.row_parent.as_deref()) {
+                ParentDecl::Ref(p) => ParentDecl::Ref(p),
+                ParentDecl::ExplicitNone => ParentDecl::ExplicitNone,
+                ParentDecl::Unset => match default_row_parent(sheet, r, c, &row) {
+                    Some(p) => ParentDecl::Ref(p),
+                    None => ParentDecl::Unset,
+                },
+            };
+            let cd = match parse_parent(model.col_parent.as_deref()) {
+                ParentDecl::Ref(p) => ParentDecl::Ref(p),
+                ParentDecl::ExplicitNone => ParentDecl::ExplicitNone,
+                ParentDecl::Unset => match default_col_parent(sheet, r, c, &col) {
+                    Some(p) => ParentDecl::Ref(p),
+                    None => ParentDecl::Unset,
+                },
+            };
+            row.insert((r, c), rd);
+            col.insert((r, c), cd);
+        }
+    }
+    (row, col)
+}
+
+/* --------------------------- 规则 3：展开范围与认领 --------------------------- */
+
+/// 模板级行跨度 = `merge_down + 1`（对齐上游 `cell.getRowSpan()`）
+fn tpl_row_span(cell: &CellTpl) -> usize {
+    cell.merge_down + 1
+}
+
+/// 模板级列跨度 = `merge_across + 1`。
+/// `merge_to_end`（铺到行尾）的宽度在模板期只能按「本行列数 - 起始列」估，
+/// 列数随数据变化，所以这里算出来的是个下界——偏窄只会少认领，不会认错。
+fn tpl_col_span(sheet: &SheetTpl, r: usize, c: usize, cell: &CellTpl) -> usize {
+    if cell.merge_to_end {
+        sheet
+            .rows
+            .get(r)
+            .map(|line| line.cells.len().saturating_sub(c))
+            .unwrap_or(1)
+            .max(1)
+    } else {
+        cell.merge_across + 1
+    }
+}
+
+/// 模板层「子格索引」：父格 (r,c) -> 子格列表（行优先序）
+///
+/// 由 `resolved` 反转而来：谁的 `Ref(p)` 指向 p，谁就是 p 的子格。
+/// 指向不存在格子的声明（模板写错）在这里被丢掉——建实例时那条路径会单独告警，
+/// 不必在这里重复报一次。
+fn children_index(sheet: &SheetTpl, resolved: &Resolved) -> BTreeMap<(usize, usize), Vec<(usize, usize)>> {
+    let mut idx: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for &(r, c) in resolved.keys() {
+        let pos = tpl_cell(sheet, r, c)
+            .map(|x| tpl_pos(x, r, c))
+            .unwrap_or_else(|| cell_pos(r, c));
+        idx.insert(pos, (r, c));
+    }
+    let mut out: BTreeMap<(usize, usize), Vec<(usize, usize)>> = BTreeMap::new();
+    for (&(r, c), decl) in resolved.iter() {
+        if let ParentDecl::Ref(p) = decl {
+            if let Some(&parent) = idx.get(p) {
+                out.entry(parent).or_default().push((r, c));
+            }
+        }
+    }
+    out
+}
+
+/// 自底向上算一个格子的展开范围，对齐上游 `collectRowChild` / `collectColChild`。
+///
+/// 叶子：`offset = 0`，`span = 自身跨度`。
+/// 非叶子：`span` 覆盖自身跨度与所有子格 `(子格号 + 子 offset, + 子 span)` 的并集。
+///
+/// `depth` 是防栈保护：显式父格允许指向任意格子（甚至成环），
+/// 上游遇到环会抛异常，我们只求「别把栈打穿」，到顶就退回叶子形态。
+fn span_of(
+    sheet: &SheetTpl,
+    children: &BTreeMap<(usize, usize), Vec<(usize, usize)>>,
+    memo: &mut Ranges,
+    (r, c): (usize, usize),
+    row_axis: bool,
+    depth: usize,
+) -> (isize, usize) {
+    if let Some(&hit) = memo.get(&(r, c)) {
+        return hit;
+    }
+    let own = tpl_cell(sheet, r, c);
+    let self_span = match own {
+        Some(x) if row_axis => tpl_row_span(x),
+        Some(x) => tpl_col_span(sheet, r, c, x),
+        None => 1,
+    };
+    let self_idx = if row_axis { r } else { c };
+
+    let kids = children.get(&(r, c));
+    if depth >= MAX_LAYOUT_DEPTH || kids.map_or(true, |k| k.is_empty()) {
+        let leaf = (0isize, self_span);
+        memo.insert((r, c), leaf);
+        return leaf;
+    }
+
+    let mut lo = self_idx as isize;
+    let mut hi = (self_idx + self_span) as isize;
+    for &(kr, kc) in kids.unwrap() {
+        let (k_off, k_span) = span_of(sheet, children, memo, (kr, kc), row_axis, depth + 1);
+        let k_idx = if row_axis { kr } else { kc };
+        let start = k_idx as isize + k_off;
+        lo = lo.min(start);
+        hi = hi.max(start + k_span as isize);
+    }
+    let out = (lo - self_idx as isize, (hi - lo).max(1) as usize);
+    memo.insert((r, c), out);
+    out
+}
+
+/// 算出所有格子的展开范围。
+///
+/// 必须**覆盖全部格子**（含没有子格的叶子），不能只遍历 `children` 的键——
+/// 顶层展开格若一个子格都没有，就不在 `children` 里，规则 3 会查不到它的范围。
+fn collect_spans(
+    sheet: &SheetTpl,
+    children: &BTreeMap<(usize, usize), Vec<(usize, usize)>>,
+    all: &Resolved,
+    row_axis: bool,
+) -> Ranges {
+    let mut memo: Ranges = BTreeMap::new();
+    for &(r, c) in all.keys() {
+        span_of(sheet, children, &mut memo, (r, c), row_axis, 0);
+    }
+    memo
+}
+
+/// 规则 3：`addDefaultRowParents` / `addDefaultColParents`（上游 L629-679）
+///
+/// 顶层展开格把它展开范围内的、**没有父格**且**不与它自己的跨度重叠**的格子收作子格。
+///
+/// 为什么需要：手写模板里，展开块「影子」下的格子扫不到任何父格，会挂根只渲染一次——
+/// 表现就是分组明细里突然冒出一个总计。收编进分组之后才会跟着分组展开。
+///
+/// 三个容易写错的点：
+///
+/// 1. 门槛是 `rowParent == null`，即**从未声明、也没推断出**父格。
+///    显式写 `A0` 在上游是 `CellPosition.NONE`——一个**非 null 的哨兵值**，
+///    所以**不受**规则 3 影响。别把 `ExplicitNone` 一起收编了。
+/// 2. 认领要**边认领边生效**：按行优先序处理，前面的格子认领完之后，后面的格子
+///    再判断「我有没有父格」时已经是「有」了。所以读的是可变 map，不是快照。
+/// 3. `ranges` 只需要算一次。上游虽然是在循环里惰性算的，但认领只作用在**顶层**格上，
+///    而顶层格不会成为别人的子格，所以不存在「后面的格子看到前面的认领结果」这回事。
+fn add_default_parents(sheet: &SheetTpl, resolved: &mut Resolved, ranges: &Ranges, row_axis: bool) {
+    // BTreeMap 的键序就是行优先序，正是上游 `forEachRealCell` 的顺序
+    let cells: Vec<(usize, usize)> = resolved.keys().copied().collect();
+    for (r, c) in cells {
+        // 只处理顶层（解析后仍无父格）的展开格
+        if !matches!(resolved.get(&(r, c)), Some(ParentDecl::Unset)) {
+            continue;
+        }
+        let Some(cell) = tpl_cell(sheet, r, c) else { continue };
+        let Some(model) = cell.model.as_ref() else { continue };
+        let expanding = if row_axis { model.is_row_expand() } else { model.is_col_expand() };
+        if !expanding {
+            continue;
+        }
+        let Some(&(offset, span)) = ranges.get(&(r, c)) else { continue };
+
+        let self_idx = if row_axis { r } else { c };
+        let self_span = if row_axis {
+            tpl_row_span(cell)
+        } else {
+            tpl_col_span(sheet, r, c, cell)
+        };
+        let own_start = self_idx as isize;
+        let own_end = own_start + self_span as isize;
+
+        let start = (self_idx as isize + offset).max(0) as usize;
+        let end = (self_idx as isize + offset + span as isize).max(0) as usize;
+        let pos = tpl_pos(cell, r, c);
+
+        for i in start..end {
+            // 行轴：第 i 行的所有列；列轴：第 i 列的所有行
+            let coords: Vec<(usize, usize)> = if row_axis {
+                match sheet.rows.get(i) {
+                    Some(line) => (0..line.cells.len()).map(|j| (i, j)).collect(),
+                    None => continue,
+                }
+            } else {
+                (0..sheet.rows.len())
+                    .filter(|rr| sheet.rows[*rr].cells.get(i).is_some())
+                    .map(|rr| (rr, i))
+                    .collect()
+            };
+            for (rr, cc) in coords {
+                if (rr, cc) == (r, c) {
+                    continue;
+                }
+                // 只认领「无父格」的；占位空格不在 map 里，自然也在这里被排除
+                if !matches!(resolved.get(&(rr, cc)), Some(ParentDecl::Unset)) {
+                    continue;
+                }
+                let Some(other) = tpl_cell(sheet, rr, cc) else { continue };
+                // 列轴要放过显式声明了 `col_after` 的格子。
+                //
+                // `col_after` 是我们对上游 `colExtendForSibling` 的等价物：作者用它
+                // 声明「我排在某个列展开格所占列区间**之后**」。而规则 3 收编之后，
+                // 该格会变成那个列展开格的子格、被放进它的列区间**里面**——两条声明打架，
+                // 结果是「金额合计」这种表头跟着月份重复一遍。
+                //
+                // 语义上也说得通：规则 3 是给「完全没有任何定位信息」的格子兜底的，
+                // 而写了 `col_after` 的格子显然已经自己定好了位置。
+                if !row_axis
+                    && other
+                        .model
+                        .as_ref()
+                        .and_then(|m| m.col_after.as_ref())
+                        .is_some()
+                {
+                    continue;
+                }
+                let o_idx = if row_axis { rr } else { cc };
+                let o_span = if row_axis {
+                    tpl_row_span(other)
+                } else {
+                    tpl_col_span(sheet, rr, cc, other)
+                };
+                let o_start = o_idx as isize;
+                let o_end = o_start + o_span as isize;
+                // 与本格自己的跨度重叠的不收（上游那个 `||` 条件）
+                if o_end <= own_start || o_start >= own_end {
+                    resolved.insert((rr, cc), ParentDecl::Ref(pos.clone()));
+                }
+            }
+        }
+    }
+}
+
+/// 阶段 0 的后半段：在缺省推断之上套用规则 3
+fn apply_default_parents(sheet: &SheetTpl, row: &mut Resolved, col: &mut Resolved) {
+    let row_children = children_index(sheet, row);
+    let row_ranges = collect_spans(sheet, &row_children, row, true);
+    add_default_parents(sheet, row, &row_ranges, true);
+
+    let col_children = children_index(sheet, col);
+    let col_ranges = collect_spans(sheet, &col_children, col, false);
+    add_default_parents(sheet, col, &col_ranges, false);
 }
 
 /// 表达式求值结果
@@ -262,10 +533,12 @@ impl Engine {
 
         let all_rows: Vec<usize> = (0..self.ds.len()).collect();
 
+        // ---- 阶段 0：模板级父格解析（含缺省推断 + 规则 3 认领）----
+        //
         // 已解析出的父格，按 (row, col) 缓存。等价于上游把推断结果回写进 model；
         // 「向左扫到的相邻格有没有父格」要读它，而且必须是**解析后**的值。
-        let mut resolved_row: Resolved = BTreeMap::new();
-        let mut resolved_col: Resolved = BTreeMap::new();
+        let (mut resolved_row, mut resolved_col) = resolve_parents(sheet);
+        apply_default_parents(sheet, &mut resolved_row, &mut resolved_col);
 
         // ---- 阶段 1：按模板顺序（行升序、列升序）展开，父格必然先于子格 ----
         for (r, row) in sheet.rows.iter().enumerate() {
@@ -277,35 +550,17 @@ impl Engine {
                 let pos = cell.pos.clone().unwrap_or_else(|| cell_pos(r, c));
                 let model = cell.model.clone().unwrap_or_default();
 
-                // 未显式声明父格时，按 NopReport 的缺省规则推断：
-                // 行父格向左查找最近的纵向扩展格，列父格向上查找最近的横向扩展格。
-                // `A0`（ExplicitNone）是显式「无父格」，不再套用缺省推断
-                let (row_ref, row_decl) = match parse_parent(model.row_parent.as_deref()) {
-                    ParentDecl::Ref(p) => (Some(p.clone()), ParentDecl::Ref(p)),
-                    ParentDecl::ExplicitNone => (None, ParentDecl::ExplicitNone),
-                    ParentDecl::Unset => {
-                        let p = default_row_parent(sheet, r, c, &resolved_row);
-                        let d = match &p {
-                            Some(p) => ParentDecl::Ref(p.clone()),
-                            None => ParentDecl::Unset,
-                        };
-                        (p, d)
-                    }
+                // 父格在阶段 0 就解析好了（含缺省推断与规则 3 的认领），这里只读结果。
+                // `Unset` 与 `ExplicitNone` 都表示「无父格」，但含义不同——
+                // 见 `ParentDecl` 的注释，两者的区别只影响阶段 0 的推断。
+                let row_ref = match resolved_row.get(&(r, c)) {
+                    Some(ParentDecl::Ref(p)) => Some(p.clone()),
+                    _ => None,
                 };
-                let (col_ref, col_decl) = match parse_parent(model.col_parent.as_deref()) {
-                    ParentDecl::Ref(p) => (Some(p.clone()), ParentDecl::Ref(p)),
-                    ParentDecl::ExplicitNone => (None, ParentDecl::ExplicitNone),
-                    ParentDecl::Unset => {
-                        let p = default_col_parent(sheet, r, c, &resolved_col);
-                        let d = match &p {
-                            Some(p) => ParentDecl::Ref(p.clone()),
-                            None => ParentDecl::Unset,
-                        };
-                        (p, d)
-                    }
+                let col_ref = match resolved_col.get(&(r, c)) {
+                    Some(ParentDecl::Ref(p)) => Some(p.clone()),
+                    _ => None,
                 };
-                resolved_row.insert((r, c), row_decl);
-                resolved_col.insert((r, c), col_decl);
 
                 // 行主格实例列表
                 //
