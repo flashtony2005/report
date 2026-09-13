@@ -556,6 +556,12 @@ pub struct Engine {
     /// 但**不含层次坐标**时 `resolve` 与当前格无关，同一个表达式在所有行上的依赖集
     /// 完全相同，一轮里真正确保一次就够。有层次坐标的表达式不进这个集合。
     deps_done: RefCell<HashSet<String>>,
+
+    /// `excel_of` 专用 resolve 缓存：`resolve(target, coord, cur)` 在 phase 4
+    /// 不会改 hidden，结果只取决于 `(target, coord, anchor_instance)`。
+    /// 同一组 N 个明细行共享同一个 anchor → 同一份结果算 N 次 → 缓存命中后
+    /// 单次 resolve 缩成「祖链 + HashMap 查表」。
+    excel_resolve_cache: RefCell<HashMap<(String, Coord, usize), (Rc<[usize]>, Option<String>)>>,
 }
 
 impl Engine {
@@ -570,6 +576,7 @@ impl Engine {
             fmt_text: Vec::new(),
             pos_index: RefCell::new(HashMap::new()),
             deps_done: RefCell::new(HashSet::new()),
+            excel_resolve_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -748,6 +755,8 @@ impl Engine {
         let total_cols = self.layout_columns(n);
 
         // ---- 阶段 4：填充网格 ----
+        // 清空 excel_resolve_cache：phase 4 不会再动 hidden，缓存到这次 pass 结束有效。
+        self.excel_resolve_cache.borrow_mut().clear();
         let ncols = total_cols.max(1);
         let mut grid: Vec<Vec<Option<GridCell>>> = vec![vec![None; ncols]; total_rows];
         for (i, inst) in self.insts.iter().enumerate() {
@@ -967,11 +976,24 @@ impl Engine {
             // 双引号要转义成两个，否则公式断掉
             Expr::Str(s) => format!("\"{}\"", s.replace('"', "\"\"")),
             Expr::Cell { target, coord, prop } => {
-                let cells = self.resolve(target, coord.as_ref(), cur);
+                // 走带缓存的路径：phase 4 里同一个 (target, coord, anchor) 结果恒定，
+                // N 个共享 anchor 的明细行只算一次 resolve + 一次 refs 字符串。
+                // 无层次坐标时还是走原 resolve 拿 PosIndex（那份已经是 Rc 共享）。
+                let (cells, refs_cached) = match coord.as_ref() {
+                    Some(cd) => match self.resolve_for_excel(target, cd, cur) {
+                        Some(v) => v,
+                        None => return None,
+                    },
+                    None => {
+                        let cells = self.resolve(target, None, cur);
+                        let refs = self.excel_refs(&cells);
+                        (cells, refs)
+                    }
+                };
                 if cells.is_empty() || cells.binary_search(&cur).is_ok() {
                     return None; // 解析不到引用目标 / 自引用 → 不翻
                 }
-                let refs = self.excel_refs(&cells)?;
+                let refs = refs_cached?;
                 match prop {
                     None => refs,
                     Some(Prop::Aggregate(f)) => match *f {
@@ -2038,6 +2060,62 @@ impl Engine {
         }
     }
 
+    /// `excel_of` 专用路径：`resolve(target, coord, cur)` 的结果只取决于
+    /// `(target, coord, anchor_instance)`，与 `cur` 是哪个**具体**实例无关
+    /// （只要它的祖先链能走到同一个 anchor，结果集就一样）。
+    ///
+    /// 缓存命中后整次 resolve 缩成「沿祖链走一遍 → HashMap 查表」，
+    /// 把「同组 N 个明细行各跑一遍完整 resolve」从 O(N × |结果集|) 降到 O(N × depth)。
+    ///
+    /// 顺便把 `excel_refs` 也一起缓存：cells 命中后还要走一遍 sort+dedup+windows
+    /// 才有 `SUM(C1:C8)` 这种引用串，N 个明细行各做一遍就是 O(N² log N)。
+    /// 把 (cells, refs) 打包缓存 → 命中后整次降到 O(1)。
+    ///
+    /// 只在 phase 4（导出公式生成）这一个 pass 里有用；这个 pass 不会改 hidden，
+    /// 所以「ancestor chain + descendants.get(target) + hidden filter」三件套
+    /// 对同一个 (target, coord, anchor) 始终给出同一份答案。
+    fn resolve_for_excel(&self, target: &str, coord: &Coord, cur: usize) -> Option<(Rc<[usize]>, Option<String>)> {
+        let anchor = self.find_anchor(coord, cur)?;
+        let key = (target.to_string(), coord.clone(), anchor);
+        if let Some(cached) = self.excel_resolve_cache.borrow().get(&key) {
+            return Some(cached.clone());
+        }
+        let raw = self.insts[anchor].descendants.get(target).cloned().unwrap_or_default();
+        let v: Vec<usize> = raw.into_iter().filter(|&i| !self.insts[i].hidden).collect();
+        debug_assert!(
+            v.windows(2).all(|w| w[0] < w[1]),
+            "带层次坐标的结果集也必须升序，否则二分成员判断会出错"
+        );
+        let refs = self.excel_refs(&v);
+        let rc: Rc<[usize]> = Rc::from(v);
+        let val = (rc, refs);
+        self.excel_resolve_cache.borrow_mut().insert(key, val.clone());
+        Some(val)
+    }
+
+    /// 提取 anchor 查找：和 `resolve_raw` 共用同一段祖先链逻辑。
+    /// 返回 `None` 表示找不到 coord 指定的同名主格。
+    fn find_anchor(&self, cd: &Coord, cur: usize) -> Option<usize> {
+        if self.insts[cur].pos == cd.pos {
+            return Some(cur);
+        }
+        let mut p = self.insts[cur].parent;
+        while let Some(pi) = p {
+            if self.insts[pi].pos == cd.pos {
+                return Some(pi);
+            }
+            p = self.insts[pi].parent;
+        }
+        let mut cp = self.insts[cur].col_parent;
+        while let Some(ci) = cp {
+            if self.insts[ci].pos == cd.pos {
+                return Some(ci);
+            }
+            cp = self.insts[ci].col_parent;
+        }
+        None
+    }
+
     fn resolve_raw(&self, target: &str, coord: Option<&Coord>, cur: usize) -> Vec<usize> {
         match coord {
             None => self.by_pos.get(target).cloned().unwrap_or_default(),
@@ -3004,6 +3082,131 @@ mod scale {
                 let want = want(k);
                 assert!((got - want).abs() < 1e-6, "{expr}：第 {k} 行 {got} != {want}");
             }
+        }
+    }
+
+    /// `excel_formula` 形状基准：所有明细行同属一个分组，
+    /// 每个明细行都开 `export_formula`，表达式是「本组金额求和」。
+    ///
+    /// 关键：**同一个表达式 (`C1[A1:+0].sum()`) 在 n 个实例上上**。
+    /// `excel_of` 在每个实例里都调用 `resolve(C1, [+0], cur)`，
+    /// 而 N 个 cur 共享同一个 A1 主格实例 → resolve_raw 返回的 cells 都是同一个 n 元集。
+    /// 这意味着同一份答案算了 n 遍 —— 是经典的「按 key 缓存结果集」场景。
+    ///
+    /// 优化前预测：n² 量级（每次 resolve 是 O(n)，n 个实例各跑一次 → O(n²)）。
+    /// 优化后：缓存命中，单次 resolve 缩成「祖链 + 一次 HashMap 查表」+ O(1) 的 refs 字符串，
+    /// 总成本 O(n × depth)，常数非常小。
+    /// 不开 export_formula 时这个开销根本不存在，所以「with - without」就是
+    /// `excel_of` 的真实成本。
+    #[test]
+    #[ignore = "性能基准，手动跑：见本模块头部注释"]
+    fn bench_excel_formula() {
+        let with = export_formula_sheet(true);
+        let without = export_formula_sheet(false);
+        println!("\n   明细行数  无公式(ms)  有公式(ms)  公式成本(ms)  每行(µs)  公式实例数");
+        for n in [250usize, 500, 1000, 2000, 4000] {
+            let ds = one_group_data(n);
+            let mut a = f64::MAX;
+            let mut b = f64::MAX;
+            for _ in 0..3 {
+                a = a.min(time_sheet(&without, ds.clone()).2);
+                b = b.min(time_sheet(&with, ds.clone()).2);
+            }
+            let cost = b - a;
+            let per = cost * 1000.0 / n as f64;
+            // 公式实例数：每条数据产生 1 个 value_expr 实例（小计格）
+            let formula_instances = n;
+            println!(
+                "  {n:>8}  {a:>10.1}  {b:>10.1}  {cost:>11.1}  {per:>9.3}  {formula_instances:>8}"
+            );
+        }
+        println!();
+    }
+
+    /// 一组：1 个分组主格 + N 个明细行（ID/金额/小计）。所有明细行同属一组。
+    ///
+    /// `value_expr` 配 `export_formula` 时，每个明细行的小计格都要翻成
+    /// `SUM(B<首>:B<末>)` —— 同一组里 N 个 cell 的公式**字符串完全一样**，
+    /// 因为它们的 anchor（A2 实例）相同。
+    ///
+    /// 模板分两行模板：第 1 行是分组主格（A2 = g 字段），
+    /// 第 2 行是明细行（A3 = id 字段 + row_parent=A2）。
+    /// 明细行的「小计」用 `B3[A2:+0].sum()`，跨整组汇总 —— 这是要测的热点路径。
+    fn one_group_data(n: usize) -> DataSet {
+        let mut ds = DataSet::new();
+        for i in 0..n {
+            let mut row = DataRow::new();
+            row.insert("id".into(), JsonValue::from(format!("R{i:04}")));
+            row.insert("g".into(), JsonValue::from("G0"));
+            row.insert("amount".into(), JsonValue::from((i + 1) as f64));
+            ds.push(row);
+        }
+        ds
+    }
+
+    fn export_formula_sheet(enable: bool) -> SheetTpl {
+        // yoy 的单行模板：A1=g（分组主格）、B1=id（明细主格，parent=A1）、
+        // C1=amount（parent=B1）、D1=value_expr(parent=B1)。
+        // 数据 N 行全部 g=G0 → A1 只展开 1 次，但 B1/C1/D1 各展开 N 次。
+        // D1 的 `C1[A1:+0].sum()` 对 N 个明细行都解析到同一组 C1 集合 —— 这是要测的冗余。
+        let m = |field: Option<&str>,
+                 expand: Option<ExpandType>,
+                 parent: Option<&str>,
+                 expr: Option<&str>| {
+            Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: field.map(|s| s.to_string()),
+                expand_type: expand,
+                row_parent: parent.map(|s| s.to_string()),
+                value_expr: expr.map(|s| s.to_string()),
+                export_formula: if enable && expr.is_some() { Some(true) } else { None },
+                ..Default::default()
+            })
+        };
+        let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            pos: None,
+            value: value.map(JsonValue::from),
+            model,
+            merge_across: 0,
+            merge_down: 0,
+            merge_to_end: false,
+        };
+        SheetTpl {
+            name: "exp".to_string(),
+            page: None,
+            rows: vec![RowTpl {
+                cells: vec![
+                    cell(Some("分组"), m(Some("g"), Some(ExpandType::R), None, None)),
+                    cell(Some("ID"), m(Some("id"), Some(ExpandType::R), Some("A1"), None)),
+                    cell(Some("金额"), m(Some("amount"), None, Some("B1"), None)),
+                    cell(
+                        Some("小计"),
+                        m(None, None, Some("B1"), Some("C1[A1:+0].sum()")),
+                    ),
+                ],
+            }],
+        }
+    }
+
+    /// 同组 N 个明细行 → 公式字符串必须一致，且覆盖全部 N 个 C1 实例。
+    #[test]
+    fn excel_formula_per_row_in_one_group_matches() {
+        const N: usize = 8;
+        let sheet = export_formula_sheet(true);
+        let mut engine = Engine::new(one_group_data(N));
+        let grid = engine.expand_sheet(&sheet);
+        // N 个明细行（每个数据行产生一行，A1=G0 在每行展示）
+        assert_eq!(grid.len(), N, "grid 行数：实际 {}", grid.len());
+        // C1 列在 col 2，公式 `C1[A1:+0].sum()` 翻成 SUM(C1:C(N))
+        let want = format!("SUM(C1:C{N})");
+        for k in 0..N {
+            let row = &grid[k];
+            let formula = row[3].formula.clone();
+            assert_eq!(
+                formula.as_deref(),
+                Some(want.as_str()),
+                "第 {k} 行小计公式：实际 {formula:?}，期望 {want:?}"
+            );
         }
     }
 }

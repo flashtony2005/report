@@ -28,7 +28,7 @@ pub enum Prop {
 }
 
 /// 层次坐标：`B3` / `B3:1`（绝对）/ `B3:+0` / `B3:-1`（相对）
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Coord {
     pub pos: String,
     pub position: Option<i64>,
