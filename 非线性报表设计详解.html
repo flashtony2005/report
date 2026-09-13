@@ -1,0 +1,1887 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>非线性报表模型与设计详解（图示版）</title>
+<style>
+  :root{
+    --bg:#f7f9fc; --panel:#ffffff; --ink:#1f2937; --muted:#64748b;
+    --line:#e2e8f0; --accent:#2563eb; --accent-soft:#dbeafe;
+    --purple:#7c3aed; --purple-soft:#ede9fe; --green:#059669; --green-soft:#d1fae5;
+    --amber:#d97706; --amber-soft:#fef3c7; --red:#dc2626; --red-soft:#fee2e2;
+    --code-bg:#f1f5f9;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    background:var(--bg); color:var(--ink); line-height:1.75; font-size:15.5px;
+  }
+  .layout{display:flex; min-height:100vh; max-width:1320px; margin:0 auto;}
+  nav{
+    width:264px; flex:0 0 264px; position:sticky; top:0; align-self:flex-start;
+    height:100vh; overflow-y:auto; background:var(--panel); border-right:1px solid var(--line);
+    padding:22px 16px;
+  }
+  nav h2{font-size:13px; letter-spacing:.04em; color:var(--muted); text-transform:uppercase; margin:0 0 10px; padding-left:8px;}
+  nav a{display:block; color:var(--ink); text-decoration:none; padding:7px 10px; border-radius:8px; font-size:14px; margin-bottom:2px;}
+  nav a:hover{background:var(--accent-soft); color:var(--accent);}
+  nav a.sub{padding-left:24px; font-size:13px; color:var(--muted);}
+  main{flex:1; padding:40px 48px 120px; min-width:0;}
+  .hero{
+    background:linear-gradient(135deg,#1e3a8a,#2563eb); color:#fff; border-radius:18px;
+    padding:34px 38px; margin-bottom:34px; box-shadow:0 10px 30px rgba(37,99,235,.18);
+  }
+  .hero h1{margin:0 0 8px; font-size:27px; letter-spacing:.01em;}
+  .hero p{margin:0; opacity:.92; font-size:14.5px;}
+  .hero .tag{display:inline-block; margin-top:14px; background:rgba(255,255,255,.15); padding:5px 12px; border-radius:999px; font-size:12.5px;}
+  section{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:26px 30px; margin-bottom:24px; box-shadow:0 1px 3px rgba(15,23,42,.04);}
+  section>h2{margin:0 0 6px; font-size:21px; border-left:5px solid var(--accent); padding-left:12px;}
+  section>h3{margin:26px 0 8px; font-size:16.5px; color:#0f172a;}
+  section>h4{margin:18px 0 6px; font-size:15px; color:var(--purple);}
+  p{margin:10px 0;}
+  .muted{color:var(--muted);}
+  code{background:var(--code-bg); padding:1.5px 6px; border-radius:5px; font-family:"SFMono-Regular",Consolas,Menlo,monospace; font-size:13px; color:#be185d;}
+  pre{background:#0f172a; color:#e2e8f0; padding:16px 18px; border-radius:10px; overflow:auto; font-size:13px; line-height:1.6;}
+  pre code{background:none; color:inherit; padding:0;}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:14px;}
+  th,td{border:1px solid var(--line); padding:9px 12px; text-align:left; vertical-align:top;}
+  th{background:var(--accent-soft); color:#1e3a8a; font-weight:600;}
+  tr:nth-child(even) td{background:#fafcff;}
+  .card{background:#f8fafc; border:1px dashed var(--line); border-radius:12px; padding:16px 18px; margin:16px 0;}
+  .diagram{background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px; margin:18px 0; text-align:center;}
+  .diagram svg{max-width:100%; height:auto;}
+  .diagram .cap{margin-top:10px; font-size:13px; color:var(--muted);}
+  .callout{border-radius:10px; padding:14px 18px; margin:16px 0; font-size:14px;}
+  .callout.note{background:var(--accent-soft); border:1px solid #bfdbfe;}
+  .callout.tip{background:var(--green-soft); border:1px solid #a7f3d0;}
+  .callout.key{background:var(--amber-soft); border:1px solid #fcd34d;}
+  .callout.warn{background:var(--red-soft); border:1px solid #fecaca;}
+  .callout b{color:#0f172a;}
+  .legend{display:flex; flex-wrap:wrap; gap:14px; font-size:12.5px; color:var(--muted); margin-top:8px; justify-content:center;}
+  .legend span{display:inline-flex; align-items:center; gap:6px;}
+  .sw{width:14px; height:14px; border-radius:3px; display:inline-block; border:1px solid rgba(0,0,0,.12);}
+  .pill{display:inline-block; font-size:12px; padding:2px 9px; border-radius:999px; background:var(--purple-soft); color:var(--purple); font-weight:600;}
+  ol.steps{counter-reset:s; list-style:none; padding-left:0;}
+  ol.steps>li{counter-increment:s; position:relative; padding:10px 0 10px 42px; border-left:2px dashed var(--line); margin-left:14px;}
+  ol.steps>li:before{content:counter(s); position:absolute; left:-15px; top:10px; width:28px; height:28px; background:var(--accent); color:#fff; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px;}
+  .flow{display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:center; margin:16px 0;}
+  .flow .box{background:var(--accent-soft); border:1px solid #bfdbfe; border-radius:10px; padding:12px 16px; text-align:center; min-width:120px;}
+  .flow .box b{display:block; font-size:14px; color:#1e3a8a;}
+  .flow .box span{font-size:12px; color:var(--muted);}
+  .flow .arrow{font-size:20px; color:var(--accent);}
+  footer{text-align:center; color:var(--muted); font-size:12.5px; padding:20px;}
+  .topbar{position:fixed; bottom:24px; right:24px; background:var(--accent); color:#fff; border-radius:12px; padding:10px 16px; font-size:13px; box-shadow:0 8px 20px rgba(37,99,235,.35); cursor:pointer; z-index:50;}
+  .topbar:hover{background:#1d4ed8;}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <h2>目录</h2>
+  <a href="#s1">一、设计动机</a>
+  <a href="#s2">二、数学基础</a>
+  <a href="#s3">三、表格与报表定义</a>
+  <a class="sub" href="#s3a">3.1 网格·单元格</a>
+  <a class="sub" href="#s3b">3.2 原序与数组</a>
+  <a class="sub" href="#s3c">3.3 基本变换</a>
+  <a class="sub" href="#s3d">3.4 主格·扩展</a>
+  <a class="sub" href="#s3e">3.5 扩展带</a>
+  <a class="sub" href="#s3f">3.6 报表分类</a>
+  <a class="sub" href="#s3g">3.7 自动主格</a>
+  <a href="#s4">四、扩展变换算法</a>
+  <a class="sub" href="#s4a">4.1 扩展带复制</a>
+  <a class="sub" href="#s4b">4.2 主格扩展</a>
+  <a class="sub" href="#s4c">4.3 报表扩展</a>
+  <a class="sub" href="#s4d">4.4 源格·同源·同束</a>
+  <a href="#s5">五、语法与引用</a>
+  <a class="sub" href="#s5a">5.1 层次坐标</a>
+  <a class="sub" href="#s5b">5.2 线性坐标</a>
+  <a class="sub" href="#s5c">5.3 平面函数</a>
+  <a class="sub" href="#s5d">5.4 缺省行集</a>
+  <a href="#s6">六、计算算法</a>
+  <a class="sub" href="#s6a">6.1 可计算格</a>
+  <a class="sub" href="#s6b">6.2 隐含引用</a>
+  <a class="sub" href="#s6c">6.3 三种方法</a>
+  <a href="#s7">七、报表填写</a>
+  <a href="#s8">八、核心算法一览</a>
+  <a href="#s9">九、关键性质总结</a>
+  <a href="#s10">十、开放问题</a>
+  <a href="#s11">十一、工程实现算法补充</a>
+  <a href="#s12">十二、展现与数据模型</a>
+  <a href="#s13">十三、运算与子报表模型</a>
+  <a href="#s14">十四、填报表采集模型</a>
+  <a class="sub" href="#s14a">14.1 三类单元格与序表</a>
+  <a class="sub" href="#s14b">14.2 数据采集规则</a>
+  <a class="sub" href="#s14c">14.3 取数表达式与回填</a>
+  <a class="sub" href="#s14d">14.4 与本稿映射</a>
+  <a href="#s15">十五、填报表扩展模型</a>
+  <a class="sub" href="#s15a">15.1 扩展触发条件</a>
+  <a class="sub" href="#s15b">15.2 方向判定规则</a>
+  <a class="sub" href="#s15c">15.3 撑大与终止</a>
+  <a class="sub" href="#s15d">15.4 示例</a>
+  <a class="sub" href="#s15e">15.5 与本稿映射</a>
+  <a class="sub" href="#s11a">11.1 对象模型</a>
+  <a class="sub" href="#s11c">11.3 扩展调度</a>
+  <a class="sub" href="#s11d">11.4 增量扩展</a>
+  <a class="sub" href="#s11e">11.5 依赖图</a>
+  <a class="sub" href="#s11g">11.7 并行计算</a>
+  <a class="sub" href="#s11i">11.9 全局流程</a>
+  <a class="sub" href="#s11j">11.10 算法总表</a>
+  <a class="sub" href="#s11k">11.11 有限扩展算法</a>
+  <a class="sub" href="#s11l">11.12 交替扩展算法</a>
+  <a class="sub" href="#s11m">11.13 分页处理算法</a>
+  <a class="sub" href="#s11n">11.14 综合扩展 Runtime</a>
+  <a class="sub" href="#append">附：材料说明</a>
+</nav>
+
+<main>
+  <div class="hero">
+    <h1>非线性报表模型与设计详解</h1>
+    <p>基于《非线性报表模型原理》（蒋步星，2007，润乾报表理论基础）逐章重构 · 算法 + 形式化定义 + 图示</p>
+    <span class="tag">单元格为中心 · 扩展 + 引用 · 可证明停机 / 封闭 / 可计算</span>
+  </div>
+
+  <!-- ===== 一 ===== -->
+  <section id="s1">
+    <h2>一、为什么需要非线性报表模型（设计动机）</h2>
+    <p>传统报表工具采用<b>线性报表模型</b>：源自数据库理论——先对数据集做分组/聚合，再把结果"填入"布局简单的表格。其重心在"数据集运算"，而"单元格 / 表格布局"被严重弱化，难以描述合并单元格、不规则分片、交叉表、套表等复杂样式，也无法灵活表达相对引用 / 层次引用，填写（回写）几乎空白。</p>
+    <div class="diagram">
+      <svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="ah" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#475569"/></marker>
+        </defs>
+        <!-- 线性模型 -->
+        <rect x="20" y="30" width="200" height="48" rx="9" fill="#fee2e2" stroke="#fca5a5"/>
+        <text x="120" y="52" text-anchor="middle" font-size="13" fill="#991b1b">数据源 / 数据库</text>
+        <text x="120" y="68" text-anchor="middle" font-size="11" fill="#7f1d1d">分组 · 聚合运算</text>
+        <rect x="20" y="110" width="200" height="44" rx="9" fill="#f1f5f9" stroke="#cbd5e1"/>
+        <text x="120" y="132" text-anchor="middle" font-size="12" fill="#334155">简单表格（填入结果）</text>
+        <text x="120" y="186" text-anchor="middle" font-size="12" fill="#b91c1c" font-weight="700">线性报表模型：数据为中心</text>
+        <line x1="120" y1="78" x2="120" y2="106" stroke="#475569" marker-end="url(#ah)"/>
+
+        <text x="360" y="146" font-size="34" text-anchor="middle" fill="#94a3b8">⇄</text>
+        <text x="360" y="168" font-size="11" text-anchor="middle" fill="#94a3b8">不是某类报表</text>
+        <text x="360" y="182" font-size="11" text-anchor="middle" fill="#94a3b8">而是两套理论体系</text>
+
+        <!-- 非线性模型 -->
+        <rect x="500" y="30" width="200" height="48" rx="9" fill="#dbeafe" stroke="#93c5fd"/>
+        <text x="600" y="52" text-anchor="middle" font-size="13" fill="#1e40af">模板（源表 / 网格）</text>
+        <text x="600" y="68" text-anchor="middle" font-size="11" fill="#1e3a8a">单元格为第一公民</text>
+        <rect x="500" y="110" width="200" height="44" rx="9" fill="#d1fae5" stroke="#6ee7b7"/>
+        <text x="600" y="132" text-anchor="middle" font-size="12" fill="#065f46">扩展 + 引用 → 实例表</text>
+        <text x="600" y="186" text-anchor="middle" font-size="12" fill="#047857" font-weight="700">非线性报表模型：单元格为中心</text>
+        <line x1="600" y1="78" x2="600" y2="106" stroke="#475569" marker-end="url(#ah)"/>
+      </svg>
+      <div class="legend">
+        <span><i class="sw" style="background:#fee2e2"></i>数据运算重心</span>
+        <span><i class="sw" style="background:#dbeafe"></i>模板网格</span>
+        <span><i class="sw" style="background:#d1fae5"></i>扩展结果</span>
+      </div>
+      <div class="cap">图 1　线性模型（数据为中心）vs 非线性模型（单元格为中心）。所有线性报表都能用非线性模型设计，反之不成立。</div>
+    </div>
+    <div class="callout key"><b>核心思想：</b>把"单元格"提升为理论体系的第一公民，数据集退化为"提供数据来源的从属属性"，几乎所有变换与计算都以<b>表格（单元格网格）为主体</b>。由此用一套统一的"扩展 + 引用"机制描述绝大多数复杂报表，并可在理论上证明停机性、封闭性、可计算性。</div>
+  </section>
+
+  <!-- ===== 二 ===== -->
+  <section id="s2">
+    <h2>二、数学基础（原书第 1 章）</h2>
+    <p>模型建立在严格的集合论与函数论之上。下列概念是后续一切算法的前提。</p>
+    <h3>2.1 集合、数组、矩阵</h3>
+    <ul>
+      <li><b>集合</b> <code>{…}</code>：<code>|X|</code> 元素个数；<code>A⊆B</code>、<code>A∪B</code>、<code>A∩B</code>、<code>A\B</code> 为并/交/差。</li>
+      <li><b>数组</b> <code>(a₁,a₂,…,aₙ)</code>：有限集按序排列的序列；相等要求长度与成员次序完全相同。</li>
+      <li><b>叉积</b> <code>X₁×X₂×…×Xₙ</code>；<b>矩阵</b>：由多个 n 元组构成的数组（行数=成员数，列数=成员长度）。</li>
+    </ul>
+    <h3>2.2 四种基本变换符号（算法的基本动作）</h3>
+    <table>
+      <tr><th>符号</th><th>含义</th></tr>
+      <tr><td><code>S += a</code></td><td>把 <code>a</code> 加入集合/数组 <code>S</code>（数组缺省加到末尾）</td></tr>
+      <tr><td><code>S -= a</code></td><td>从 <code>S</code> 中删除 <code>a</code></td></tr>
+      <tr><td><code>a → b</code></td><td>上下文中所有含 <code>a</code> 的集合把 <code>a</code> 替换 为 <code>b</code>（保持数组次序）</td></tr>
+      <tr><td><code>a → x</code></td><td>上下文所有含 <code>a</code> 的集合先 <code>S -= a</code>；若 <code>S</code> 是 n 元组则递归 <code>S → x</code></td></tr>
+    </table>
+    <div class="callout note"><b>注意：</b><code>a → x</code> 是"删掉以 <code>a</code> 为元素的集合"，不是替换 <code>a</code> 本身；有限上下文必在有限步停止。</div>
+    <h3>2.3–2.5 函数、表达式与属性</h3>
+    <ul>
+      <li><b>聚合函数</b>：参数本身是集合的函数，如 <code>sum(X)</code>、<code>min</code>、<code>max</code>、<code>avg</code>。</li>
+      <li><b>集合函数</b>：返回值都是数组的函数，如 <code>list(v₁,…,vₙ)</code>、<code>to[q](n,m)</code>。</li>
+      <li><b>计算串</b>：内容为表达式的字符串；<code>eval(x)</code> 把计算串当表达式计算（结果仍可能是计算串，可再 <code>eval</code>）。</li>
+      <li><b>属性即函数</b>：属性 <code>p</code> 定义为 <code>X×Y</code> 的子集且无两元素同左元；<code>x.p</code>（或 <code>p(x)</code>）即 <code>x</code> 的属性值；属性表达式的计算结果才是属性值。</li>
+    </ul>
+    <div class="callout tip"><b>关键区分：</b>聚合函数 ≠ 集合函数。集合函数是"报表自动化"（一个单元格可展开成一组）的基础；聚合函数处理统计运算。二者对建模都至关重要。</div>
+  </section>
+
+  <!-- ===== 三 ===== -->
+  <section id="s3">
+    <h2>三、表格与报表的形式化定义（原书第 2 章）</h2>
+
+    <h3 id="s3a">3.1 网格、表格、单元格</h3>
+    <p><b>网格 T</b>：以 <code>N×N</code> 为定义域的可逆函数 <code>e</code>，<code>T = { e(r,c) | 1≤r≤n, 1≤c≤m }</code>，即 n 行 m 列网格，元素称<b>元素格</b>，<code>|T|=n·m</code>。</p>
+    <p><b>表格</b>：为网格 <code>T</code> 设一个由 <code>T</code> 上<b>矩形</b>构成的有限集 <code>UG[T]</code>（矩形 = 任意两格之间的元素格都包含在内），且单元格两两相离。元素称<b>单元格</b>。</p>
+    <div class="diagram">
+      <svg viewBox="0 0 560 300" xmlns="http://www.w3.org/2000/svg">
+        <!-- 网格 -->
+        <g>
+          <text x="150" y="26" text-anchor="middle" font-size="13" fill="#0f172a" font-weight="700">网格 / 表格（含合并格）</text>
+          <!-- cells -->
+          <g font-size="11" fill="#334155" text-anchor="middle">
+            <!-- row1 -->
+            <rect x="60" y="40" width="44" height="38" fill="#dbeafe" stroke="#1e40af"/><text x="82" y="63">A1</text>
+            <rect x="104" y="40" width="44" height="38" fill="#dbeafe" stroke="#1e40af"/><text x="126" y="63">B1</text>
+            <rect x="148" y="40" width="44" height="38" fill="#f1f5f9" stroke="#94a3b8"/><text x="170" y="63">C1</text>
+            <rect x="192" y="40" width="44" height="38" fill="#f1f5f9" stroke="#94a3b8"/><text x="214" y="63">D1</text>
+            <!-- row2 -->
+            <rect x="60" y="78" width="44" height="38" fill="#dbeafe" stroke="#1e40af"/><text x="82" y="101">A2</text>
+            <rect x="104" y="78" width="44" height="38" fill="#fef3c7" stroke="#d97706"/><text x="126" y="101">B2</text>
+            <rect x="148" y="78" width="44" height="38" fill="#f1f5f9" stroke="#94a3b8"/><text x="170" y="101">C2</text>
+            <rect x="192" y="78" width="44" height="38" fill="#f1f5f9" stroke="#94a3b8"/><text x="214" y="101">D2</text>
+            <!-- merged cell B2 spanning B2..C3 -->
+            <rect x="104" y="116" width="88" height="76" fill="#d1fae5" stroke="#059669" stroke-width="2"/>
+            <text x="148" y="158" fill="#065f46">合并格 M</text>
+            <text x="148" y="173" fill="#065f46" font-size="10">(B2:C3, |U|=4)</text>
+            <!-- row3 -->
+            <rect x="60" y="116" width="44" height="38" fill="#dbeafe" stroke="#1e40af"/><text x="82" y="139">A3</text>
+            <rect x="192" y="116" width="44" height="38" fill="#f1f5f9" stroke="#94a3b8"/><text x="214" y="139">D3</text>
+            <!-- row4 -->
+            <rect x="60" y="154" width="44" height="38" fill="#dbeafe" stroke="#1e40af"/><text x="82" y="177">A4</text>
+            <rect x="192" y="154" width="44" height="38" fill="#f1f5f9" stroke="#94a3b8"/><text x="214" y="177">D4</text>
+            <rect x="60" y="192" width="176" height="34" fill="#ede9fe" stroke="#7c3aed"/><text x="148" y="213" fill="#5b21b6">扩展区 / 主格辖区示意</text>
+          </g>
+        </g>
+      </svg>
+      <div class="legend">
+        <span><i class="sw" style="background:#dbeafe"></i>元素格</span>
+        <span><i class="sw" style="background:#fef3c7"></i>坐标锚点</span>
+        <span><i class="sw" style="background:#d1fae5"></i>合并格 (|U|&gt;1)</span>
+        <span><i class="sw" style="background:#ede9fe"></i>辖区</span>
+      </div>
+      <div class="cap">图 2　网格由元素格构成；多个矩形（两两相离）即为单元格；合并格 <code>|U|&gt;1</code>。矩形引理：单元格必可写成 <code>M(a,b,c,d)</code>。</div>
+    </div>
+
+    <h3 id="s3b">3.2 原序、最前格、跟随格、单元格数组</h3>
+    <p>对单元格 <code>A,B</code>：若 <code>row(A)&lt;row(B)</code> 或（行号相同且列号更小），记 <code>A&lt;B</code>，称<b>原序</b>。</p>
+    <div class="callout note"><b>定理 2.2：</b>原序具有<b>可序性</b>（任意两格必有 <code>A&lt;B</code> 或 <code>B&lt;A</code>）与<b>传递性</b> → 所有单元格可排成一个数组，即<b>单元格数组 UG[T]</b>。最前格通常 <code>U(1,1)</code>，跟随格即紧邻其后者。"按原序遍历每个单元格"即从最前格沿跟随格递推。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 600 150" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="ah2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#2563eb"/></marker></defs>
+        <g font-size="12" fill="#334155" text-anchor="middle">
+          <rect x="30" y="40" width="40" height="36" fill="#dbeafe" stroke="#1e40af"/><text x="50" y="63">A1</text>
+          <rect x="100" y="40" width="40" height="36" fill="#dbeafe" stroke="#1e40af"/><text x="120" y="63">B1</text>
+          <rect x="170" y="40" width="40" height="36" fill="#dbeafe" stroke="#1e40af"/><text x="190" y="63">C1</text>
+          <rect x="30" y="86" width="40" height="36" fill="#dbeafe" stroke="#1e40af"/><text x="50" y="109">A2</text>
+          <rect x="100" y="86" width="40" height="36" fill="#dbeafe" stroke="#1e40af"/><text x="120" y="109">B2</text>
+          <rect x="170" y="86" width="40" height="36" fill="#dbeafe" stroke="#1e40af"/><text x="190" y="109">C2</text>
+          <line x1="70" y1="58" x2="98" y2="58" stroke="#2563eb" marker-end="url(#ah2)"/>
+          <line x1="140" y1="58" x2="168" y2="58" stroke="#2563eb" marker-end="url(#ah2)"/>
+          <line x1="190" y1="76" x2="190" y2="84" stroke="#2563eb" marker-end="url(#ah2)"/>
+          <line x1="120" y1="122" x2="92" y2="122" stroke="#2563eb" marker-end="url(#ah2)"/>
+          <line x1="50" y1="122" x2="50" y2="84" stroke="#2563eb" marker-end="url(#ah2)"/>
+          <text x="270" y="70" font-size="12" fill="#64748b">原序 A1&lt;B1&lt;C1&lt;A2&lt;B2&lt;C2</text>
+          <text x="270" y="92" font-size="12" fill="#64748b">⇒ 单元格数组 UG[T]</text>
+        </g>
+      </svg>
+      <div class="cap">图 3　按"行优先、列次之"的原序把单元格排成数组，所有遍历算法的基础。</div>
+    </div>
+
+    <h3 id="s3c">3.3 基本变换算法</h3>
+    <h4>算法 2.1 / 2.2　表格行列增删</h4>
+    <ul>
+      <li><b>增加行</b>（第 k 行后加 1 行）：<code>E(i,j) → E(i+1,j)</code>（k&lt;i≤n）平移下方元素格；补入新行；若某单元格同时跨 <code>R(k)</code> 与 <code>R(k+2)</code>，把它向新行"撑大"。</li>
+      <li><b>删除行</b>（删第 k 行）：先删仅在该行的单元格；<code>E(k,j) → x</code>；<code>E(i,j) → E(i−1,j)</code>（k&lt;i≤n）整体上移。</li>
+    </ul>
+    <div class="callout note"><b>定理 2.3：</b>对任一表格执行增/删行列后<b>仍是表格</b>（UG 仍由两两相离的矩形构成）。</div>
+    <h4>算法 2.3　子表引入</h4>
+    <p>允许单元格 <code>X.val</code> 是另一张表格 <code>S</code>（子表）。过程：① <b>撑大</b>——若子表行列数更大，先在宿主对应位置加行列，把跨越的子表格撑到同尺寸；② <b>填入</b>——按偏移 <code>E[T](a+i−1,b+j−1)</code> 逐个加入宿主 UG 并复制 <code>val</code>。</p>
+    <div class="callout warn"><b>关键约束：</b>必须<b>先把所有子表格都撑大、再统一填入</b>；若撑一个填一个，会把已填入的子表单元格再次撑大，导致尺寸错乱。该算法处理"有限扩展""交替扩展"等纯靠扩展算法搞不定的复杂表。</div>
+
+    <h3 id="s3d">3.4 主格与扩展属性（非线性报表的灵魂）</h3>
+    <p>为表格 <code>T</code> 引入抽象<b>根格 <code>@</code></b>，并定义如下扩展属性：</p>
+    <table>
+      <tr><th>属性</th><th>取值集</th><th>含义</th></tr>
+      <tr><td>扩展方向</td><td><code>{纵, 横}</code></td><td>有定义者称<b>扩展格</b>（纵主格 <code>USₓ</code> / 横主格 <code>USᵧ</code>），否则<b>非主格</b></td></tr>
+      <tr><td>左主格 <code>xp</code></td><td><code>{@}∪USₓ</code></td><td>定义于 <code>UG\USᵧ</code>；<code>@</code> 与扩展格统称<b>主格</b></td></tr>
+      <tr><td>上主格 <code>yp</code></td><td><code>{@}∪USᵧ</code></td><td>定义于 <code>UG\USₓ</code></td></tr>
+      <tr><td>主格 <code>pu</code></td><td>—</td><td>扩展格 <code>U</code> 的 <code>pu = U.xp</code>（或 <code>U.yp</code>）</td></tr>
+    </table>
+    <div class="callout note"><b>定理 2.5：</b>主格线（满足 <code>P₀=U, Pᵢ₋₁=Pᵢ.pu, Pₙ 无主格</code> 的主格数组）<b>唯一</b>、不含重复成员、首成员必为 <code>@</code>、同一主格线内扩展方向相同。<b>深度</b> = 主格线长度−1，<code>@</code> 深度 0，报表深度 = 最大深度。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 560 280" xmlns="http://www.w3.org/2000/svg">
+        <g font-size="13" text-anchor="middle">
+          <circle cx="280" cy="40" r="24" fill="#1e3a8a" stroke="#1e3a8a"/><text x="280" y="45" fill="#fff" font-weight="700">@</text>
+          <circle cx="160" cy="120" r="24" fill="#2563eb" stroke="#1d4ed8"/><text x="160" y="125" fill="#fff">USₓ</text>
+          <circle cx="400" cy="120" r="24" fill="#7c3aed" stroke="#6d28d9"/><text x="400" y="125" fill="#fff">USᵧ</text>
+          <circle cx="100" cy="210" r="22" fill="#60a5fa" stroke="#2563eb"/><text x="100" y="214" fill="#fff">C</text>
+          <circle cx="220" cy="210" r="22" fill="#60a5fa" stroke="#2563eb"/><text x="220" y="214" fill="#fff">D</text>
+          <circle cx="400" cy="210" r="22" fill="#c4b5fd" stroke="#7c3aed"/><text x="400" y="214" fill="#fff">E</text>
+          <line x1="266" y1="58" x2="174" y2="102" stroke="#334155"/><text x="205" y="86" font-size="11" fill="#64748b">xp</text>
+          <line x1="294" y1="58" x2="386" y2="102" stroke="#334155"/><text x="355" y="86" font-size="11" fill="#64748b">yp</text>
+          <line x1="150" y1="142" x2="108" y2="190" stroke="#94a3b8"/><line x1="170" y1="142" x2="212" y2="190" stroke="#94a3b8"/>
+          <line x1="390" y1="142" x2="392" y2="190" stroke="#94a3b8"/>
+          <text x="280" y="265" font-size="12" fill="#64748b">主格树：以 @ 为根，主格线 = 根到某节点的路径</text>
+        </g>
+      </svg>
+      <div class="legend">
+        <span><i class="sw" style="background:#1e3a8a"></i>根格 @</span>
+        <span><i class="sw" style="background:#2563eb"></i>纵主格 USₓ</span>
+        <span><i class="sw" style="background:#7c3aed"></i>横主格 USᵧ</span>
+        <span><i class="sw" style="background:#60a5fa"></i>子格</span>
+      </div>
+      <div class="cap">图 4　以主格为节点、(主格, 子格) 为边的<b>主格树</b>；主格线即树上路径。深度从根起算。</div>
+    </div>
+    <h4>辖区（核心引用范围）</h4>
+    <ul>
+      <li><code>DOM[P]</code>：以扩展格 <code>P</code> 为<b>导格</b>的单元格集合（不含子格）。</li>
+      <li><code>DOMA[P]</code>：P 及其<b>先主格</b>为导格的单元格（先辖区）。</li>
+      <li><code>DOMB[P]</code>：P 及其<b>后主格</b>为导格的单元格（后辖区）。</li>
+      <li><code>DOMC[P] = DOMA[P] ∪ DOMB[P]</code>（全辖区）。</li>
+      <li>纵主格 <code>P</code> 与横主格 <code>Q</code> 的<b>交辖区</b> <code>DOM[P,Q]=DOM[P]∩DOM[Q]</code>。</li>
+    </ul>
+
+    <h3 id="s3e">3.5 扩展带（扩展发生的物理范围）</h3>
+    <ul>
+      <li><b>包含带</b>：扩展格 <code>P</code> 的连续行(列)集 <code>B</code>，使 <code>DOMB[P]</code> 中所有单元格都落在 <code>B</code> 内。</li>
+      <li><b>扩展带 <code>B[P]</code></b>：<code>P</code> 的所有包含带的<b>交集</b>。纵主格的扩展带是连续行集，横主格是连续列集。</li>
+    </ul>
+    <div class="callout note"><b>定理 2.6：</b>扩展带是非空连续行/列集；子格的扩展带是 <code>P</code> 扩展带的子集；不在任何扩展带内的单元格，其左/上主格为 <code>@</code>。<b>空心带</b>：扩展带内某行与 <code>DOMB[P]</code> 无单元格相交，则该行是空心行，必在带中部。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 600 280" xmlns="http://www.w3.org/2000/svg">
+        <g font-size="11" fill="#334155" text-anchor="middle">
+          <!-- grid 6x5 -->
+          <g>
+            <rect x="60" y="40" width="40" height="34" fill="#f1f5f9" stroke="#cbd5e1"/><text x="80" y="61">A1</text>
+            <rect x="100" y="40" width="40" height="34" fill="#f1f5f9" stroke="#cbd5e1"/><text x="120" y="61">B1</text>
+            <rect x="140" y="40" width="40" height="34" fill="#f1f5f9" stroke="#cbd5e1"/><text x="160" y="61">C1</text>
+            <rect x="180" y="40" width="40" height="34" fill="#f1f5f9" stroke="#cbd5e1"/><text x="200" y="61">D1</text>
+            <rect x="60" y="74" width="40" height="34" fill="#fef3c7" stroke="#d97706"/><text x="80" y="95">A2</text>
+            <rect x="100" y="74" width="40" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="120" y="95">B2</text>
+            <rect x="140" y="74" width="40" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="160" y="95">C2</text>
+            <rect x="180" y="74" width="40" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="200" y="95">D2</text>
+            <rect x="60" y="108" width="40" height="34" fill="#f1f5f9" stroke="#cbd5e1"/><text x="80" y="129">A3</text>
+            <rect x="100" y="108" width="40" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="120" y="129">B3</text>
+            <rect x="140" y="108" width="40" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="160" y="129">C3</text>
+            <rect x="180" y="108" width="40" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="200" y="129">D3</text>
+            <rect x="60" y="142" width="40" height="34" fill="#f1f5f9" stroke="#cbd5e1"/><text x="80" y="163">A4</text>
+            <rect x="100" y="142" width="40" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="120" y="163">B4</text>
+            <rect x="140" y="142" width="40" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="160" y="163">C4</text>
+            <rect x="180" y="142" width="40" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="200" y="163">D4</text>
+          </g>
+          <!-- highlight expansion band rows 2-4 -->
+          <rect x="56" y="72" width="168" height="106" fill="none" stroke="#dc2626" stroke-width="3" stroke-dasharray="6 4"/>
+          <text x="140" y="195" font-size="11" fill="#dc2626" font-weight="700">扩展带 B[P] = 连续行 {2,3,4}</text>
+          <!-- DOMB region -->
+          <rect x="98" y="72" width="124" height="106" fill="#d1fae5" fill-opacity="0.5" stroke="#059669"/>
+          <text x="160" y="190" font-size="11" fill="#065f46" font-weight="700">DOMB[P]（后辖区）</text>
+          <text x="320" y="70" font-size="12" fill="#0f172a" text-anchor="start" font-weight="700">辖区示意</text>
+          <text x="320" y="94" font-size="11.5" fill="#334155" text-anchor="start">P = B2（纵主格）</text>
+          <text x="320" y="116" font-size="11.5" fill="#334155" text-anchor="start">DOMB[P] = 其及后主格</text>
+          <text x="320" y="138" font-size="11.5" fill="#334155" text-anchor="start">  为导格的单元格</text>
+          <text x="320" y="166" font-size="11.5" fill="#334155" text-anchor="start">B[P] = 所有包含带交集</text>
+        </g>
+      </svg>
+      <div class="legend">
+        <span><i class="sw" style="background:#fef3c7"></i>主格 P</span>
+        <span><i class="sw" style="background:#dbeafe"></i>DOMB 内单元格</span>
+        <span><i class="sw" style="background:#fff; border:2px dashed #dc2626"></i>扩展带</span>
+      </div>
+      <div class="cap">图 5　扩展带 B[P] 是连续行/列集；DOMB[P]（后辖区）内的单元格随扩展被复制。</div>
+    </div>
+
+    <h3 id="s3f">3.6 报表的分类（设计时的形式化判据）</h3>
+    <h4>按主格形态</h4>
+    <ul>
+      <li>无扩展格 → <b>静态报表</b>（深度 0）</li>
+      <li>每主格子格≤1 → <b>单片报表</b>；存在某主格≥2 子格 → <b>分片报表</b>；有扩展格≥2 子格 → <b>真分片报表</b></li>
+      <li>无横主格 → <b>单向报表</b>；有纵有横 → <b>交叉报表</b></li>
+    </ul>
+    <h4>按与扩展带的关系（最重要判据）</h4>
+    <table>
+      <tr><th>类别</th><th>判定</th></tr>
+      <tr><td><b>正报表</b></td><td>与 <code>B[P]</code> 相交的单元格 <code>U</code> 满足 <code>U∈DOMB[P]</code> 或 <code>R[U]⊆B[P]</code></td></tr>
+      <tr><td><b>实报表</b></td><td><code>U∈DOMC[P]</code></td></tr>
+      <tr><td><b>整报表</b></td><td><code>U∈DOMB[P]</code></td></tr>
+      <tr><td><b>正实报表</b></td><td>既是实又是正（整报表必是正实报表）</td></tr>
+    </table>
+    <div class="callout tip">现实中"有业务含义的报表几乎全是实报表，且绝大多数是正实报表"——这是算法设计与优化的重点区域。</div>
+    <div class="callout key"><b>定理 2.8（实报表充要条件）：</b>① 若扩展格在另一扩展格扩展带之内 → 两者必在同一主格线内；② 任意两个扩展带不交叉。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 640 210" xmlns="http://www.w3.org/2000/svg">
+        <g font-size="12" fill="#334155" text-anchor="middle">
+          <rect x="40" y="30" width="150" height="44" rx="9" fill="#ede9fe" stroke="#7c3aed"/><text x="115" y="52">报表</text>
+          <rect x="220" y="30" width="150" height="44" rx="9" fill="#dbeafe" stroke="#2563eb"/><text x="295" y="52">由主格形态分</text>
+          <rect x="400" y="30" width="180" height="44" rx="9" fill="#d1fae5" stroke="#059669"/><text x="490" y="52">由扩展带关系分</text>
+          <rect x="220" y="100" width="150" height="44" rx="9" fill="#fff" stroke="#cbd5e1"/><text x="295" y="122">静态/单片/分片</text>
+          <rect x="400" y="100" width="84" height="44" rx="9" fill="#fff" stroke="#cbd5e1"/><text x="442" y="122">正</text>
+          <rect x="496" y="100" width="84" height="44" rx="9" fill="#fef3c7" stroke="#d97706"/><text x="538" y="115">实</text><text x="538" y="129" font-size="10">←重点</text>
+          <rect x="400" y="160" width="84" height="40" rx="9" fill="#fff" stroke="#cbd5e1"/><text x="442" y="184">整</text>
+          <rect x="496" y="160" width="84" height="40" rx="9" fill="#bbf7d0" stroke="#059669"/><text x="538" y="184">正实</text>
+          <line x1="115" y1="74" x2="295" y2="98" stroke="#94a3b8"/>
+          <line x1="115" y1="74" x2="490" y2="98" stroke="#94a3b8"/>
+          <line x1="442" y1="144" x2="442" y2="158" stroke="#94a3b8"/>
+          <line x1="538" y1="144" x2="538" y2="158" stroke="#94a3b8"/>
+        </g>
+      </svg>
+      <div class="cap">图 6　报表分类的两套判据：主格形态 / 与扩展带的关系。</div>
+    </div>
+
+    <h3 id="s3g">3.7 自动主格设置（算法 2.4）</h3>
+    <p>逐格设主格繁琐，书中给出<b>自动主格设置算法</b>：对每个未设主格的单元格，在它<b>左（上）边、同行（列）</b>里找第一个"更大（不小于）"的单元格设为它的左（上）主格。</p>
+    <div class="callout note"><b>算法过程：</b>先按原序处理所有纵主格（设左主格），再按原序处理所有非主格；每个单元格在左侧交行集中、在"扩展格集合 X 或非主格已设主格集合 Y"中取列号最大者 <code>W</code>：若 <code>W∈X</code> 则 <code>U.xp=W</code>，否则 <code>U.xp=W.xp</code>；空集则 <code>U.xp=@</code>。上主格对称。<b>定理 2.10：</b>对临时报表执行后必成<b>报表</b>。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 560 220" xmlns="http://www.w3.org/2000/svg">
+        <g font-size="11" fill="#334155" text-anchor="middle">
+          <rect x="60" y="40" width="56" height="34" fill="#fef3c7" stroke="#d97706"/><text x="88" y="61">P1</text>
+          <rect x="120" y="40" width="56" height="34" fill="#f1f5f9" stroke="#cbd5e1"/><text x="148" y="61">A</text>
+          <rect x="180" y="40" width="56" height="34" fill="#fef3c7" stroke="#d97706"/><text x="208" y="61">P2</text>
+          <rect x="240" y="40" width="56" height="34" fill="#f1f5f9" stroke="#cbd5e1"/><text x="268" y="61">B</text>
+          <rect x="60" y="84" width="56" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="88" y="105">C</text>
+          <rect x="120" y="84" width="56" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="148" y="105">D</text>
+          <rect x="180" y="84" width="56" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="208" y="105">E</text>
+          <rect x="240" y="84" width="56" height="34" fill="#dbeafe" stroke="#1e40af"/><text x="268" y="105">F</text>
+          <!-- arrows: C.xp=P1, D.xp=P1, E.xp=P2, F.xp=P2 -->
+          <line x1="88" y1="84" x2="88" y2="76" stroke="#dc2626" marker-end="url(#ah2)"/>
+          <line x1="148" y1="84" x2="148" y2="76" stroke="#dc2626" marker-end="url(#ah2)"/>
+          <line x1="208" y1="84" x2="208" y2="76" stroke="#dc2626" marker-end="url(#ah2)"/>
+          <line x1="268" y1="84" x2="268" y2="76" stroke="#dc2626" marker-end="url(#ah2)"/>
+          <text x="320" y="60" font-size="11.5" fill="#334155" text-anchor="start">P1,P2 = 纵主格（黄）</text>
+          <text x="320" y="84" font-size="11.5" fill="#334155" text-anchor="start">C,D 左侧最近主格 = P1</text>
+          <text x="320" y="106" font-size="11.5" fill="#334155" text-anchor="start">E,F 左侧最近主格 = P2</text>
+          <text x="320" y="134" font-size="11.5" fill="#334155" text-anchor="start">⇒ 自动设 xp：</text>
+          <text x="320" y="156" font-size="11.5" fill="#1e3a8a" text-anchor="start" font-weight="700">C.xp=D.xp=P1</text>
+          <text x="320" y="178" font-size="11.5" fill="#1e3a8a" text-anchor="start" font-weight="700">E.xp=F.xp=P2</text>
+          <text x="40" y="200" font-size="10.5" fill="#64748b">红箭头 = 自动设置的左主格线（"行内左边第一个更大格"）</text>
+        </g>
+      </svg>
+      <div class="cap">图 7　自动主格设置：每个非主格沿行/列向左上找最近的主格作为主格。</div>
+    </div>
+  </section>
+
+  <!-- ===== 四 ===== -->
+  <section id="s4">
+    <h2>四、扩展变换算法（原书第 3 章）—— 核心机制</h2>
+    <p>"扩展"是把<b>源表（模板）</b>生成为<b>实例表（结果）</b>的过程，由三个层层递进的算法构成：</p>
+    <div class="flow">
+      <div class="box"><b>算法 3.1</b><span>扩展带复制<br>（一次复制）</span></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>算法 3.2</b><span>主格扩展<br>（复制 n−1 次）</span></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>算法 3.3</b><span>报表扩展<br>（调度所有主格）</span></div>
+    </div>
+
+    <h3 id="s4a">4.1 算法 3.1　扩展带复制（基础原子操作）</h3>
+    <p><b>输入：</b>报表 <code>T</code> 上纵主格 <code>P</code>，其扩展带 <code>B[P]=R(p,q)</code>，<code>k=|B[P]|=q−p+1</code>。</p>
+    <ol class="steps">
+      <li>对与 <code>B</code> <b>交叉</b>且与 <code>R(q)</code> 相交的单元格 <code>U</code>，截断为 <code>V={E∈U | p≤row(E)≤q}</code>（去掉超出扩展带的部分）；</li>
+      <li>在第 <code>q</code> 行后<b>加入 k 行</b>（执行 k 次算法 2.1）；</li>
+      <li>对与 <code>B</code> 相交的单元格 <code>U</code>：若 <code>U∈DOMB[P]</code>，<code>U</code> 与新复制部分 <code>U'</code> 合并；否则把复制部分 <code>U'</code> 作为<b>复制格</b>加入 <code>UG</code>，并 <code>U'.val=U.val</code>；</li>
+      <li>对 <code>P</code> 的每个属格/子格的复制格，递归设置其 (左/上) 主格 = 原主格的复制格。</li>
+    </ol>
+    <div class="callout note"><b>定理 3.1：</b>复制后仍是报表。<b>定理 3.2（单元格变迁）：</b>复制后继承格及其复制格的<b>列号、列数与原格相同</b>；行号/行数相同的单元格其继承格与复制格对应相同。横扩展带复制对称。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 600 220" xmlns="http://www.w3.org/2000/svg">
+        <g font-size="11" fill="#334155" text-anchor="middle">
+          <text x="90" y="22" font-weight="700" fill="#0f172a">复制前</text>
+          <rect x="40" y="34" width="100" height="28" fill="#fef3c7" stroke="#d97706"/><text x="90" y="52">P（主格）</text>
+          <rect x="40" y="62" width="100" height="28" fill="#dbeafe" stroke="#1e40af"/><text x="90" y="80">行 p</text>
+          <rect x="40" y="90" width="100" height="28" fill="#dbeafe" stroke="#1e40af"/><text x="90" y="108">行 p+1</text>
+          <rect x="40" y="118" width="100" height="28" fill="#dbeafe" stroke="#1e40af"/><text x="90" y="136">行 q</text>
+          <text x="90" y="168" font-size="10" fill="#64748b">扩展带 = {p … q}</text>
+          <text x="300" y="22" font-size="16" fill="#94a3b8">⟶</text>
+          <text x="430" y="22" font-weight="700" fill="#0f172a">复制后（+k 行）</text>
+          <rect x="340" y="34" width="100" height="28" fill="#fef3c7" stroke="#d97706"/><text x="390" y="52">P₁</text>
+          <rect x="340" y="62" width="100" height="28" fill="#dbeafe" stroke="#1e40af"/><text x="390" y="80">行 p</text>
+          <rect x="340" y="90" width="100" height="28" fill="#dbeafe" stroke="#1e40af"/><text x="390" y="108">行 p+1</text>
+          <rect x="340" y="118" width="100" height="28" fill="#dbeafe" stroke="#1e40af"/><text x="390" y="136">行 q</text>
+          <rect x="340" y="146" width="100" height="28" fill="#bbf7d0" stroke="#059669"/><text x="390" y="164">P₂（复制格）</text>
+          <rect x="340" y="174" width="100" height="28" fill="#bbf7d0" stroke="#059669"/><text x="390" y="192">复制区 ×k</text>
+        </g>
+      </svg>
+      <div class="legend">
+        <span><i class="sw" style="background:#fef3c7"></i>主格</span>
+        <span><i class="sw" style="background:#dbeafe"></i>辖区单元格</span>
+        <span><i class="sw" style="background:#bbf7d0"></i>复制格</span>
+      </div>
+      <div class="cap">图 8　扩展带复制（算法 3.1）：在第 q 行后追加 k 行，产生 P 的复制格 P₂…，并向后递推主格。</div>
+    </div>
+
+    <h3 id="s4b">4.2 算法 3.2　主格扩展（把一次复制推广到 n 份）</h3>
+    <div class="callout key"><b>规则 3.1：</b>未扩展格的格值必为非空数组（单值视为 1 元组，空值视为含 NULL 的 1 元组）。</div>
+    <p><b>过程</b>（对未扩展格 <code>P</code>）：① 计算 <code>P.val</code> 得数组 <code>(v₁,…,vₙ)</code>，<code>n≥1</code>；② 置扩展状态为真；③ 连续对 <code>P</code> 执行 <code>n−1</code> 次扩展带复制，产生 <code>P₂,…,Pₙ</code>；④ 令 <code>Pᵢ.val=vᵢ</code>。→ <code>DOMB[P]</code> 中每个单元格 <code>U</code> 产生 n 个<b>导出格</b>。</p>
+    <div class="callout note"><b>定理 3.5：</b>主格扩展后单元格变迁（把定理 3.2 的 <code>+k</code> 推广为 <code>+k·(n−1)</code>）。<b>推论 2（整报表重要）：</b>整报表扩展后<b>任何单元格的行数、列数都不变</b> → 可设计更高存储效率的实现。<b>定理 3.6/3.7：</b>纵主格与横主格的<b>交辖区在扩展中一一对应</b>——这是"层次坐标"合理性的根基。</div>
+
+    <h3 id="s4c">4.3 算法 3.3 / 2.3　报表扩展（调度全部主格）</h3>
+    <div class="callout key"><b>规则 2.2：</b>主格扩展只能对"其主格已是已扩展格"的未扩展格执行。</div>
+    <p><b>算法：</b>① 找一个可执行的未扩展格（其主格已扩展），找不到则结束；② 扩展它（算法 3.2）；③ 回到 ①。</p>
+    <div class="callout note">
+      <b>扩展停机定理（定理 3.9）：</b>对任意报表，报表扩展必在有限步结束，结束时无未扩展格。<br>
+      <b>扩展交换定理（定理 3.8，实报表核心）：</b>对<b>实报表</b>，扩展两个主格已扩展的未扩展格 <code>P</code>、<code>Q</code> <b>可交换</b> → 结果<b>不依赖主格选择顺序</b>。因列数远少于行数，实践一般<b>先扩展横主格、再扩展纵主格</b>效率更高。<br>
+      <b>扩展封闭定理（定理 3.10）：</b>报表扩展对实报表/(满)正实报表/整报表封闭且反封闭。非实报表不具交换性，结果依赖顺序（取原序靠前者）。
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 620 230" xmlns="http://www.w3.org/2000/svg">
+        <g font-size="11" fill="#334155" text-anchor="middle">
+          <text x="150" y="22" font-weight="700" fill="#0f172a">实报表：先 P 后 Q</text>
+          <rect x="40" y="34" width="44" height="30" fill="#dbeafe" stroke="#1e40af"/><text x="62" y="53">P</text>
+          <rect x="84" y="34" width="44" height="30" fill="#dbeafe" stroke="#1e40af"/><text x="106" y="53">P</text>
+          <rect x="40" y="64" width="44" height="30" fill="#ede9fe" stroke="#7c3aed"/><text x="62" y="83">Q</text>
+          <rect x="84" y="64" width="44" height="30" fill="#ede9fe" stroke="#7c3aed"/><text x="106" y="83">Q</text>
+          <rect x="40" y="94" width="44" height="30" fill="#d1fae5" stroke="#059669"/><text x="62" y="113">Q</text>
+          <rect x="84" y="94" width="44" height="30" fill="#d1fae5" stroke="#059669"/><text x="106" y="113">Q</text>
+          <text x="150" y="150" font-size="11" fill="#64748b">网格 2×3</text>
+          <text x="310" y="22" font-size="18" fill="#94a3b8">==</text>
+          <text x="470" y="22" font-weight="700" fill="#0f172a">实报表：先 Q 后 P</text>
+          <rect x="360" y="34" width="44" height="30" fill="#dbeafe" stroke="#1e40af"/><text x="382" y="53">P</text>
+          <rect x="404" y="34" width="44" height="30" fill="#dbeafe" stroke="#1e40af"/><text x="426" y="53">P</text>
+          <rect x="360" y="64" width="44" height="30" fill="#ede9fe" stroke="#7c3aed"/><text x="382" y="83">Q</text>
+          <rect x="404" y="64" width="44" height="30" fill="#ede9fe" stroke="#7c3aed"/><text x="426" y="83">Q</text>
+          <rect x="360" y="94" width="44" height="30" fill="#d1fae5" stroke="#059669"/><text x="382" y="113">Q</text>
+          <rect x="404" y="94" width="44" height="30" fill="#d1fae5" stroke="#059669"/><text x="426" y="113">Q</text>
+          <text x="470" y="150" font-size="11" fill="#64748b">网格 2×3（同构）</text>
+          <text x="310" y="190" font-size="11" fill="#059669" font-weight="700">扩展交换定理：实报表结果与顺序无关</text>
+        </g>
+      </svg>
+      <div class="legend">
+        <span><i class="sw" style="background:#dbeafe"></i>纵主格</span>
+        <span><i class="sw" style="background:#ede9fe"></i>横主格</span>
+        <span><i class="sw" style="background:#d1fae5"></i>交辖区</span>
+      </div>
+      <div class="cap">图 9　实报表的扩展交换定理：先 P 后 Q 与先 Q 后 P 得到同构实例表。</div>
+    </div>
+
+    <h3 id="s4d">4.4 源格、同源、同束（实例表单元格的身份系统）</h3>
+    <p>扩展把一张源表变成多张中间表，最终实例表单元格极多。书中建立三套"坐标"唯一定位它们：</p>
+    <ul>
+      <li><b>源格 <code>src(u)</code></b>：中间表单元格 <code>u</code> 在源表 <code>T₀</code> 上的根（递归取原格的源格），<code>@</code> 的源格是 <code>@</code>。</li>
+      <li><b>同源 / 同源号 <code>seq(p)=#p</code></b>：同源格 = 源格相同的单元格；同主格的同源格按行(列)号排序后的序号。</li>
+      <li><b>同束 / 同束号 <code>ord(p)=&p</code></b>：同束格 = 同一未扩展格的导出格（或其继承格），同源且同束。</li>
+    </ul>
+    <div class="callout note"><b>定理 3.11/3.12：</b>同源扩展格列(行)号相同、行(列)号互异；同束格同源号连续；同源扩展格同束 ⇔ 主格相同。这些是"层次坐标唯一性"的保证。</div>
+  </section>
+
+  <!-- ===== 五 ===== -->
+  <section id="s5">
+    <h2>五、语法与引用机制（原书第 4 章）</h2>
+    <p>源表在设计时写表达式，但计算时要引用"尚未存在"的实例表单元格。因此需要三种坐标系统。</p>
+
+    <h3 id="s5a">5.1 层次坐标（最常用、最安全）</h3>
+    <p><b>基格</b>：表达式总是"相对某个单元格 <code>c</code>"计算，<code>c</code> 称基格。</p>
+    <p>对中间表单元格 <code>c</code>，<code>C=src(c)</code>：取左主格线 <code>(P₀…Pₙ)</code>、上主格线 <code>(Q₀…Qₘ)</code>，记 <code>Pᵢ=src(pᵢ)</code>、<code>xᵢ=ord(pᵢ)</code>，写成</p>
+    <p style="text-align:center"><code>C[P₁:x₁, …, Pₙ:xₙ ; Q₁:y₁, …, Qₘ:yₘ]</code>（<code>P₀=Q₀=@</code> 省略）。<code>xᵢ/yⱼ</code> 即 <code>c</code> 在主格 <code>Pᵢ/Qⱼ</code> 上的<b>层次坐标</b>（同束号，非 0）。</p>
+    <div class="callout note"><b>定理 4.1：</b>层次坐标<b>唯一</b>标志单元格。<b>定理 4.2：</b>零层次坐标 ⇔ 只能引用到"基格导格的先辖区"内的单元格。<b>位移坐标：</b>相对基格 <code>a</code>，写成 <code>+x / −x / 0</code>，全 0 退化为零层次坐标。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 600 240" xmlns="http://www.w3.org/2000/svg">
+        <g font-size="11" fill="#334155" text-anchor="middle">
+          <!-- cross table -->
+          <rect x="60" y="60" width="40" height="36" fill="#f1f5f9" stroke="#cbd5e1"/><text x="80" y="82"> </text>
+          <rect x="100" y="60" width="40" height="36" fill="#fef3c7" stroke="#d97706"/><text x="120" y="82">Q₁</text>
+          <rect x="140" y="60" width="40" height="36" fill="#fef3c7" stroke="#d97706"/><text x="160" y="82">Q₂</text>
+          <rect x="60" y="96" width="40" height="36" fill="#fef3c7" stroke="#d97706"/><text x="80" y="118">P₁</text>
+          <rect x="100" y="96" width="40" height="36" fill="#d1fae5" stroke="#059669"/><text x="120" y="118">c</text>
+          <rect x="140" y="96" width="40" height="36" fill="#dbeafe" stroke="#1e40af"/><text x="160" y="118"> </text>
+          <rect x="60" y="132" width="40" height="36" fill="#fef3c7" stroke="#d97706"/><text x="80" y="154">P₂</text>
+          <rect x="100" y="132" width="40" height="36" fill="#dbeafe" stroke="#1e40af"/><text x="120" y="154"> </text>
+          <rect x="140" y="132" width="40" height="36" fill="#dbeafe" stroke="#1e40af"/><text x="160" y="154"> </text>
+          <!-- master axes -->
+          <line x1="80" y1="150" x2="80" y2="200" stroke="#dc2626" stroke-width="2"/>
+          <line x1="80" y1="78" x2="30" y2="78" stroke="#dc2626" stroke-width="2"/>
+          <text x="80" y="214" font-size="10" fill="#dc2626">纵主格线 P₁,P₂</text>
+          <text x="22" y="82" font-size="10" fill="#dc2626">横主格线</text>
+          <text x="320" y="60" font-size="12" fill="#0f172a" text-anchor="start" font-weight="700">基格 c 的层次坐标</text>
+          <text x="320" y="88" font-size="12" fill="#1e3a8a" text-anchor="start" font-family="monospace">C[ P₁:1 , P₂:2 ; Q₁:1 , Q₂:2 ]</text>
+          <text x="320" y="116" font-size="11" fill="#334155" text-anchor="start">= src(c) 在第 1 纵主格取同束号 1</text>
+          <text x="320" y="136" font-size="11" fill="#334155" text-anchor="start">  第 2 纵主格取同束号 2</text>
+          <text x="320" y="156" font-size="11" fill="#334155" text-anchor="start">  横主格线取同束号 1,2</text>
+          <text x="320" y="186" font-size="10.5" fill="#64748b" text-anchor="start">唯一确定实例表中的单元格 c</text>
+        </g>
+      </svg>
+      <div class="cap">图 10　层次坐标 = 源格名 + 沿主格线的同束号；唯一标志、且支持相对/位移引用。</div>
+    </div>
+
+    <h3 id="s5b">5.2 线性坐标</h3>
+    <p>用<b>同源号 <code>seq</code></b> 代替同束号 <code>ord</code> 的坐标：<code>C[x;y]</code>（非主格）、<code>C[x]</code>（扩展格）。</p>
+    <div class="callout note"><b>定理 4.3：</b>线性坐标唯一。<b>定理 4.4：</b>单层主格的层次坐标与其等价线性坐标一致（<code>C[P:±x;Q:±y] = C[±x;±y]</code>）。</div>
+
+    <h3 id="s5c">5.3 平面函数（绝对方位引用）</h3>
+    <p>不依赖主子关系的方位函数：<code>rows()/cols()</code>（总行列数）、<code>row(c)/col(c)</code>（行列号）、<code>cel(c,y,x)=U(row(c)+y,col(c)+x)</code>（特别 <code>cel(@,y,x)=U(y,x)</code>）、<code>range(a,b)</code>（记作 <code>a:b</code>，矩形区单元格集合，可 <code>sum(a:b)</code>）。</p>
+    <div class="callout warn">平面函数返回值会随进一步扩展而变化，计算时需特别处理（见 §6.2 隐含引用规则 5.2）。</div>
+
+    <h3 id="s5d">5.4 数据源：数据集与缺省行集</h3>
+    <p><b>数据集</b>：由"数据数组"构成的矩阵，同列同类型；行=记录，列=字段（可起列名）。<b>划分函数</b>：<code>select(x)</code>、<code>group(x)</code>，派生 <code>rselect/rgroup/select(x,fx,sx)</code> 等。</p>
+    <div class="callout key"><b>缺省行集 <code>pdr(p,ds)</code>（规则 4.1）：</b>递归——<code>p=@</code> 用全表；已扩展且 <code>p.dsr</code> 有 <code>ds</code> 则用其行集；否则沿 <code>p.pu</code> 上溯。非主格 <code>c</code> 引用数据集时，缺省行集 = <code>pdr(c.xp,ds) ∩ pdr(c.yp,ds)</code>。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 600 230" xmlns="http://www.w3.org/2000/svg">
+        <g font-size="11" fill="#334155" text-anchor="middle">
+          <!-- cross -->
+          <rect x="60" y="60" width="40" height="34" fill="#f1f5f9" stroke="#cbd5e1"/>
+          <rect x="100" y="60" width="40" height="34" fill="#fef3c7" stroke="#d97706"/><text x="120" y="81">Q</text>
+          <rect x="140" y="60" width="40" height="34" fill="#fef3c7" stroke="#d97706"/><text x="160" y="81">Q</text>
+          <rect x="60" y="94" width="40" height="34" fill="#fef3c7" stroke="#d97706"/><text x="80" y="115">P</text>
+          <rect x="100" y="94" width="40" height="34" fill="#d1fae5" stroke="#059669"/><text x="120" y="115">c</text>
+          <rect x="140" y="94" width="40" height="34" fill="#dbeafe" stroke="#1e40af"/>
+          <rect x="60" y="128" width="40" height="34" fill="#fef3c7" stroke="#d97706"/><text x="80" y="149">P</text>
+          <rect x="100" y="128" width="40" height="34" fill="#dbeafe" stroke="#1e40af"/>
+          <rect x="140" y="128" width="40" height="34" fill="#dbeafe" stroke="#1e40af"/>
+          <text x="200" y="70" font-size="11" fill="#334155" text-anchor="start">P = 纵主格（行集 Rₚ）</text>
+          <text x="200" y="92" font-size="11" fill="#334155" text-anchor="start">Q = 横主格（行集 R_q）</text>
+          <text x="200" y="114" font-size="11" fill="#334155" text-anchor="start">c 在交辖区</text>
+          <rect x="200" y="134" width="300" height="30" rx="8" fill="#dbeafe" stroke="#1e40af"/>
+          <text x="350" y="153" text-anchor="middle" font-size="11" fill="#1e3a8a">缺省行集 = pdr(c.xp,ds) ∩ pdr(c.yp,ds)</text>
+          <text x="200" y="190" font-size="11" fill="#059669" text-anchor="start" font-weight="700">⇒ 交叉表表达式自动按位置取正确行集，无需手写</text>
+          <text x="200" y="208" font-size="10.5" fill="#64748b" text-anchor="start">可复用分组提高效率（pdr 沿主格线上溯）</text>
+        </g>
+      </svg>
+      <div class="cap">图 11　缺省行集 pdr：交辖区内单元格的交叉过滤，使数据集引用"智能对位"。</div>
+    </div>
+  </section>
+
+  <!-- ===== 六 ===== -->
+  <section id="s6">
+    <h2>六、计算算法（原书第 5 章）</h2>
+
+    <h3 id="s6a">6.1 计算状态与可计算格（算法 5.1）</h3>
+    <div class="callout key"><b>规则 5.1：</b>单元格属性表达式<b>只能引用其他单元格的格值</b>（避免任意引用造成循环）。</div>
+    <ul>
+      <li><b>计算状态</b>：已计算 / 未计算（<code>@</code> 视为已计算）。</li>
+      <li><b>可计算格</b>：其主格线上扩展格均已计算、且表达式引用的单元格均已计算（或不存在）的未计算格。</li>
+      <li><b>计算 c</b>：扩展格则扩展之；非主格则算 <code>c.val</code> 并置已计算。</li>
+    </ul>
+    <div class="callout note"><b>算法 5.1 报表计算：</b>① 找可计算格 <code>c</code>，找不到则结束；② 计算 <code>c</code>；③ 回到 ①。<b>计算停机定理（定理 5.1）：</b>有限步结束（结束≠无未计算格，只保证无"可计算格"）。<b>计算交换定理（定理 5.2）：</b>两个可计算格计算可交换、计算同构；实报表结果与顺序无关。</div>
+
+    <h3 id="s6b">6.2 隐含引用规则（消除二义性）</h3>
+    <table>
+      <tr><th>规则</th><th>内容</th></tr>
+      <tr><td>5.2（平面函数）</td><td>含平面函数的表达式<b>引用所有未扩展格</b>（保证 row()/cols() 确定）</td></tr>
+      <tr><td>5.3（线性坐标）</td><td><code>C[x]</code> 隐含引用 <code>P[1]…P[x]</code></td></tr>
+      <tr><td>5.4（层次坐标）</td><td>扩展格 <code>C[…]</code> 隐含引用 <code>Pₖ[…,1]</code>；非主格类似引用左右主格线降序格</td></tr>
+      <tr><td>5.5（数据集）</td><td>扩展格 <code>dsf</code> 过滤条件表达式须被其 <code>val</code> 表达式引用覆盖</td></tr>
+    </table>
+
+    <h3 id="s6c">6.3 三种计算方法与复杂度（核心工程取舍）</h3>
+    <table>
+      <tr><th>方法</th><th>算法</th><th>失败试算复杂度</th><th>特点</th></tr>
+      <tr><td>反复遍历</td><td>5.2</td><td><b>O(n²)</b></td><td>反复扫描整表直到一轮无成功试算；最坏 n(n−1)/2 次失败</td></tr>
+      <tr><td>单次遍历</td><td>5.3</td><td><b>O(n)</b></td><td>用栈 q 记录依赖，失败压入依赖格；可给循环引用队列；异常时中间表可能已有已算格</td></tr>
+      <tr><td>源格遍历</td><td>5.4/5.5</td><td><b>O(0)</b></td><td>先在源表找可计算队列 Qs，按 Qs 对同源格试算，<b>必全成功</b>；仅适用无符号循环引用且无平面函数</td></tr>
+    </table>
+    <div class="diagram">
+      <svg viewBox="0 0 560 240" xmlns="http://www.w3.org/2000/svg">
+        <g font-size="11" fill="#334155">
+          <text x="40" y="28" font-weight="700" fill="#0f172a">失败试算复杂度对比（n 个单元格）</text>
+          <!-- axes -->
+          <line x1="60" y1="200" x2="520" y2="200" stroke="#94a3b8"/>
+          <line x1="60" y1="200" x2="60" y2="40" stroke="#94a3b8"/>
+          <!-- O(n^2) -->
+          <rect x="110" y="60" width="56" height="140" fill="#fee2e2" stroke="#dc2626"/>
+          <text x="138" y="54" text-anchor="middle" fill="#dc2626" font-weight="700">O(n²)</text>
+          <text x="138" y="216" text-anchor="middle">反复遍历</text>
+          <!-- O(n) -->
+          <rect x="250" y="150" width="56" height="50" fill="#fef3c7" stroke="#d97706"/>
+          <text x="278" y="144" text-anchor="middle" fill="#d97706" font-weight="700">O(n)</text>
+          <text x="278" y="216" text-anchor="middle">单次遍历</text>
+          <!-- O(0) -->
+          <rect x="390" y="194" width="56" height="6" fill="#059669" stroke="#059669"/>
+          <text x="418" y="188" text-anchor="middle" fill="#059669" font-weight="700">O(0)</text>
+          <text x="418" y="216" text-anchor="middle">源格遍历</text>
+          <text x="60" y="232" font-size="10" fill="#64748b">柱高示意相对量级：n² ≫ n ≫ 0（源格遍历近似零失败试算）</text>
+        </g>
+      </svg>
+      <div class="cap">图 12　三种计算方法的失败试算复杂度对比。源格遍历代价极低但适用范围受限。</div>
+    </div>
+    <div class="callout tip"><b>实践建议：</b>先用代价极低的<b>源格遍历</b>试算，若异常（有符号循环引用）再退回<b>单次遍历法</b>。兼顾大报表（实例表单元格多但关系简单）的高效性与通用性。</div>
+    <div class="callout note"><b>符号引用 / 可计算队列：</b>源表上 <code>A</code> 显式出现 <code>B</code>（或 <code>B</code> 是 <code>A</code> 主格）、或用了平面函数/<code>eval</code> → <code>A</code> 符号引用 <code>B</code>。无符号循环引用 ⇒ 存在<b>可计算队列 Qs</b>。<b>定理 5.11/5.12：</b>有可计算队列 ⇔ 无符号循环引用 ⇔ 源表可计算（逆否不成立：可计算源表未必有可计算队列）。</div>
+  </section>
+
+  <!-- ===== 七 ===== -->
+  <section id="s7">
+    <h2>七、报表填写 / 回写（原书 5.3）</h2>
+    <p>"填写" = 按源表规则改实例表格值，并写回数据库。</p>
+    <h3>7.1 更新属性 upd</h3>
+    <p>单元格 <code>C.upd = {(dt₁,u₁),…,(dtₙ,uₙ)}</code>：<code>dtᵢ</code> 为数据表，<code>uᵢ={(f,exp)}</code> 为"字段→更新表达式"。允许定义在 <code>@</code> 上，扩展时随单元格复制到导出格。</p>
+    <div class="callout key"><b>算法 4.6 数据更新：</b>对每个有 <code>upd</code> 的单元格，按主键 <code>PK</code> 算 <code>v</code> 与 <code>u</code>（<code>v</code> 在原表 <code>T</code> 算，<code>u</code> 在改后表 <code>T'</code> 算）；若 <code>SELECT(v)&gt;0</code> 则 <code>UPDATE</code> 否则 <code>INSERT</code> → 实现"有来有去、来去无关、一来多去"。</div>
+    <h3>7.2 三种填写形态</h3>
+    <div class="diagram">
+      <svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg">
+        <g font-size="11" fill="#334155" text-anchor="middle">
+          <!-- 自由式 -->
+          <text x="100" y="20" font-weight="700" fill="#0f172a">自由式填写</text>
+          <rect x="60" y="34" width="80" height="44" fill="#ede9fe" stroke="#7c3aed"/><text x="100" y="61">整表→1记录</text>
+          <text x="100" y="92" font-size="10" fill="#64748b">定义在 @ 或其属格</text>
+          <!-- 行列式 -->
+          <text x="320" y="20" font-weight="700" fill="#0f172a">行列式填写（最常见）</text>
+          <rect x="250" y="34" width="40" height="22" fill="#dbeafe" stroke="#1e40af"/>
+          <rect x="250" y="56" width="40" height="22" fill="#dbeafe" stroke="#1e40af"/>
+          <rect x="250" y="78" width="40" height="22" fill="#dbeafe" stroke="#1e40af"/>
+          <text x="320" y="61" font-size="10" fill="#334155" text-anchor="start">每行列→1记录</text>
+          <text x="320" y="83" font-size="10" fill="#64748b" text-anchor="start">定义在纵主格辖区</text>
+          <!-- 交叉式 -->
+          <text x="540" y="20" font-weight="700" fill="#0f172a">交叉式填写</text>
+          <rect x="470" y="34" width="40" height="22" fill="#d1fae5" stroke="#059669"/>
+          <rect x="510" y="34" width="40" height="22" fill="#d1fae5" stroke="#059669"/>
+          <rect x="470" y="56" width="40" height="22" fill="#d1fae5" stroke="#059669"/>
+          <rect x="510" y="56" width="40" height="22" fill="#d1fae5" stroke="#059669"/>
+          <text x="560" y="50" font-size="10" fill="#334155" text-anchor="start">每格→1记录</text>
+          <text x="560" y="72" font-size="10" fill="#64748b" text-anchor="start">定义横纵交辖区</text>
+        </g>
+      </svg>
+      <div class="cap">图 13　填写三形态：自由式（整表一条）/行列式（一行一条）/交叉式（一格一条），可在同一实例表混合。</div>
+    </div>
+    <h3>7.3 平面填写 vs 线性填写</h3>
+    <ul>
+      <li><b>平面填写（平面计算串）</b>：把单元格/格集替换成实例表平面坐标 → 名称自带方位，<b>无需主子关系、无需算层次坐标</b>，适合 WEB 等弱计算环境，可导出带公式的 EXCEL。</li>
+      <li><b>线性填写（线性计算串 + 动态增删）</b>：层次坐标全为零、格集无过滤、无线性坐标/平面函数；只能引用"导格先辖区"内单元格，<b>无法由平面化自动得到，必须在源表设计时限制</b>。<b>规则 4.6：</b>增删只能针对<b>叶子主格</b>且一次必须是该主格的完整扩展带。</li>
+    </ul>
+    <div class="callout tip"><b>平面 vs 线性：</b>平面计算串适合"格式复杂但单元格少"；线性计算串适合"格式简单但容量巨大"（占用少、可实时计算）。纯线性计算串的整报表甚至可用于超巨报表以提升性能、减少存储。</div>
+  </section>
+
+  <!-- ===== 八 ===== -->
+  <section id="s8">
+    <h2>八、核心算法一览（实现时对照）</h2>
+    <table>
+      <tr><th>编号</th><th>名称</th><th>作用</th></tr>
+      <tr><td>2.1 / 2.2</td><td>表格行列增删</td><td>在表格中增/删行列并维护 UG 与属性</td></tr>
+      <tr><td>2.3</td><td>子表引入</td><td>把子表撑大后填入宿主表，处理套表/有限扩展/交替扩展</td></tr>
+      <tr><td>2.4</td><td>自动主格设置</td><td>按"左边第一个更大格"自动设主格，临时报表→报表</td></tr>
+      <tr><td>3.1</td><td>扩展带复制</td><td>复制一次扩展带，产生复制格，原子操作</td></tr>
+      <tr><td>3.2</td><td>主格扩展</td><td>对未扩展格执行 n−1 次复制，产生 n 个导出格</td></tr>
+      <tr><td>3.3 / 2.3</td><td>报表扩展</td><td>调度所有主格完成整表扩展（停机、可交换）</td></tr>
+      <tr><td>4.4 / 4.5</td><td>可计算队列寻找 / 源格遍历</td><td>在源表找无环计算顺序，O(0) 失败试算</td></tr>
+      <tr><td>5.1</td><td>报表计算</td><td>反复找可计算格计算，直至无可计算格</td></tr>
+      <tr><td>5.2</td><td>反复遍历法</td><td>全表扫描试算，O(n²) 失败</td></tr>
+      <tr><td>5.3</td><td>单次遍历法</td><td>依赖栈试算，O(n) 失败，可给循环引用队列</td></tr>
+      <tr><td>4.6</td><td>实例表数据更新</td><td>按 upd 属性 INSERT/UPDATE 回写数据库</td></tr>
+      <tr><td>4.7</td><td>动态更新（含增删）</td><td>处理填写时增删叶子主格扩展带并回写</td></tr>
+    </table>
+  </section>
+
+  <!-- ===== 九 ===== -->
+  <section id="s9">
+    <h2>九、关键性质与设计要点总结</h2>
+    <ol>
+      <li><b>一切以单元格为中心</b>：网格→表格→单元格→扩展属性→主格树→扩展带→辖区，构成完整几何+代数结构。</li>
+      <li><b>三层扩展算法</b>把"模板（源表）"确定性展开成"结果（实例表）"；对实/(满)正实/整报表<b>封闭且可交换</b>，结果与扩展顺序无关（实践先横后纵）。</li>
+      <li><b>扩展必停机</b>（定理 3.9），<b>计算必停机</b>（定理 5.1），二者都可证明。</li>
+      <li><b>三套坐标</b>解决"设计时写、运行时引用"的错位：层次坐标（唯一、安全、支持相对引用）、线性坐标（简洁）、平面坐标（弱环境友好）。</li>
+      <li><b>缺省行集 pdr</b> 让交叉表的数据集引用"自动对位"，是表达式智能化的关键。</li>
+      <li><b>可计算性可静态判定</b>：符号循环引用 ⇔ 无可计算队列 ⇔ 不可（静态）计算；运行时用"单次遍历"在 O(n) 失败试算内完成并定位循环。</li>
+      <li><b>填写三形态 + 两种计算串</b>：平面（小而复杂）/线性（大而简单），覆盖自由式、行列式、交叉式及动态增删。</li>
+      <li><b>线性报表是交集真子集</b>：非线性模型表达能力严格包含线性模型，但线性模型在"能用它描述的简单大报表"上时空效率更高——二者互补而非替代。</li>
+    </ol>
+  </section>
+
+  <!-- ===== 十 ===== -->
+  <section id="s10">
+    <h2>十、原文指出但尚未完全解决的开放问题</h2>
+    <ul>
+      <li><b>布局</b>：有限扩展（扩展带仅矩形而非整行/列）、交替扩展（纵主格有横子格）、分页处理；</li>
+      <li><b>计算</b>：格间关联模型与统计图、允许属性引用时的循环引用消解；</li>
+      <li><b>填写</b>：非叶子主格的动态填写、交叉动态填写（更新属性不只定义于主格）；</li>
+      <li><b>实现</b>：算法的高效工程化方案（如利用整报表"单元格大小不变"特性优化存储）。</li>
+    </ul>
+  </section>
+
+  <!-- ===== 十一 ===== -->
+  <section id="s11">
+    <h2>十一、工程实现算法补充（新增 · 计算引擎架构）</h2>
+    <p>以上内容（二–十）主要是<b>理论算法</b>：已建立"单元格第一公民""扩展 + 引用"的模型，并证明了停机、封闭、可计算等性质。但开放问题（§十）也指出，实现层仍缺"算法的高效工程化方案"。本章给出把<b>非线性报表数学模型</b>落地为<b>非线性报表计算引擎</b>所需的关键工程算法层，与前面的 2.x / 3.x / 5.x 理论算法一一对应。</p>
+    <div class="callout tip"><b>落地映射（呼应你的 Agent Runtime / Ontology OS 思路）：</b>
+      <code>Cell</code> ≈ Entity（实体）· <code>MasterGraph</code> ≈ Ontology Graph（本体图）· <code>ExpressionGraph</code> ≈ Rule Graph（规则图）· Expand Engine ≈ Runtime（运行时）· Calculation Engine ≈ Agent Execution（智能体执行）。</div>
+
+    <h3 id="s11a">11.1 报表内部对象模型算法</h3>
+    <p><b>理论模型</b>把报表拆成 5 个对象：<code>Report</code> → <code>Grid</code> / <code>Cell</code> / <code>MasterGraph</code> / <code>ExpressionGraph</code> / <code>RuntimeContext</code>。<b>实际实现</b>用扁平化的结构体承载：</p>
+    <pre><code>struct Report {
+    cells: Vec&lt;Cell&gt;,        // 单元格数组（原序）
+    masters: MasterGraph,     // 主格树
+    expressions: ExprGraph,   // 表达式依赖图
+}
+
+struct Cell {
+    id: CellId,
+    row: i32, col: i32,       // 原始坐标
+    rowspan: i32, colspan: i32, // 合并范围
+    xp: Option&lt;CellId&gt;,       // 左主格
+    yp: Option&lt;CellId&gt;,       // 上主格
+    value: Value,             // 值（运行期填充）
+    expr: Option&lt;Expression&gt;, // 表达式
+    state: CellState,         // 计算状态
+}</code></pre>
+    <div class="callout key"><b>核心思想：</b><code>Cell</code> <b>不保存结果，而保存"如何产生结果"</b>（坐标、主格关系、表达式、状态）。结果在运行时由 Expand/Expression 引擎惰性填充到 <code>value</code> / <code>state</code>，从而支持增量更新与缓存。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 600 280" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="ah11" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#475569"/></marker></defs>
+        <g font-size="11.5" text-anchor="middle">
+          <rect x="180" y="40" width="240" height="200" rx="12" fill="#f8fafc" stroke="#94a3b8" stroke-dasharray="6 4"/>
+          <text x="300" y="62" font-weight="700" fill="#0f172a">Report</text>
+          <rect x="210" y="78" width="180" height="46" rx="8" fill="#dbeafe" stroke="#1e40af"/>
+          <text x="300" y="98" fill="#1e3a8a">Grid</text><text x="300" y="113" font-size="10" fill="#1e40af">cells: Vec&lt;Cell&gt;</text>
+          <rect x="30" y="120" width="130" height="46" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+          <text x="95" y="140" fill="#5b21b6">Cell</text><text x="95" y="155" font-size="9.5" fill="#6d28d9">id/坐标/主格/expr</text>
+          <rect x="440" y="120" width="130" height="46" rx="8" fill="#fef3c7" stroke="#d97706"/>
+          <text x="505" y="140" fill="#92400e">MasterGraph</text><text x="505" y="155" font-size="9.5" fill="#b45309">主格树</text>
+          <rect x="120" y="200" width="150" height="46" rx="8" fill="#d1fae5" stroke="#059669"/>
+          <text x="195" y="220" fill="#065f46">ExpressionGraph</text><text x="195" y="235" font-size="9.5" fill="#047857">依赖 DAG</text>
+          <rect x="330" y="200" width="150" height="46" rx="8" fill="#fee2e2" stroke="#dc2626"/>
+          <text x="405" y="220" fill="#991b1b">RuntimeContext</text><text x="405" y="235" font-size="9.5" fill="#b91c1c">线程/缓存/状态</text>
+          <line x1="160" y1="143" x2="180" y2="120" stroke="#475569" marker-end="url(#ah11)"/>
+          <line x1="440" y1="143" x2="420" y2="120" stroke="#475569" marker-end="url(#ah11)"/>
+          <line x1="270" y1="200" x2="300" y2="190" stroke="#475569" marker-end="url(#ah11)"/>
+          <line x1="330" y1="200" x2="300" y2="190" stroke="#475569" marker-end="url(#ah11)"/>
+          <text x="300" y="262" font-size="10.5" fill="#64748b">Cell 保存"如何产生结果"，结果由引擎惰性填充</text>
+        </g>
+      </svg>
+      <div class="cap">图 14　报表内部对象模型：Report 聚合 Grid/Cell/MasterGraph/ExpressionGraph/RuntimeContext。</div>
+    </div>
+
+    <h3 id="s11b">11.2 主格树构建算法</h3>
+    <p><b>已有理论</b>：主格线 <code>P₀=@, P₁.xp=@, P₂.xp=P₁, P₃.xp=P₂</code> 形成树。<b>工程实现</b>把它转成一次性建树：</p>
+    <pre><code>输入:  Cell 集合
+输出:  MasterTree
+
+BuildMasterTree():
+  1. 创建根节点 @
+  2. 遍历所有 cell:
+       if cell.xp != null:
+           parent = cell.xp
+           parent.children.add(cell)
+  3. 对 yp 同理（横主格方向）
+  4. 计算每个节点深度 depth
+  return tree</code></pre>
+    <div class="callout note"><b>复杂度：O(N)</b>（N = 单元格数，单遍遍历）。构建后即可供扩展调度（§11.3）与单元格定位（§11.8）直接复用，无需每次重算主格线。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 560 200" xmlns="http://www.w3.org/2000/svg">
+        <g font-size="12" text-anchor="middle">
+          <circle cx="280" cy="38" r="22" fill="#1e3a8a"/><text x="280" y="43" fill="#fff" font-weight="700">@</text>
+          <circle cx="160" cy="110" r="22" fill="#2563eb"/><text x="160" y="115" fill="#fff">P1</text>
+          <circle cx="400" cy="110" r="22" fill="#7c3aed"/><text x="400" y="115" fill="#fff">Q1</text>
+          <circle cx="110" cy="170" r="20" fill="#60a5fa"/><text x="110" y="174" fill="#fff">P2</text>
+          <circle cx="210" cy="170" r="20" fill="#60a5fa"/><text x="210" y="174" fill="#fff">C</text>
+          <circle cx="400" cy="170" r="20" fill="#c4b5fd"/><text x="400" y="174" fill="#fff">E</text>
+          <line x1="266" y1="56" x2="174" y2="92" stroke="#334155"/><text x="205" y="80" font-size="10" fill="#64748b">xp</text>
+          <line x1="294" y1="56" x2="386" y2="92" stroke="#334155"/><text x="355" y="80" font-size="10" fill="#64748b">yp</text>
+          <line x1="148" y1="130" x2="118" y2="152" stroke="#94a3b8"/><line x1="170" y1="130" x2="200" y2="152" stroke="#94a3b8"/>
+          <line x1="390" y1="130" x2="392" y2="152" stroke="#94a3b8"/>
+          <text x="430" y="40" font-size="11" fill="#334155" text-anchor="start">遍历 Cell：</text>
+          <text x="430" y="58" font-size="10.5" fill="#334155" text-anchor="start">xp→parent.children</text>
+          <text x="430" y="76" font-size="10.5" fill="#334155" text-anchor="start">yp 同理</text>
+          <text x="430" y="100" font-size="11" fill="#059669" text-anchor="start" font-weight="700">O(N) 建树</text>
+        </g>
+      </svg>
+      <div class="cap">图 15　主格树构建（算法 A1）：单向遍历 Cell，按 xp/yp 挂到父节点，O(N)。</div>
+    </div>
+
+    <h3 id="s11c">11.3 扩展计划算法（优化算法 3.3）</h3>
+    <p>原算法 3.3 每轮"扫描全部格找可扩展主格"，最坏 <b>O(N²)</b>。优化思路：用<b>扩展队列</b>替代全表扫描。</p>
+    <pre><code>struct MasterNode { id; expanded:bool; depend_count:int }
+
+初始化:
+  for master:
+    if parent.expanded:        // 主格已扩展 → 可扩展
+        queue.push(master)
+
+while queue not empty:
+    P = queue.pop()
+    expand(P)
+    for child in P.children:
+        if child.ready():      // 依赖均已扩展
+            queue.push(child)</code></pre>
+    <div class="callout note"><b>复杂度：O(M)</b>（M = 主格数量，M ≤ N）。每个主格入队/出队各一次，避免重复扫描非主格单元格。实践仍"先横后纵"（§4.3）以利用列数远小于行数的特点。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 560 210" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="ah12" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#2563eb"/></marker></defs>
+        <g font-size="11.5" text-anchor="middle">
+          <rect x="40" y="40" width="200" height="120" rx="10" fill="#f8fafc" stroke="#94a3b8" stroke-dasharray="6 4"/>
+          <text x="140" y="60" font-weight="700" fill="#0f172a">ExpandQueue</text>
+          <rect x="60" y="70" width="160" height="26" rx="6" fill="#dbeafe" stroke="#1e40af"/><text x="140" y="87">P1  dep=0</text>
+          <rect x="60" y="100" width="160" height="26" rx="6" fill="#dbeafe" stroke="#1e40af"/><text x="140" y="117">P2  dep=1</text>
+          <rect x="60" y="130" width="160" height="26" rx="6" fill="#dbeafe" stroke="#1e40af"/><text x="140" y="147">P3  dep=1</text>
+          <line x1="140" y1="96" x2="140" y2="100" stroke="#2563eb" marker-end="url(#ah12)"/>
+          <line x1="140" y1="126" x2="140" y2="130" stroke="#2563eb" marker-end="url(#ah12)"/>
+          <rect x="300" y="80" width="160" height="40" rx="8" fill="#d1fae5" stroke="#059669"/><text x="380" y="104">expand(P)</text>
+          <line x1="240" y1="92" x2="296" y2="98" stroke="#dc2626" stroke-dasharray="4 3"/><text x="268" y="84" font-size="10" fill="#dc2626">pop</text>
+          <text x="300" y="150" font-size="10.5" fill="#334155" text-anchor="start">子节点依赖满足 → push</text>
+          <text x="300" y="168" font-size="11" fill="#059669" text-anchor="start" font-weight="700">O(M)，免全表扫描</text>
+        </g>
+      </svg>
+      <div class="cap">图 16　扩展调度（算法 A2）：用入队/出队的扩展队列替代每轮 O(N) 扫描，整体 O(M)。</div>
+    </div>
+
+    <h3 id="s11d">11.4 增量扩展算法（重要）</h3>
+    <p>原算法每次"重新生成整张实例表"。实际系统中用户追加一条数据（如销售明细新增"商品D"）时，不应重算整表，只应更新受影响的 <code>DOMB[P]</code>。</p>
+    <pre><code>IncrementExpand(P, newData):
+  1. 定位主格 P 及其扩展带 B[P]
+  2. 计算新增数量 k = |newData|
+  3. 复制扩展带：在 B[P] 末尾追加 k 份（算法 3.1 局部版）
+  4. 更新主格索引 / 同束号 ord
+  5. 触发依赖重算（仅 DOMB[P] 及下游）</code></pre>
+    <div class="callout key"><b>复杂度：</b>从整表重算的 <b>O(N)</b> 降为 <b>O(size(DOMB))</b>（仅受影响的后辖区单元格）。配合主格树版本号 <code>version</code>（新增数据 <code>version++</code>），可实现"只动变化部分"。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 600 200" xmlns="http://www.w3.org/2000/svg">
+        <g font-size="10.5" text-anchor="middle" fill="#334155">
+          <text x="130" y="22" font-weight="700" fill="#0f172a">增量前 (version=10)</text>
+          <rect x="40" y="34" width="180" height="22" fill="#fef3c7" stroke="#d97706"/><text x="130" y="49">P: 商品A/B/C</text>
+          <rect x="40" y="56" width="180" height="20" fill="#dbeafe" stroke="#1e40af"/><text x="130" y="70">行1 商品A</text>
+          <rect x="40" y="76" width="180" height="20" fill="#dbeafe" stroke="#1e40af"/><text x="130" y="90">行2 商品B</text>
+          <rect x="40" y="96" width="180" height="20" fill="#dbeafe" stroke="#1e40af"/><text x="130" y="110">行3 商品C</text>
+          <text x="130" y="135" font-size="10" fill="#64748b">DOMB[P] = 行1–3</text>
+          <text x="300" y="22" font-size="16" fill="#94a3b8">⟶ +商品D</text>
+          <text x="470" y="22" font-weight="700" fill="#0f172a">增量后 (version=11)</text>
+          <rect x="380" y="34" width="180" height="22" fill="#fef3c7" stroke="#d97706"/><text x="470" y="49">P: 商品A/B/C/D</text>
+          <rect x="380" y="56" width="180" height="20" fill="#dbeafe" stroke="#1e40af"/><text x="470" y="70">行1 商品A</text>
+          <rect x="380" y="76" width="180" height="20" fill="#dbeafe" stroke="#1e40af"/><text x="470" y="76" dy="11">行2 商品B</text>
+          <rect x="380" y="96" width="180" height="20" fill="#dbeafe" stroke="#1e40af"/><text x="470" y="110">行3 商品C</text>
+          <rect x="380" y="116" width="180" height="20" fill="#bbf7d0" stroke="#059669"/><text x="470" y="130">行4 商品D（新增）</text>
+          <text x="470" y="158" font-size="10" fill="#059669" font-weight="700">仅复制扩展带 1 份，O(DOMB)</text>
+        </g>
+      </svg>
+      <div class="cap">图 17　增量扩展（算法 A3）：新增数据只在扩展带末尾追加，局部更新 DOMB[P]，避免整表重算。</div>
+    </div>
+
+    <h3 id="s11e">11.5 依赖计算图算法（DAG + 循环检测）</h3>
+    <p>理论已规定"单元格只能引用其他单元格的格值"（规则 5.1），因此天然形成<b>有向无环图 DAG</b>。据此可拓扑排序计算，并检测符号循环引用。</p>
+    <pre><code>ExpressionGraph:  A1 → B1 → C1   （引用方向）
+
+拓扑排序 Kahn:
+  indeg=0 的节点入队
+  while 队列非空:
+      计算节点; 删除其出边; 更新下游入度
+  若仍有未计算节点 ⇒ 存在环
+
+CycleDetector:
+  输出环路径，如  A1 → B1 → C1 → A1</code></pre>
+    <div class="callout note"><b>复杂度：O(N+E)</b>（N 节点 / E 依赖边）。拓扑排序同时完成"计算顺序"与"循环检测"——对应理论的可计算队列（§6.3，定理 5.11/5.12），但工程版能<b>精确给出环路径</b>用于报错定位。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 600 190" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="ah13" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#475569"/></marker></defs>
+        <g font-size="12" text-anchor="middle">
+          <text x="130" y="26" font-weight="700" fill="#0f172a">正常 DAG（可拓扑）</text>
+          <circle cx="60" cy="80" r="20" fill="#dbeafe" stroke="#1e40af"/><text x="60" y="84" fill="#1e3a8a">A1</text>
+          <circle cx="160" cy="80" r="20" fill="#dbeafe" stroke="#1e40af"/><text x="160" y="84" fill="#1e3a8a">B1</text>
+          <circle cx="260" cy="80" r="20" fill="#dbeafe" stroke="#1e40af"/><text x="260" y="84" fill="#1e3a8a">C1</text>
+          <line x1="80" y1="80" x2="138" y2="80" stroke="#475569" marker-end="url(#ah13)"/>
+          <line x1="180" y1="80" x2="238" y2="80" stroke="#475569" marker-end="url(#ah13)"/>
+          <text x="130" y="135" font-size="10.5" fill="#64748b">入度0 → 计算 → 删边 → 继续</text>
+          <text x="430" y="26" font-weight="700" fill="#0f172a">循环引用（报错）</text>
+          <circle cx="370" cy="80" r="20" fill="#fee2e2" stroke="#dc2626"/><text x="370" y="84" fill="#991b1b">A1</text>
+          <circle cx="470" cy="80" r="20" fill="#fee2e2" stroke="#dc2626"/><text x="470" y="84" fill="#991b1b">B1</text>
+          <circle cx="420" cy="140" r="20" fill="#fee2e2" stroke="#dc2626"/><text x="420" y="144" fill="#991b1b">C1</text>
+          <line x1="388" y1="72" x2="452" y2="72" stroke="#dc2626" marker-end="url(#ah13)"/>
+          <line x1="478" y1="98" x2="436" y2="124" stroke="#dc2626" marker-end="url(#ah13)"/>
+          <line x1="404" y1="146" x2="356" y2="92" stroke="#dc2626" marker-end="url(#ah13)"/>
+          <text x="430" y="178" font-size="10.5" fill="#dc2626" font-weight="700">A1→B1→C1→A1 环</text>
+        </g>
+      </svg>
+      <div class="cap">图 18　依赖计算图（算法 A4/A6）：拓扑排序即得计算顺序，剩余节点即循环引用。</div>
+    </div>
+
+    <h3 id="s11f">11.6 高性能计算调度算法（三级缓存）</h3>
+    <p>普通"对每个 cell 计算"会大量重复。优化为三级缓存，逐级命中避免重复计算：</p>
+    <pre><code>L1  CellCache         cell_id  → value          // 单元格结果
+L2  ExprCache         hash(expr) → result         // 同表达式结果
+L3  MasterInstanceCache  master_version → 实例片段  // 整段扩展结果
+
+流程:
+  用户请求 → 检查 L3 实例缓存 → 检查 L2 表达式缓存
+          → 必要时计算 → 写回 L1/L2/L3</code></pre>
+    <div class="callout note"><b>复杂度：</b>命中缓存为 <b>O(1)</b>。配合 §11.4 的主格版本号，L3 可在"数据未变"时直接复用整段实例，大报表收益显著。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 560 210" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="ah14" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#2563eb"/></marker></defs>
+        <g font-size="11" text-anchor="middle">
+          <rect x="180" y="30" width="200" height="38" rx="8" fill="#fee2e2" stroke="#dc2626"/><text x="280" y="48" fill="#991b1b">L3 MasterInstanceCache</text><text x="280" y="62" font-size="9.5" fill="#b91c1c">master_version → 实例片段</text>
+          <rect x="180" y="84" width="200" height="38" rx="8" fill="#fef3c7" stroke="#d97706"/><text x="280" y="102" fill="#92400e">L2 ExprCache</text><text x="280" y="116" font-size="9.5" fill="#b45309">hash(expr) → result</text>
+          <rect x="180" y="138" width="200" height="38" rx="8" fill="#d1fae5" stroke="#059669"/><text x="280" y="156" fill="#065f46">L1 CellCache</text><text x="280" y="170" font-size="9.5" fill="#047857">cell_id → value</text>
+          <line x1="280" y1="68" x2="280" y2="82" stroke="#2563eb" marker-end="url(#ah14)"/>
+          <line x1="280" y1="122" x2="280" y2="136" stroke="#2563eb" marker-end="url(#ah14)"/>
+          <text x="60" y="60" font-size="10.5" fill="#334155" text-anchor="start">请求</text>
+          <text x="60" y="158" font-size="10.5" fill="#334155" text-anchor="start">命中 O(1)</text>
+        </g>
+      </svg>
+      <div class="cap">图 19　三级缓存（算法 A7）：实例 → 表达式 → 单元格，逐级短路重复计算。</div>
+    </div>
+
+    <h3 id="s11g">11.7 并行计算算法</h3>
+    <p>非线性报表的 DAG 天然可并行：入度为 0 的节点彼此无依赖，可由线程池并发执行。</p>
+    <pre><code>while DAG 非空:
+    ready = find_all(indegree == 0)   // 一批可并行节点
+    parallel_execute(ready)           // 提交线程池
+    update_graph()                    // 完成后删边、更新下游
+
+线程模型:
+  Expansion Thread        // 扩展
+       │
+  Calculation Thread Pool // 并行计算
+       │
+  Render Thread           // 渲染</code></pre>
+    <div class="callout note"><b>复杂度：O(N/P)</b>（P = 线程数）。与 §6.2 的隐含引用规则配合——只有"引用所有未扩展格"的平面函数类表达式需串行屏障，其余纯值依赖可完全并行。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 600 220" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="ah15" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#475569"/></marker></defs>
+        <g font-size="12" text-anchor="middle">
+          <circle cx="280" cy="40" r="22" fill="#1e3a8a"/><text x="280" y="44" fill="#fff" font-weight="700">A</text>
+          <circle cx="180" cy="110" r="22" fill="#2563eb"/><text x="180" y="114" fill="#fff">B</text>
+          <circle cx="380" cy="110" r="22" fill="#2563eb"/><text x="380" y="114" fill="#fff">C</text>
+          <circle cx="280" cy="180" r="22" fill="#7c3aed"/><text x="280" y="184" fill="#fff">D</text>
+          <line x1="262" y1="56" x2="198" y2="94" stroke="#475569" marker-end="url(#ah15)"/>
+          <line x1="298" y1="56" x2="362" y2="94" stroke="#475569" marker-end="url(#ah15)"/>
+          <line x1="198" y1="130" x2="262" y2="162" stroke="#475569" marker-end="url(#ah15)"/>
+          <line x1="362" y1="130" x2="298" y2="162" stroke="#475569" marker-end="url(#ah15)"/>
+          <path d="M150,110 q-30,0 -30,30 q0,30 30,30" fill="none" stroke="#059669" stroke-dasharray="5 3"/>
+          <text x="100" y="150" font-size="10" fill="#059669" font-weight="700">B,C 并行</text>
+          <rect x="430" y="150" width="140" height="44" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/><text x="500" y="170" fill="#334155">Calculation</text><text x="500" y="184" fill="#334155">Thread Pool</text>
+        </g>
+      </svg>
+      <div class="cap">图 20　并行计算（算法 A8）：入度为 0 的节点批量并发，DAG 天然分层的并行度。</div>
+    </div>
+
+    <h3 id="s11h">11.8 单元格定位算法</h3>
+    <p>Excel 用 <code>A1/B2</code> 二维坐标；非线性报表还需<b>层次坐标</b>。工程上用"主格路径 + 偏移"唯一定位实例单元格：</p>
+    <pre><code>struct Position {
+    master_path: [ @, Region, Customer, Order ],  // 主格线（源格序列）
+    offset: { row: 3, col: 5 },                  // 在该主格辖区内的物理偏移
+}
+
+定位:  Cell → Master Path → Instance Node → Physical Coordinate</code></pre>
+    <div class="callout note">该结构与理论"层次坐标（源格名 + 主格线同束号）"同构，但把"同束号"显式展开为 <code>master_path</code> + <code>offset</code>，便于在运行期实例表中 O(1) 跳转到物理坐标（对应 §5.1 定理 4.1 的唯一性）。</div>
+    <div class="diagram">
+      <svg viewBox="0 0 600 180" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="ah16" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#2563eb"/></marker></defs>
+        <g font-size="11" text-anchor="middle">
+          <rect x="30" y="60" width="170" height="46" rx="8" fill="#ede9fe" stroke="#7c3aed"/><text x="115" y="80" fill="#5b21b6">master_path</text><text x="115" y="96" font-size="9.5" fill="#6d28d9">[@,Region,Customer,Order]</text>
+          <rect x="250" y="60" width="100" height="46" rx="8" fill="#fef3c7" stroke="#d97706"/><text x="300" y="80" fill="#92400e">offset</text><text x="300" y="96" font-size="9.5" fill="#b45309">{r3,c5}</text>
+          <rect x="400" y="60" width="150" height="46" rx="8" fill="#d1fae5" stroke="#059669"/><text x="475" y="80" fill="#065f46">Physical</text><text x="475" y="96" font-size="9.5" fill="#047857">坐标 C7</text>
+          <line x1="200" y1="83" x2="246" y2="83" stroke="#2563eb" marker-end="url(#ah16)"/>
+          <line x1="350" y1="83" x2="396" y2="83" stroke="#2563eb" marker-end="url(#ah16)"/>
+          <text x="300" y="140" font-size="10.5" fill="#64748b">源格名 + 主格线同束号 ⇔ master_path + offset（定理 4.1 唯一）</text>
+        </g>
+      </svg>
+      <div class="cap">图 21　单元格定位（§11.8）：主格路径 + 偏移 → 物理坐标，O(1) 跳转。</div>
+    </div>
+
+    <h3 id="s11i">11.9 全局算法流程</h3>
+    <p>最终 Runtime 把上述算法串联成一条流水线：</p>
+    <div class="flow">
+      <div class="box"><b>Template</b><span>源表模板</span></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>Master Analyzer</b><span>主格树 §11.2</span></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>Expand Engine</b><span>扩展调度 §11.3/增量 §11.4</span></div>
+      <div class="arrow">+</div>
+      <div class="box"><b>Expr Engine</b><span>DAG计算 §11.5/并行 §11.7</span></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>Instance Table</b><span>实例表</span></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>Render Engine</b><span>HTML/Excel/PDF</span></div>
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 620 150" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="ah17" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#2563eb"/></marker></defs>
+        <g font-size="11" text-anchor="middle">
+          <rect x="20" y="55" width="90" height="40" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/><text x="65" y="79" fill="#334155">Template</text>
+          <rect x="125" y="55" width="100" height="40" rx="8" fill="#ede9fe" stroke="#7c3aed"/><text x="175" y="79" fill="#5b21b6">Master Analyzer</text>
+          <rect x="240" y="30" width="110" height="34" rx="8" fill="#dbeafe" stroke="#1e40af"/><text x="295" y="51" fill="#1e3a8a">Expand Engine</text>
+          <rect x="240" y="80" width="110" height="34" rx="8" fill="#d1fae5" stroke="#059669"/><text x="295" y="101" fill="#065f46">Expr Engine</text>
+          <rect x="370" y="55" width="110" height="40" rx="8" fill="#fef3c7" stroke="#d97706"/><text x="425" y="79" fill="#92400e">Instance Table</text>
+          <rect x="500" y="55" width="100" height="40" rx="8" fill="#fee2e2" stroke="#dc2626"/><text x="550" y="73" fill="#991b1b">Render</text><text x="550" y="88" font-size="9" fill="#b91c1c">HTML/XLS/PDF</text>
+          <line x1="110" y1="75" x2="121" y2="75" stroke="#2563eb" marker-end="url(#ah17)"/>
+          <line x1="225" y1="75" x2="236" y2="75" stroke="#2563eb" marker-end="url(#ah17)"/>
+          <line x1="350" y1="47" x2="368" y2="67" stroke="#2563eb" marker-end="url(#ah17)"/>
+          <line x1="350" y1="103" x2="368" y2="83" stroke="#2563eb" marker-end="url(#ah17)"/>
+          <line x1="480" y1="75" x2="496" y2="75" stroke="#2563eb" marker-end="url(#ah17)"/>
+        </g>
+      </svg>
+      <div class="cap">图 22　全局 Runtime 流程（§11.9）：模板 → 主格分析 → 扩展/表达式引擎 → 实例表 → 渲染。</div>
+    </div>
+
+    <h3 id="s11j">11.10 推荐增加算法总表</h3>
+    <table>
+      <tr><th>编号</th><th>算法</th><th>作用</th><th>复杂度</th></tr>
+      <tr><td>A1</td><td>Master Tree Builder</td><td>建立主格树（§11.2）</td><td>O(N)</td></tr>
+      <tr><td>A2</td><td>Expand Scheduler</td><td>扩展调度，替代全表扫描（§11.3）</td><td>O(M)</td></tr>
+      <tr><td>A3</td><td>Increment Expand</td><td>增量扩展，仅更新 DOMB（§11.4）</td><td>O(size(DOMB))</td></tr>
+      <tr><td>A4</td><td>Dependency Graph</td><td>建立计算依赖 DAG（§11.5）</td><td>O(N+E)</td></tr>
+      <tr><td>A5</td><td>Topo Calculator</td><td>按拓扑序公式计算（§11.5/§6）</td><td>O(N+E)</td></tr>
+      <tr><td>A6</td><td>Cycle Detector</td><td>循环引用检测，输出环路径（§11.5）</td><td>O(N+E)</td></tr>
+      <tr><td>A7</td><td>Cache Engine</td><td>三级缓存，命中 O(1)（§11.6）</td><td>O(1)</td></tr>
+      <tr><td>A8</td><td>Parallel Executor</td><td>并行计算（§11.7）</td><td>O(N/P)</td></tr>
+      <tr><td>A9</td><td>Expansion Band Model</td><td>矩形扩展带模型，扩展单位下沉为 Band（§11.11）</td><td>—</td></tr>
+      <tr><td>A10</td><td>Finite Expand</td><td>有限扩展，局部矩形复制（§11.11）</td><td>O(count×band)</td></tr>
+      <tr><td>A11</td><td>Coordinate Mapping</td><td>非整行/列的逻辑→物理坐标映射（§11.11）</td><td>O(1)</td></tr>
+      <tr><td>A12</td><td>Alternating Expansion Tree</td><td>纵/横交替扩展树（§11.12）</td><td>O(T)</td></tr>
+      <tr><td>A13</td><td>Recursive Expansion</td><td>嵌套主格递归扩展（§11.12）</td><td>O(N)</td></tr>
+      <tr><td>A14</td><td>Page Layout Engine</td><td>分页扫描与装填（§11.13）</td><td>O(B)</td></tr>
+      <tr><td>A15</td><td>Band Split Algorithm</td><td>跨页带切分，主格不裂（§11.13）</td><td>O(band)</td></tr>
+      <tr><td>A16</td><td>Repeat Header Algorithm</td><td>分页重复标题（§11.13）</td><td>O(1)</td></tr>
+    </table>
+    <div class="callout tip"><b>升级结论：</b>增加 §11 后，文档从"非线性报表<b>数学模型</b>"升级为"非线性报表<b>计算引擎架构设计</b>"。它与前面 2.x（表格结构）、3.x（扩展）、5.x（计算）理论算法形成闭环：理论保证正确性与终止性，工程算法保证效率与可落地性。这也与你的 Ontology OS / Agent Runtime 思路同构——<code>Cell≈Entity</code>、<code>MasterGraph≈Ontology Graph</code>、<code>ExpressionGraph≈Rule Graph</code>、<code>Expand/Calculation Engine≈Runtime/Agent Execution</code>。    </div>
+
+    <h3 id="s11k">11.11 有限扩展算法（Expansion Band Algorithm）</h3>
+    <p>传统报表的明细扩展本质是"插入整行 / 复制整行"。但非线性报表的扩展单位<b>不是 Row / Column，而是矩形扩展带（Rectangle Band）</b>——只允许商品区、数量区、金额区这类局部矩形被复制，整表其余部分（如外层"销售单"标题、客户主格）保持不动。</p>
+
+    <h4>11.11.1 扩展带模型</h4>
+    <p>把"可扩展区域"抽象为一个带边界与方向的矩形对象：</p>
+    <pre><code>struct ExpandBand {
+    id:          BandId,
+    start_row:   i32,   // 矩形上界
+    end_row:     i32,   // 矩形下界
+    start_col:   i32,   // 矩形左界
+    end_col:     i32,   // 矩形右界
+    direction:   ExpandDirection,  // 扩展方向
+    master:      CellId,          // 主格
+    clone_rule:  CloneRule         // 复制规则
+}</code></pre>
+    <p>例：模板中 <code>A5:C5</code> 这一横条即一个 Band：<code>start_row=5, end_row=5, start_col=1, end_col=3</code>。它只覆盖"商品|数量|金额"三列，扩展时只复制这一条，不影响同表的客户主格与销售单标题。</p>
+    <div class="fig">
+      <svg viewBox="0 0 680 250" xmlns="http://www.w3.org/2000/svg">
+        <text x="36" y="28" font-size="13" fill="#334155" font-weight="700">扩展带 = 矩形区域（非整行 / 非整列）</text>
+        <!-- 左：band 网格 -->
+        <text x="36" y="52" font-size="12" fill="#334155">模板中的扩展带 A5:C5</text>
+        <rect x="36" y="62" width="64" height="40" fill="#fef3c7" stroke="#d97706"/>
+        <text x="68" y="87" font-size="13" fill="#92400e" font-weight="700">A5</text>
+        <rect x="100" y="62" width="64" height="40" fill="#fef3c7" stroke="#d97706"/>
+        <text x="132" y="87" font-size="13" fill="#92400e" font-weight="700">B5</text>
+        <rect x="164" y="62" width="64" height="40" fill="#fef3c7" stroke="#d97706"/>
+        <text x="196" y="87" font-size="13" fill="#92400e" font-weight="700">C5</text>
+        <!-- 尺寸标注 -->
+        <line x1="36" y1="112" x2="228" y2="112" stroke="#64748b"/>
+        <line x1="36" y1="106" x2="36" y2="118" stroke="#64748b"/>
+        <line x1="228" y1="106" x2="228" y2="118" stroke="#64748b"/>
+        <text x="100" y="130" font-size="11" fill="#64748b">width = end_col - start_col + 1 = 3</text>
+        <text x="36" y="150" font-size="11" fill="#64748b">height = end_row - start_row + 1 = 1</text>
+        <text x="36" y="170" font-size="11" fill="#64748b">start_row=5  end_row=5  start_col=1(A)  end_col=3(C)</text>
+        <!-- 右：struct 卡片 -->
+        <rect x="360" y="50" width="284" height="172" fill="#f8fafc" stroke="#cbd5e1"/>
+        <text x="376" y="72" font-size="13" fill="#334155" font-family="monospace">struct ExpandBand {</text>
+        <text x="392" y="94" font-size="12" fill="#334155" font-family="monospace">id:        BandId,</text>
+        <text x="392" y="114" font-size="12" fill="#334155" font-family="monospace">start_row: i32,</text>
+        <text x="392" y="134" font-size="12" fill="#334155" font-family="monospace">end_col:   i32,</text>
+        <text x="392" y="154" font-size="12" fill="#334155" font-family="monospace">direction: ExpandDirection,</text>
+        <text x="392" y="174" font-size="12" fill="#334155" font-family="monospace">master:    CellId,</text>
+        <text x="392" y="194" font-size="12" fill="#334155" font-family="monospace">clone_rule:CloneRule</text>
+        <text x="376" y="214" font-size="13" fill="#334155" font-family="monospace">}</text>
+      </svg>
+      <div class="cap">图 23　扩展带模型：扩展单位从"整行"下沉为"矩形 Band"，由四边界 + 主格 + 方向唯一刻画。</div>
+    </div>
+
+    <h4>11.11.2 有限扩展算法</h4>
+    <pre><code>输入： ExpansionBand, data[商品A, 商品B, 商品C]
+输出： 实例区域（如 A5:C7）
+
+FiniteExpand(Band, data):
+  1. 取 Band 尺寸
+       height = end_row - start_row + 1
+       width  = end_col - start_col + 1
+  2. for item in data:
+       克隆 Band  →  offset += height      // 沿方向堆叠实例槽位
+  3. 建立主格关系： newCell.xp = master
+  4. 更新坐标索引
+  return InstanceBand
+
+复杂度： O(data_count × band_size)</code></pre>
+
+    <h4>11.11.3 非整行 / 列坐标映射算法</h4>
+    <p>由于扩展单位是矩形而非整行，不能用 <code>row++</code> 推进。必须建立<b>逻辑坐标 → 物理坐标</b>的映射：</p>
+    <pre><code>physicalRow = band.startRow + index × band.height + localRow
+physicalCol = band.startCol                          + localCol</code></pre>
+    <p>其中 <code>index</code> 是第几条数据，<code>localRow/localCol</code> 是单元格在 Band 内的相对位置。这样任意实例单元格都能被唯一定位，且与"整行 / 整列"解耦。</p>
+
+    <h3 id="s11l">11.12 交替扩展算法（Alternating Expansion）</h3>
+    <p>这是非线性报表<b>最关键的差异化能力</b>：一个纵向主格之下，可以挂一个横向子主格。例如"客户（纵向）"内部，"订单（横向）"再扩展，订单内"商品（纵向）"再扩展——纵横交替嵌套。</p>
+
+    <h4>11.12.1 扩展方向模型</h4>
+    <pre><code>enum ExpandDirection { Vertical, Horizontal, Alternating }
+
+主格 Customer  direction = Vertical   // 向下复制整带
+子格 Order      direction = Horizontal // 向右复制整带
+   ↓
+Customer Master → Order Master → Product Master</code></pre>
+
+    <h4>11.12.2 交替扩展树</h4>
+    <pre><code>struct ExpandNode {
+    master:     CellId,
+    direction:  ExpandDirection,
+    children:   Vec&lt;ExpandNode&gt;
+}</code></pre>
+    <div class="fig">
+      <svg viewBox="0 0 680 250" xmlns="http://www.w3.org/2000/svg">
+        <rect x="286" y="26" width="108" height="42" rx="6" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="340" y="52" font-size="13" fill="#1e3a8a" font-weight="700">Customer</text>
+        <text x="340" y="92" font-size="11" fill="#1e40af" text-anchor="middle">Vertical ▼</text>
+        <line x1="340" y1="68" x2="210" y2="116" stroke="#94a3b8"/>
+        <line x1="340" y1="68" x2="470" y2="116" stroke="#94a3b8"/>
+        <rect x="158" y="116" width="104" height="42" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+        <text x="210" y="142" font-size="13" fill="#166534" font-weight="700">Order1</text>
+        <text x="210" y="182" font-size="11" fill="#16a34a" text-anchor="middle">Horizontal ▶</text>
+        <rect x="418" y="116" width="104" height="42" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+        <text x="470" y="142" font-size="13" fill="#166534" font-weight="700">Order2</text>
+        <line x1="210" y1="158" x2="210" y2="196" stroke="#94a3b8"/>
+        <rect x="158" y="196" width="104" height="42" rx="6" fill="#fef3c7" stroke="#d97706"/>
+        <text x="210" y="222" font-size="13" fill="#92400e" font-weight="700">Product</text>
+        <text x="210" y="244" font-size="11" fill="#d97706" text-anchor="middle">Vertical ▼</text>
+      </svg>
+      <div class="cap">图 24　交替扩展树：纵 / 横方向在树的不同层交替出现，每层独立决定复制方向。</div>
+    </div>
+
+    <h4>11.12.3 递归扩展算法</h4>
+    <pre><code>fn expand(node, data):
+    area = create_band(node)            // 按 direction 生成行或列
+    for child in node.children:
+        childData = filter(data, child.master)
+        expand(child, childData)        // 递归嵌套</code></pre>
+
+    <h4>11.12.4 横纵交替坐标计算</h4>
+    <p>父（纵向）贡献行偏移，子（横向）贡献列偏移，二维实例坐标由二者叠加：</p>
+    <div class="fig">
+      <svg viewBox="0 0 680 230" xmlns="http://www.w3.org/2000/svg">
+        <text x="36" y="26" font-size="12" fill="#334155">父（Vertical）：每个父占 parentHeight 行</text>
+        <rect x="36" y="40" width="120" height="56" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="96" y="73" font-size="12" fill="#1e3a8a" text-anchor="middle">Parent 0</text>
+        <rect x="36" y="112" width="120" height="56" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="96" y="145" font-size="12" fill="#1e3a8a" text-anchor="middle">Parent 1</text>
+        <text x="186" y="26" font-size="12" fill="#334155">子（Horizontal）：每个子占 childWidth 列</text>
+        <rect x="186" y="40" width="56" height="56" fill="#dcfce7" stroke="#16a34a"/>
+        <text x="214" y="73" font-size="12" fill="#166534" text-anchor="middle">C0</text>
+        <rect x="250" y="40" width="56" height="56" fill="#dcfce7" stroke="#16a34a"/>
+        <text x="278" y="73" font-size="12" fill="#166534" text-anchor="middle">C1</text>
+        <rect x="314" y="40" width="56" height="56" fill="#dcfce7" stroke="#16a34a"/>
+        <text x="342" y="73" font-size="12" fill="#166534" text-anchor="middle">C2</text>
+        <rect x="186" y="112" width="184" height="56" fill="#f8fafc" stroke="#cbd5e1"/>
+        <text x="200" y="138" font-size="12" fill="#334155" font-family="monospace">Y = Py + parentIndex × parentHeight</text>
+        <text x="200" y="158" font-size="12" fill="#334155" font-family="monospace">X = Px + childIndex  × childWidth</text>
+      </svg>
+      <div class="cap">图 25　横纵交替坐标：实例格 = 父偏移 + 子偏移，与整行 / 整列无关，是交替扩展的定位基础。</div>
+    </div>
+
+    <h3 id="s11m">11.13 分页处理算法（Page Break Algorithm）</h3>
+    <p>非线性报表的分页比 Excel 复杂：一个扩展带可能跨页，不能简单用 <code>row % pageHeight</code> 切。需要页面模型、扫描、跨页切分与重复标题四步。</p>
+
+    <h4>11.13.1 页面模型</h4>
+    <pre><code>struct Page {
+    number:      i32,
+    height:      i32,
+    used_height: i32,
+    bands:       Vec&lt;Band&gt;
+}</code></pre>
+
+    <h4>11.13.2 分页扫描算法</h4>
+    <pre><code>for band in bands:
+    if page.used_height + band.height &lt;= page.height:
+        page.add(band)              // 装得下则并入
+    else:
+        page = new_page()           // 装不下则开新页
+        page.add(band)</code></pre>
+
+    <h4>11.13.3 跨页扩展算法（Band Split）</h4>
+    <p>当某 Band 高度超出当前页剩余空间时，不能直接切断，须定义切分结构，保持主格关系不断裂：</p>
+    <pre><code>struct SplitBand { original_band, part1, part2 }
+// 第 1 页：客户A + 商品1/2 ；第 2 页：商品3/4（接续，主格仍指向同一客户）</code></pre>
+
+    <h4>11.13.4 重复标题算法</h4>
+    <pre><code>struct PageHeader { repeat_band: BandId }
+// 每开新页： new_page() → clone header band → insert 到页首</code></pre>
+    <div class="fig">
+      <svg viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg">
+        <rect x="36" y="36" width="280" height="140" fill="#fff" stroke="#334155"/>
+        <text x="48" y="56" font-size="12" fill="#334155" font-weight="700">Page 1</text>
+        <rect x="48" y="64" width="256" height="20" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="176" y="78" font-size="11" fill="#1e3a8a" text-anchor="middle">Header（repeat）</text>
+        <rect x="48" y="90" width="256" height="16" fill="#dcfce7" stroke="#16a34a"/>
+        <rect x="48" y="110" width="256" height="16" fill="#dcfce7" stroke="#16a34a"/>
+        <rect x="48" y="130" width="256" height="16" fill="#fef3c7" stroke="#d97706"/>
+        <rect x="360" y="36" width="280" height="140" fill="#fff" stroke="#334155"/>
+        <text x="372" y="56" font-size="12" fill="#334155" font-weight="700">Page 2</text>
+        <rect x="372" y="64" width="256" height="20" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="500" y="78" font-size="11" fill="#1e3a8a" text-anchor="middle">Header（repeat）</text>
+        <rect x="372" y="90" width="256" height="14" fill="#fef3c7" stroke="#d97706" stroke-dasharray="4 3"/>
+        <rect x="372" y="108" width="256" height="16" fill="#dcfce7" stroke="#16a34a"/>
+        <rect x="372" y="128" width="256" height="16" fill="#dcfce7" stroke="#16a34a"/>
+        <line x1="306" y1="138" x2="360" y2="97" stroke="#dc2626" stroke-dasharray="5 3"/>
+        <text x="36" y="196" font-size="11" fill="#64748b">扫描：used + height ≤ page.height 则并入，否则开新页</text>
+        <text x="360" y="196" font-size="11" fill="#dc2626">Band Split：跨页带切分，主格关系保持不裂</text>
+        <text x="360" y="216" font-size="11" fill="#1e40af">PageHeader.repeat_band 每页顶部克隆标题带</text>
+        <text x="36" y="216" font-size="11" fill="#64748b">Page1: 客户A / 商品1 / 商品2 / (商品3 上半)</text>
+        <text x="360" y="236" font-size="11" fill="#64748b">Page2: 标题 / (商品3 下半) / 商品4</text>
+      </svg>
+      <div class="cap">图 26　分页处理：扫描装填、跨页 Band Split、每页重复标题三件套。</div>
+    </div>
+
+    <h3 id="s11n">11.14 综合扩展 Runtime</h3>
+    <p>把 11.1–11.13 串成一条完整运行时流水线，模板到渲染的每一步都由独立算法支撑：</p>
+    <div class="fig">
+      <svg viewBox="0 0 680 210" xmlns="http://www.w3.org/2000/svg">
+        <rect x="16" y="86" width="74" height="38" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+        <text x="53" y="110" font-size="12" fill="#334155" text-anchor="middle">Template</text>
+        <line x1="90" y1="105" x2="118" y2="105" stroke="#94a3b8"/>
+        <rect x="118" y="86" width="86" height="38" rx="6" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="161" y="105" font-size="12" fill="#1e3a8a" text-anchor="middle">Master</text>
+        <text x="161" y="78" font-size="10" fill="#1e40af" text-anchor="middle">Analyzer</text>
+        <line x1="204" y1="105" x2="228" y2="105" stroke="#94a3b8"/>
+        <rect x="228" y="86" width="98" height="38" rx="6" fill="#ede9fe" stroke="#7c3aed"/>
+        <text x="277" y="105" font-size="12" fill="#5b21b6" text-anchor="middle">Expansion</text>
+        <text x="277" y="78" font-size="10" fill="#7c3aed" text-anchor="middle">Tree</text>
+        <line x1="326" y1="95" x2="348" y2="66" stroke="#94a3b8"/>
+        <line x1="326" y1="115" x2="348" y2="148" stroke="#94a3b8"/>
+        <rect x="348" y="46" width="120" height="38" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+        <text x="408" y="70" font-size="12" fill="#166534" text-anchor="middle">Finite Expand</text>
+        <rect x="348" y="128" width="120" height="38" rx="6" fill="#fef3c7" stroke="#d97706"/>
+        <text x="408" y="152" font-size="12" fill="#92400e" text-anchor="middle">Alternating</text>
+        <text x="408" y="170" font-size="10" fill="#d97706" text-anchor="middle">Expand</text>
+        <line x1="468" y1="65" x2="498" y2="65" stroke="#94a3b8"/>
+        <line x1="468" y1="147" x2="498" y2="147" stroke="#94a3b8"/>
+        <rect x="498" y="86" width="104" height="38" rx="6" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="550" y="105" font-size="12" fill="#1e3a8a" text-anchor="middle">Page Layout</text>
+        <line x1="602" y1="105" x2="624" y2="105" stroke="#94a3b8"/>
+        <rect x="624" y="86" width="52" height="38" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+        <text x="650" y="105" font-size="11" fill="#334155" text-anchor="middle">Rend</text>
+        <text x="650" y="124" font-size="10" fill="#64748b" text-anchor="middle">erer</text>
+      </svg>
+      <div class="cap">图 27　综合扩展 Runtime：模板 → 主格分析 → 扩展树 →（有限 / 交替）扩展 → 分页布局 → 渲染。</div>
+    </div>
+    <div class="flow">
+      <div class="box"><b>模板解析</b></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>主格分析</b></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>扩展带生成</b></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>有限扩展</b></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>交替扩展</b></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>依赖计算</b></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>分页布局</b></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>渲染输出</b></div>
+    </div>
+    <p>至此，非线性报表引擎的<b>核心算法闭环基本形成</b>（A1–A16 见 §11.10 总表）。它已接近润乾报表 / FineReport 类非线性报表引擎的核心 Runtime 设计，并可直接映射到你的 Ontology Runtime：</p>
+    <table>
+      <tr><th>报表引擎概念</th><th>Ontology Runtime 映射</th></tr>
+      <tr><td>Expansion Tree（扩展树）</td><td>Ontology Graph（本体图）</td></tr>
+      <tr><td>Band（扩展带）</td><td>Entity Instance Template（实体实例模板）</td></tr>
+      <tr><td>Cell Dependency（单元格依赖）</td><td>Rule Graph（规则图）</td></tr>
+      <tr><td>Page Engine（分页引擎）</td><td>Projection Layer（投影层）</td></tr>
+      <tr><td>Runtime（运行时）</td><td>Agent Execution Engine（智能体执行引擎）</td></tr>
+    </table>
+  </section>
+
+  <section id="s12">
+    <h2>十二、展现模型与数据模型（润乾官方模型层）</h2>
+    <p>本章内容取自润乾报表（Raqsoft）官方《高级指南·非线性报表模型》的两章权威定义：<b>展现模型</b>（<code>zxmx36.html</code>）与<b>数据模型</b>（<code>sjmx43.html</code>）。作者蒋步星即润乾报表创始人，因此这两章是本文档理论部分（§2 表格结构、§6 缺省行集、§11 对象模型）所依据的工程源头。它们构成"模型基础层"——在扩展算法与计算算法之前，先定义<b>报表长什么样（展现）</b>与<b>报表数据从哪来、如何组织（数据）</b>。</p>
+
+    <h3>12.1 展现模型（Presentation Model）</h3>
+    <p>采用"类 Excel"方案：报表是由 N 行 M 列的<b>基本矩形格子</b>构成的平面图形，这些格子称为<b>单元格</b>。核心定义：</p>
+    <ul>
+      <li><b>单元格</b>：平面图形的基本单元（矩形格子）。</li>
+      <li><b>合并单元格</b>：选中一片<b>矩形</b>连续区域并合并后得到的大单元格（注意：合并区域只能是矩形，这与 §2.1 矩形引理一致）。</li>
+      <li><b>行 / 列</b>：水平排列的一组单元格为行（从上到下 1,2,3…）；垂直排列的一组为列（从左到右 A,B,C…）。</li>
+      <li><b>单元格命名</b>：用"列号 + 行号"命名，如 A 列第 1 行 = <code>A1</code>；合并单元格以<b>左上角</b>单元格编号作为整格编号（如合并格 <code>B2</code>）。</li>
+      <li><b>报表</b>：由单元格、合并单元格、行、列组成的二维矩形表格；加上"表格中的数据 + 数据间的运算逻辑"即构成报表。</li>
+    </ul>
+    <div class="fig">
+      <svg viewBox="0 0 680 230" xmlns="http://www.w3.org/2000/svg">
+        <text x="40" y="26" font-size="13" fill="#334155" font-weight="700">单元格命名：列号 + 行号；合并格取左上角编号</text>
+        <!-- 列头 -->
+        <text x="120" y="52" font-size="12" fill="#64748b" text-anchor="middle">A</text>
+        <text x="184" y="52" font-size="12" fill="#64748b" text-anchor="middle">B</text>
+        <text x="248" y="52" font-size="12" fill="#64748b" text-anchor="middle">C</text>
+        <!-- 行头 -->
+        <text x="100" y="78" font-size="12" fill="#64748b" text-anchor="middle">1</text>
+        <text x="100" y="116" font-size="12" fill="#64748b" text-anchor="middle">2</text>
+        <text x="100" y="154" font-size="12" fill="#64748b" text-anchor="middle">3</text>
+        <!-- 普通单元格 -->
+        <rect x="120" y="62" width="64" height="36" fill="#fff" stroke="#cbd5e1"/>
+        <text x="152" y="85" font-size="12" fill="#334155" text-anchor="middle">A1</text>
+        <rect x="184" y="62" width="64" height="36" fill="#fff" stroke="#cbd5e1"/>
+        <text x="216" y="85" font-size="12" fill="#334155" text-anchor="middle">B1</text>
+        <rect x="248" y="62" width="64" height="36" fill="#fff" stroke="#cbd5e1"/>
+        <text x="280" y="85" font-size="12" fill="#334155" text-anchor="middle">C1</text>
+        <!-- 合并格 B2:C2 -->
+        <rect x="184" y="100" width="128" height="36" fill="#fef3c7" stroke="#d97706"/>
+        <text x="248" y="123" font-size="12" fill="#92400e" text-anchor="middle">B2（合并格）</text>
+        <rect x="120" y="100" width="64" height="36" fill="#fff" stroke="#cbd5e1"/>
+        <text x="152" y="123" font-size="12" fill="#334155" text-anchor="middle">A2</text>
+        <rect x="120" y="138" width="64" height="36" fill="#fff" stroke="#cbd5e1"/>
+        <text x="152" y="161" font-size="12" fill="#334155" text-anchor="middle">A3</text>
+        <rect x="184" y="138" width="64" height="36" fill="#fff" stroke="#cbd5e1"/>
+        <text x="216" y="161" font-size="12" fill="#334155" text-anchor="middle">B3</text>
+        <rect x="248" y="138" width="64" height="36" fill="#fff" stroke="#cbd5e1"/>
+        <text x="280" y="161" font-size="12" fill="#334155" text-anchor="middle">C3</text>
+        <!-- 右侧说明 -->
+        <text x="400" y="70" font-size="12" fill="#334155">合并区域必须是矩形</text>
+        <text x="400" y="92" font-size="12" fill="#334155">→ 与 §2.1 矩形引理一致</text>
+        <text x="400" y="120" font-size="12" fill="#334155">报表 = 表格</text>
+        <text x="400" y="142" font-size="12" fill="#334155">       + 格中数据</text>
+        <text x="400" y="164" font-size="12" fill="#334155">       + 数据运算逻辑</text>
+      </svg>
+      <div class="cap">图 28　展现模型：类 Excel 的单元格/合并格/行列/命名体系，是 §2 表格结构的形式化源头。</div>
+    </div>
+
+    <h3>12.2 数据模型（Data Model）</h3>
+    <p>数据是报表的基础。润乾用以下概念组织数据：</p>
+    <ul>
+      <li><b>数据集</b>：由"数据数组"构成的二维数据表，同列元素类型相同，每列有唯一名字。</li>
+      <li><b>记录 / 字段</b>：为区别于报表的行/列，数据集的<b>行</b>称记录、<b>列</b>称字段。记录有行号 1,2,3…（存于第 0 列）。</li>
+      <li><b>行集</b>：由数据集的行按某种顺序构成的数组；数据集本身也是行集。组成上是数据集的子集，但次序未必相同。</li>
+      <li><b>分组与组集</b>：把记录按规则划分成 N 个行集的过程称为<b>分组</b>，每个行集称为一个<b>组</b>，多个组构成<b>组集</b>。</li>
+      <li><b>数据集函数</b>：对记录取数/分组/运算的函数，书写为 <code>dsName.f(…)</code>。</li>
+      <li><b>单源 / 多源报表</b>：数据源含 1 个数据集为单源（ds1），含多个为<b>多源</b>（ds1, ds2…）。</li>
+    </ul>
+    <p>关键书写规则（取行号）：</p>
+    <pre><code>dsName.#0              // 获得当前行的行号（#0 即第 0 列）
+dsName.select(#0)      // 获得数据集所有记录的行号
+dsName.f(...)          // 数据集函数</code></pre>
+    <p><b>多数据集模型</b>是润乾的差异化设计：多个数据集<b>不做 union/join 整合运算</b>，而是直接用于报表运算，并在运算过程中按关联键（如左表头"项目名称"）动态关联。它支持异构数据源与多源分片报表，避免了整合运算对 CPU / 内存的占用，性能显著优于"先合并再计算"的传统单数据集模型。</p>
+    <div class="fig">
+      <svg viewBox="0 0 680 250" xmlns="http://www.w3.org/2000/svg">
+        <text x="36" y="26" font-size="13" fill="#334155" font-weight="700">数据模型：数据集 → 行集 / 组集；多源直接关联而非整合</text>
+        <!-- 数据集 -->
+        <rect x="36" y="44" width="200" height="92" fill="#f8fafc" stroke="#1e40af"/>
+        <text x="48" y="64" font-size="12" fill="#1e3a8a" font-weight="700">数据集 ds1（二维表）</text>
+        <rect x="48" y="72" width="40" height="22" fill="#dbeafe" stroke="#1e40af"/>
+        <rect x="88" y="72" width="40" height="22" fill="#dbeafe" stroke="#1e40af"/>
+        <rect x="128" y="72" width="40" height="22" fill="#dbeafe" stroke="#1e40af"/>
+        <rect x="48" y="94" width="40" height="22" fill="#dbeafe" stroke="#1e40af"/>
+        <rect x="88" y="94" width="40" height="22" fill="#dbeafe" stroke="#1e40af"/>
+        <rect x="128" y="94" width="40" height="22" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="48" y="132" font-size="11" fill="#64748b">字段（列）·记录（行·行号存#0）</text>
+        <!-- 行集 / 组集 -->
+        <line x1="236" y1="90" x2="270" y2="70" stroke="#94a3b8"/>
+        <line x1="236" y1="90" x2="270" y2="120" stroke="#94a3b8"/>
+        <rect x="270" y="48" width="120" height="44" fill="#dcfce7" stroke="#16a34a"/>
+        <text x="330" y="68" font-size="12" fill="#166534" text-anchor="middle">行集</text>
+        <text x="330" y="86" font-size="10" fill="#166534" text-anchor="middle">数据集有序子集</text>
+        <rect x="270" y="98" width="120" height="44" fill="#fef3c7" stroke="#d97706"/>
+        <text x="330" y="118" font-size="12" fill="#92400e" text-anchor="middle">组集</text>
+        <text x="330" y="136" font-size="10" fill="#92400e" text-anchor="middle">分组后的 N 个组</text>
+        <!-- 多源 -->
+        <text x="430" y="40" font-size="12" fill="#334155" font-weight="700">多源报表（直接关联，不整合）</text>
+        <rect x="430" y="54" width="90" height="48" fill="#fff" stroke="#334155"/>
+        <text x="475" y="82" font-size="12" fill="#334155" text-anchor="middle">ds1</text>
+        <rect x="430" y="110" width="90" height="48" fill="#fce7f3" stroke="#db2777"/>
+        <text x="475" y="138" font-size="12" fill="#9d174d" text-anchor="middle">ds2</text>
+        <rect x="430" y="166" width="90" height="48" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="475" y="194" font-size="12" fill="#1e3a8a" text-anchor="middle">ds3</text>
+        <text x="536" y="80" font-size="11" fill="#64748b">异构</text>
+        <text x="536" y="100" font-size="11" fill="#64748b">数据源</text>
+        <line x1="520" y1="78" x2="530" y2="86" stroke="#94a3b8"/>
+        <line x1="520" y1="134" x2="530" y2="120" stroke="#94a3b8"/>
+        <line x1="520" y1="190" x2="530" y2="172" stroke="#94a3b8"/>
+        <text x="430" y="234" font-size="11" fill="#64748b">关联键（如"项目名称"）在运算中动态关联，无 union/join 整合</text>
+      </svg>
+      <div class="cap">图 29　数据模型：数据集（记录/字段）经分组得到组集；多源数据集直接关联，无需整合运算。</div>
+    </div>
+
+    <h3>12.3 与本设计文档的映射</h3>
+    <table>
+      <tr><th>官方模型层</th><th>本设计文档对应</th></tr>
+      <tr><td>展现模型：单元格 / 合并格 / 行列 / 命名</td><td>§2 表格结构（网格、单元格数组、矩形引理 2.1、主格/扩展属性）</td></tr>
+      <tr><td>数据模型：数据集 / 记录 / 字段</td><td>§6 数据集与缺省行集 <code>pdr</code>、§11.1 对象模型 <code>Report.cells</code></td></tr>
+      <tr><td>行集 / 组集（子集、有序、分组）</td><td>§6 缺省行集 <code>pdr</code> 即为某主格对应的行集；分组即扩展生成组</td></tr>
+      <tr><td>多数据集模型（直接关联、异构）</td><td>§11.1 多源结构 + §11.5 依赖图关联；应作为 Runtime 的<b>数据层</b>前置</td></tr>
+      <tr><td>数据集函数 <code>dsName.f(…)</code></td><td>§6 平面函数 / 数据集函数；§11.5 表达式图节点</td></tr>
+    </table>
+    <div class="callout note"><b>延伸建议：</b>官方《非线性报表模型》下还有<b>运算模型</b>（<code>ysmx46.html</code>，对应本设计 §5/§6 的计算与层次坐标）与<b>子报表模型</b>两章。把"数据层（本章）+ 展现层（本章）+ 扩展层（§3）+ 运算层（§5/§6）+ 工程 Runtime（§11）"拼齐，即可得到与润乾完全对齐的端到端模型—引擎架构说明。</div>
+  </section>
+
+  <section id="s13">
+    <h2>十三、运算模型与子报表模型（润乾官方）</h2>
+    <p>本章取自润乾官方《高级指南·非线性报表模型》的另两章：<b>运算模型</b>（<code>ysmx46.html</code>，对应本稿 §3 扩展、§2.4 主格、§6 层次坐标/格集、§11.2/§11.8/§11.13）与<b>子报表模型</b>（<code>zbbmx52.html</code>，对应 §2.3 子表引入）。它们把"如何计算"与"如何嵌套组合"从理论层面落到官方可操作的书写规则上，是 §5/§6 计算算法与 §11 工程 Runtime 的规范源头。</p>
+
+    <h3>13.1 集合、数组与表达式基础</h3>
+    <ul>
+      <li><b>集合</b>：确定事物的汇集；润乾中元素可以是数据、单元格、行、列、记录、字段、组等。</li>
+      <li><b>数组</b>：集合按规则排序所得的有序序列，成员个数为长度；是集合的特例。</li>
+      <li><b>集合函数 / 操作符</b>：结果为集合的运算；如 <code>select()</code>、<code>group()</code>、<code>list()</code>、<code>query()</code>、<code>call()</code>、<code>to()</code>。</li>
+      <li><b>集合表达式 / 单值表达式</b>：结果分别为集合 / 单值；前者使单元格成为<b>可扩展单元格</b>（默认按扩展方向复制若干份），后者为<b>不可扩展单元格</b>。</li>
+    </ul>
+
+    <h3>13.2 扩展模型与主格模型</h3>
+    <p>扩展方向有横、纵两种，一个扩展格同时只能有一个方向。<b>主格 / 附属格</b>是相对概念：扩展格主动复制，其右（下）的格被动跟随，称前者为后者的主格，后者为附属格；<b>左主格</b>（纵向扩展时）与<b>上主格</b>（横向扩展时）可分别人为设置，但须满足：左主格必为纵向扩展格、上主格必为横向扩展格、禁止循环设置、横向格无左主格、纵向格无上主格。</p>
+    <ul>
+      <li><b>根格（报表首格）</b>：左上角灰格，存报表级属性，层次坐标特殊基准，书写为 <code>&#96;0</code>（反引号 0，非引号）。</li>
+      <li><b>缺省主格认定</b>：纵向扩展时左主格缺省为左边纵向扩展格（无则 <code>&#96;0</code>）；横向扩展时上主格缺省为上方横向扩展格（无则 <code>&#96;0</code>）。</li>
+      <li><b>扩展变化规则</b>：从主到次逐级扩展；横向扩展拉同列上主格、纵向扩展拉同行左主格；主/附属格重叠区域形成<b>交叉扩展</b>，横纵扩展相互独立、顺序无关（呼应 §3.8 扩展交换定理）。</li>
+      <li><b>缺省引用规则</b>：格间运算直接写单元格名即可，前提是被引格能由当前格唯一确定——通常是当前格的主格、或与其有相同一级主格、或是固定格。</li>
+    </ul>
+    <div class="fig">
+      <svg viewBox="0 0 680 210" xmlns="http://www.w3.org/2000/svg">
+        <rect x="300" y="24" width="80" height="34" rx="6" fill="#475569" stroke="#334155"/>
+        <text x="340" y="46" font-size="13" fill="#fff" text-anchor="middle">&#96;0 根格</text>
+        <line x1="340" y1="58" x2="340" y2="84" stroke="#94a3b8"/>
+        <text x="430" y="80" font-size="11" fill="#1e40af">左主格 = &#96;0</text>
+        <rect x="300" y="84" width="80" height="34" rx="6" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="340" y="106" font-size="13" fill="#1e3a8a" text-anchor="middle">A1 ▼纵</text>
+        <line x1="340" y1="118" x2="340" y2="144" stroke="#94a3b8"/>
+        <text x="430" y="140" font-size="11" fill="#16a34a">上主格 = A1（1级子格）</text>
+        <rect x="300" y="144" width="80" height="34" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+        <text x="340" y="166" font-size="13" fill="#166534" text-anchor="middle">B1 ▶横</text>
+        <line x1="340" y1="178" x2="340" y2="192" stroke="#94a3b8"/>
+        <text x="430" y="200" font-size="11" fill="#d97706">其下为 2 级子格 C1</text>
+        <text x="36" y="46" font-size="12" fill="#334155">缺省主格认定：</text>
+        <text x="36" y="68" font-size="12" fill="#334155">纵向→左主格=左邻扩展格</text>
+        <text x="36" y="90" font-size="12" fill="#334155">横向→上主格=上邻扩展格</text>
+        <text x="36" y="112" font-size="12" fill="#334155">无则回退到 &#96;0 根格</text>
+        <text x="36" y="134" font-size="12" fill="#334155">多层扩展：A1→B1→C1</text>
+        <text x="36" y="156" font-size="12" fill="#334155">级别 = 主格距离（1级/2级…）</text>
+      </svg>
+      <div class="cap">图 30　主格/附属格树：根格 `0 为根，纵向扩展产生左主格、横向扩展产生上主格，多层扩展按级别递推（对应 §2.4、§11.2）。</div>
+    </div>
+
+    <h3>13.3 层次坐标、位移坐标与根坐标</h3>
+    <p>扩展前无法预知某格会复制出几个、在哪儿，因此引入<b>层次坐标</b>唯一描述扩展后的每个单元格：</p>
+    <pre><code>cellx[ Lk:lk, Lk-1:lk-1, … L1:l1 ; Tk:tk, Tk-1:tk-1, … T1:t1 ]
+// Lk/Tk 为左/上主格，lk/tk 为其扩展后的次序（从远到近）
+// 只有上主格时，分号不可省；只有左主格时，分号可省</code></pre>
+    <ul>
+      <li><b>位移坐标</b>：描述目标格相对当前格的位置（相邻 n 行/列），如同期比、环比；符号用 <code>±lk / ±tk</code>。</li>
+      <li><b>根坐标表示法</b>：完整坐标从根开始，写成 <code>cellx[&#96;0, Lk:lk,… ; &#96;0, Tk:tk,…]</code>，<code>&#96;0</code> 即根。</li>
+      <li><b><code>&amp;</code> 运算符（逆运算）</b>：<code>&amp;cellx</code> 返回当前格所属的 cellx 主格在所有扩展格中的排序（第几个）。</li>
+      <li><b>缺省表示法</b>：目标格某主格与当前格相同时可省略；满足缺省引用规则时直接写单元格名。</li>
+    </ul>
+    <div class="fig">
+      <svg viewBox="0 0 680 190" xmlns="http://www.w3.org/2000/svg">
+        <text x="36" y="26" font-size="13" fill="#334155" font-weight="700">层次坐标：从根经各级主格路径唯一定位实例格</text>
+        <rect x="40" y="44" width="70" height="32" rx="6" fill="#475569" stroke="#334155"/>
+        <text x="75" y="65" font-size="12" fill="#fff" text-anchor="middle">&#96;0</text>
+        <line x1="75" y1="76" x2="75" y2="100" stroke="#94a3b8"/>
+        <rect x="40" y="100" width="70" height="32" rx="6" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="75" y="121" font-size="12" fill="#1e3a8a" text-anchor="middle">A1</text>
+        <line x1="110" y1="116" x2="180" y2="116" stroke="#94a3b8"/>
+        <rect x="180" y="100" width="70" height="32" rx="6" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="215" y="121" font-size="12" fill="#1e3a8a" text-anchor="middle">A1(2)</text>
+        <line x1="75" y1="132" x2="75" y2="150" stroke="#94a3b8"/>
+        <rect x="40" y="150" width="70" height="32" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+        <text x="75" y="171" font-size="12" fill="#166534" text-anchor="middle">B1(1)</text>
+        <line x1="215" y1="132" x2="215" y2="150" stroke="#94a3b8"/>
+        <rect x="180" y="150" width="70" height="32" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+        <text x="215" y="171" font-size="12" fill="#166534" text-anchor="middle">C1</text>
+        <text x="300" y="80" font-size="12" fill="#334155">C1[&#96;0, A1:2, B1:1]</text>
+        <text x="300" y="102" font-size="12" fill="#334155">= 根下 A1 第2个 → 其内 B1 第1个 → C1</text>
+        <text x="300" y="130" font-size="12" fill="#d97706">&amp;A1 → 返回 2（当前格所属 A1 的排序）</text>
+        <text x="300" y="152" font-size="12" fill="#64748b">位移：C1[A1:-1]{…} 相对上一主格</text>
+        <text x="300" y="174" font-size="12" fill="#64748b">缺省：同主格可省，满足引用规则直接写名</text>
+      </svg>
+      <div class="cap">图 31　层次坐标 / 位移坐标 / 根坐标 / `&amp;` 运算符：扩展前精确定位扩展后实例格（对应 §6、§11.8）。</div>
+    </div>
+
+    <h3>13.4 格集与 $ 运算符</h3>
+    <p>对一组单元格运算时引入<b>格集</b>：</p>
+    <pre><code>list(Cell1, Cell2, …)            // 枚举若干格
+[Cellx : Celly]                  // 以两格为对角的矩形区域（link 操作符）
+sum([A1:B3])                     // 对矩形区聚合
+cellx[层次/位移坐标]{}            // 坐标界定范围内的单元格集合（有{}返集合，无{}返首格）
+cellx[坐标]{条件表达式}          // 集合内再按条件过滤
+C2[A2:-1]{ $B2 == B2 }           // $B2 指代当前格的 B2 主格，B2 指代目标格的 B2 主格</code></pre>
+    <p>缺省格集：<code>cellx[\]{}</code> 或 <code>Cellx{}</code> 表示当前格主格管辖范围内的全部目标格集合。</p>
+    <div class="fig">
+      <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg">
+        <text x="36" y="24" font-size="13" fill="#334155" font-weight="700">格集：矩形区 / 枚举 / 坐标范围 + {} + $ 条件</text>
+        <g font-size="11" fill="#334155" text-anchor="middle">
+          <rect x="40" y="40" width="44" height="30" fill="#fef3c7" stroke="#d97706"/><text x="62" y="60">A1</text>
+          <rect x="84" y="40" width="44" height="30" fill="#fef3c7" stroke="#d97706"/><text x="106" y="60">B1</text>
+          <rect x="128" y="40" width="44" height="30" fill="#fef3c7" stroke="#d97706"/><text x="150" y="60">C1</text>
+          <rect x="40" y="70" width="44" height="30" fill="#fef3c7" stroke="#d97706"/><text x="62" y="90">A2</text>
+          <rect x="84" y="70" width="44" height="30" fill="#fef3c7" stroke="#d97706"/><text x="106" y="90">B2</text>
+          <rect x="128" y="70" width="44" height="30" fill="#fef3c7" stroke="#d97706"/><text x="150" y="90">C2</text>
+          <rect x="40" y="100" width="44" height="30" fill="#fff" stroke="#cbd5e1"/><text x="62" y="120">A3</text>
+          <rect x="84" y="100" width="44" height="30" fill="#fff" stroke="#cbd5e1"/><text x="106" y="120">B3</text>
+          <rect x="128" y="100" width="44" height="30" fill="#fff" stroke="#cbd5e1"/><text x="150" y="120">C3</text>
+        </g>
+        <text x="200" y="62" font-size="12" fill="#334155">[A1:B3]（矩形区）</text>
+        <text x="200" y="84" font-size="12" fill="#334155">list(A1,B3,C4)</text>
+        <text x="200" y="106" font-size="12" fill="#334155">sum([A1:B3])</text>
+        <text x="200" y="128" font-size="12" fill="#334155">cellx[coord]{} → 集合</text>
+        <text x="200" y="150" font-size="12" fill="#334155">无{} → 首格</text>
+        <rect x="300" y="160" width="44" height="30" fill="#fee2e2" stroke="#dc2626"/>
+        <text x="322" y="180" font-size="11" fill="#991b1b">B2</text>
+        <text x="360" y="180" font-size="12" fill="#334155">$B2 指当前格 B2 主格</text>
+        <text x="36" y="190" font-size="11" fill="#64748b">条件格集：cellx[坐标]{ $主格 == 目标主格 }，用 $ 简化当前格主格引用</text>
+      </svg>
+      <div class="cap">图 32　格集表示：矩形区 / 枚举 / 坐标范围加 `{}` 成集合；`$` 运算符指代当前格主格，简化条件表达式（对应 §6 集合函数）。</div>
+    </div>
+
+    <h3>13.5 定位与拉伸（报表区域）</h3>
+    <p>整表分区（横向：左表头→常规列→右表头；纵向：分页页眉→头标题→报表头→分组表头→数据区→表尾区→尾标题→分页页脚），区域顺序不可颠倒，合并格不能跨区。关键规则：</p>
+    <ul>
+      <li><b>空白单元格优先占用</b>：不存属性的占位格，保证整表为矩形且不占内存；扩展复制时紧邻的空白格被优先占用。</li>
+      <li><b>分页时伸缩</b>：标题区无法预知数据区横向扩展大小，对中间某格设"分页时伸缩"属性，横向扩展时引擎对其拉伸；无设定则拉伸最右格。</li>
+      <li><b>位置不变</b>：横向扩展时，除靠右对齐与被拉大的格外，其余格保持位置不变。</li>
+    </ul>
+
+    <h3>13.6 子报表模型</h3>
+    <p>含多片有共同主题但各自独立子主题的单元格片段的报表称<b>主子报表 / 复合报表</b>；片段即<b>子报表</b>。润乾基于单元格模型提供两种方式：</p>
+    <ul>
+      <li><b>引入式子报表</b>：以当前格为扩展格向右下扩展，占用主表空白行列、接受主表行高列宽，扩展后与主表形成<b>统一二维矩形</b>；源格不保留，主表<b>不能</b>访问子表值。</li>
+      <li><b>嵌入式子报表</b>：缩在当前格内或仅撑大当前格，不影响周边；格中嵌表、格线不对齐，<b>不能导出 Excel</b>；源格保留，主表可用 <code>eval()</code> 访问。</li>
+    </ul>
+    <p><b>参数传递与关联</b>：子表参数统一由主表入口传递（主表参数 / 表达式结果 / 常数）；主子表共用运算环境，参数或数据集重名即共用（内容相同建议同名以省数据库访问）。嵌入式访问语法：</p>
+    <pre><code>eval( StringExp, SubRptExp )
+// 例：取嵌入式子报表 A1 中 B2 的值加 10
+eval("B2+10", A1)   或   eval("B2", A1) + 10</code></pre>
+    <div class="fig">
+      <svg viewBox="0 0 680 240" xmlns="http://www.w3.org/2000/svg">
+        <text x="36" y="24" font-size="13" fill="#334155" font-weight="700">子报表两种实现方式</text>
+        <text x="36" y="48" font-size="12" fill="#1e40af" font-weight="700">引入式：扩展进空白行列，统一矩形</text>
+        <rect x="36" y="58" width="200" height="80" fill="#fff" stroke="#334155"/>
+        <rect x="36" y="58" width="60" height="40" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="66" y="82" font-size="11" fill="#1e3a8a" text-anchor="middle">主表</text>
+        <rect x="96" y="58" width="50" height="20" fill="#f1f5f9" stroke="#94a3b8" stroke-dasharray="3 2"/>
+        <rect x="146" y="58" width="50" height="20" fill="#f1f5f9" stroke="#94a3b8" stroke-dasharray="3 2"/>
+        <text x="120" y="72" font-size="9" fill="#64748b" text-anchor="middle">空白行</text>
+        <rect x="96" y="78" width="100" height="60" fill="#dcfce7" stroke="#16a34a"/>
+        <text x="146" y="114" font-size="11" fill="#166534" text-anchor="middle">子表扩展区</text>
+        <text x="36" y="152" font-size="10" fill="#64748b">源格不保留 → 主表不可访问子表值</text>
+        <text x="360" y="48" font-size="12" fill="#d97706" font-weight="700">嵌入式：缩在当前格内，eval 访问</text>
+        <rect x="360" y="58" width="200" height="80" fill="#fff" stroke="#334155"/>
+        <rect x="390" y="74" width="80" height="48" fill="#fef3c7" stroke="#d97706"/>
+        <text x="430" y="94" font-size="10" fill="#92400e" text-anchor="middle">主表A1</text>
+        <rect x="404" y="84" width="52" height="28" fill="#fff" stroke="#16a34a"/>
+        <text x="430" y="102" font-size="8" fill="#166534" text-anchor="middle">子表</text>
+        <text x="360" y="152" font-size="10" fill="#64748b">格中嵌表、格线不对齐、不可导出 Excel</text>
+        <text x="360" y="170" font-size="10" fill="#64748b">源格保留 → eval("B2+10",A1)</text>
+        <line x1="250" y1="190" x2="360" y2="190" stroke="#dc2626" stroke-dasharray="5 3"/>
+        <text x="270" y="184" font-size="11" fill="#dc2626">参数传递：主表 → 子表（参数/表达式/常数）</text>
+        <text x="36" y="214" font-size="11" fill="#64748b">子表模型逐级嵌套：子报表本身也可为复合报表</text>
+        <text x="36" y="234" font-size="11" fill="#64748b">主子表共用运算环境：参数/数据集重名即共用</text>
+      </svg>
+      <div class="cap">图 33　子报表：引入式（统一矩形、源格不保留）vs 嵌入式（格中嵌表、eval 访问），参数由主表统一传递（对应 §2.3）。</div>
+    </div>
+
+    <h3>13.7 与本设计文档的映射</h3>
+    <table>
+      <tr><th>官方运算/子报表概念</th><th>本设计文档对应</th></tr>
+      <tr><td>集合 / 数组 / 集合函数 / 集合表达式</td><td>§1 数学基础（四种变换、聚合/集合函数）、§3 扩展（集合表达式→可扩展格）</td></tr>
+      <tr><td>主格 / 附属格 / 左主格 / 上主格 / 根格 `0</td><td>§2.4 自动主格设置、§11.2 主格树构建（根 `@` 即 `0）</td></tr>
+      <tr><td>扩展变化规则 / 交叉扩展顺序无关</td><td>§3.8 扩展交换定理（实报表顺序无关）、§11.12 交替扩展</td></tr>
+      <tr><td>层次坐标 / 位移坐标 / 根坐标 / `&amp;`</td><td>§6 层次坐标、§11.8 单元格定位（master_path+offset）</td></tr>
+      <tr><td>格集 / `{}` / `$` 运算符 / 条件表达式</td><td>§6 平面函数与集合运算、§11.5 表达式图节点</td></tr>
+      <tr><td>定位与拉伸（空白格优先 / 分页伸缩）</td><td>§11.13 分页处理（Band Split / Repeat Header）</td></tr>
+      <tr><td>引入式 / 嵌入式子报表 / eval()</td><td>§2.3 子表引入、§4 报表填写（更新属性 upd）</td></tr>
+    </table>
+    <div class="callout note"><b>延伸建议：</b>官方《非线性报表模型》下，<b>填报表模型</b>的<b>采集模型</b>已并入 §14、<b>扩展模型</b>已并入 §15（对应本稿 §4 报表填写与 §3 扩展）。至此"展现 + 数据 + 运算 + 子报表 + 填报表"五模型齐备，即与润乾理论完全对齐。</div>
+  </section>
+
+  <!-- ===== 第十四章 填报表采集模型 ===== -->
+  <section id="s14">
+    <h2>十四、填报表采集模型（润乾官方）</h2>
+    <p>本章并入润乾《高级指南·填报表模型·采集模型》（<code>cjmx56.html</code>，蒋步星）。它把本稿 <a href="#s4">§4 报表填写</a> 的理论（更新属性 <code>upd</code>、自由式/行列式/交叉式三形态、动态增删）落到工程级"如何把一张格子表自动识别为数据库可以增删改的<b>序表</b>"。核心由三类单元格、自动分片、序表，以及取数/回填 SPL 构成。</p>
+
+    <h3 id="s14a">14.1 三类单元格与序表</h3>
+    <p>填报模型把单元格分成三类，再由采集程序自动拼成"序表"（序表 ≈ 一个二维数据表，可作增删改的单元）：</p>
+    <ul>
+      <li><b>普通格</b>：一般作为字段名（表头）；</li>
+      <li><b>维度格</b>：字段值，标注"属于哪个对象的哪个维度"；</li>
+      <li><b>数值格</b>：字段值，是真正要采集/回填的数据；自动计算的数值格可由其它数值格算出（既用于展现，也用于采集回填）。</li>
+    </ul>
+    <p>采集程序<b>自动分片</b>：行列上连续的一片数值格（连同对应维度格）为一片；连续两行以上"只有数值格、无维度格/非空普通格、且不合并"的视为<strong>行式分片</strong>（支持自由增删行）；其余单值（维度/数值格）被拼成一个"一行记录"的序表。<b>序表</b>由"维度格字段名相同的数值格"聚合而成——单值同对象名→并入同一序表，不同对象名→不同序表（单行序表的维字段作为公共维默认拼入其它多行序表）。</p>
+    <div class="fig">
+      <svg viewBox="0 0 680 300" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Microsoft YaHei,sans-serif">
+        <rect x="20" y="18" width="170" height="62" rx="6" fill="#f7f7f9" stroke="#ddd"/>
+        <rect x="34" y="34" width="20" height="16" fill="#cfd8dc"/><text x="62" y="46" font-size="12">普通格(字段名)</text>
+        <rect x="34" y="56" width="20" height="16" fill="#90caf9"/><text x="62" y="68" font-size="12">维度格(字段值)</text>
+        <rect x="220" y="18" width="180" height="62" rx="6" fill="#f7f7f9" stroke="#ddd"/>
+        <rect x="234" y="34" width="20" height="16" fill="#a5d6a7"/><text x="262" y="46" font-size="12">数值格(采集值)</text>
+        <text x="262" y="68" font-size="12" fill="#555">→ 自动拼成 序表</text>
+        <g transform="translate(20,98)">
+          <text x="0" y="-6" font-size="12" fill="#333">示例：字段名取"上/左同宽(高)"普通格</text>
+          <rect x="0" y="0" width="60" height="24" fill="#cfd8dc" stroke="#999"/><text x="6" y="16" font-size="11">A1 客户</text>
+          <rect x="60" y="0" width="60" height="24" fill="#cfd8dc" stroke="#999"/><text x="66" y="16" font-size="11">B1 数量</text>
+          <rect x="120" y="0" width="60" height="24" fill="#cfd8dc" stroke="#999"/><text x="126" y="16" font-size="11">C1 金额</text>
+          <rect x="0" y="24" width="60" height="24" fill="#90caf9" stroke="#999"/><text x="6" y="40" font-size="11">A2 华东</text>
+          <rect x="60" y="24" width="60" height="24" fill="#a5d6a7" stroke="#999"/><text x="66" y="40" font-size="11">B2 10</text>
+          <rect x="120" y="24" width="60" height="24" fill="#a5d6a7" stroke="#999"/><text x="126" y="40" font-size="11">C2 100</text>
+          <rect x="0" y="48" width="60" height="24" fill="#90caf9" stroke="#999"/><text x="6" y="64" font-size="11">A3 华北</text>
+          <rect x="60" y="48" width="60" height="24" fill="#a5d6a7" stroke="#999"/><text x="66" y="64" font-size="11">B3 20</text>
+          <rect x="120" y="48" width="60" height="24" fill="#a5d6a7" stroke="#999"/><text x="126" y="64" font-size="11">C3 200</text>
+          <text x="200" y="40" font-size="12" fill="#333">序表 =</text>
+          <text x="200" y="56" font-size="11" fill="#555">(客户,数量,金额)</text>
+        </g>
+        <g transform="translate(380,98)">
+          <text x="0" y="-6" font-size="12" fill="#333">自动分片三形态</text>
+          <text x="0" y="16" font-size="11" fill="#444">行式分片</text>
+          <rect x="0" y="22" width="120" height="18" fill="#cfd8dc" stroke="#bbb"/>
+          <rect x="0" y="40" width="120" height="18" fill="#a5d6a7" stroke="#bbb"/>
+          <rect x="0" y="58" width="120" height="18" fill="#a5d6a7" stroke="#bbb"/>
+          <text x="0" y="102" font-size="11" fill="#444">交叉分片</text>
+          <rect x="0" y="108" width="30" height="18" fill="#90caf9" stroke="#bbb"/><rect x="30" y="108" width="30" height="18" fill="#a5d6a7" stroke="#bbb"/><rect x="60" y="108" width="30" height="18" fill="#a5d6a7" stroke="#bbb"/>
+          <rect x="0" y="126" width="30" height="18" fill="#90caf9" stroke="#bbb"/><rect x="30" y="126" width="30" height="18" fill="#a5d6a7" stroke="#bbb"/><rect x="60" y="126" width="30" height="18" fill="#a5d6a7" stroke="#bbb"/>
+          <rect x="0" y="144" width="30" height="18" fill="#90caf9" stroke="#bbb"/><rect x="30" y="144" width="30" height="18" fill="#a5d6a7" stroke="#bbb"/><rect x="60" y="144" width="30" height="18" fill="#a5d6a7" stroke="#bbb"/>
+          <text x="150" y="16" font-size="11" fill="#444">自由/单值</text>
+          <rect x="150" y="22" width="40" height="18" fill="#a5d6a7" stroke="#bbb"/>
+          <rect x="150" y="46" width="40" height="18" fill="#90caf9" stroke="#bbb"/>
+          <text x="150" y="80" font-size="10" fill="#777">拼成一行记录</text>
+        </g>
+      </svg>
+      <div class="cap">图 34　填报三类单元格与自动分片（行式 / 交叉 / 自由）</div>
+    </div>
+
+    <h3 id="s14b">14.2 数据采集规则</h3>
+    <h4>字段名采集</h4>
+    <p>数值格/维度格未显式设字段名时，规则为：<b>扩展后表格，取上（左）同宽（高）的普通格内容作字段名</b>。例：B1/D1 以左侧 A1/C1 为字段名；A4–D5 以顶部 A3–D3 为字段名。</p>
+    <h4>同序表 / 同记录采集</h4>
+    <p>维度格字段名相同的数值格视为同一序表（对象）；同分片内维度值不同的为不同记录，格内容作为相应字段值。行式填报表中"数值格区同一行 = 同一条记录"。例：数值格 B3 的维度字段为 {地区, 年度}，与 C3 同对象 → 组成 (地区, 年度, 金额, 数量) 序表；而 C2–C5 维度为 {年份, 地区}、E2–E5 为 {年份, 地区, 状态} → 裂成两个序表。指定对象名可显式分片（同名则合并，异名则分离）。</p>
+
+    <h3 id="s14c">14.3 取数表达式与回填</h3>
+    <p>一个完整填报表由三部分组成：<b>取数 SPL</b>（把要回填的序表赋值给变量，可返回多个：序表变量、维序列、下拉序表）、<b>填报表 SHT</b>（设计模板，在普通格用 <code>变量名.字段名</code> 引入，如 <code>score.SCORE</code>）、<b>回填 SPL</b>（页面填好后通过同一变量名取走填写后的序表，处理写库）。空数据展现时取数 SPL 可省；如要取回填前数据，需在"数据处理"中保存旧数据（如 <code>score_old</code>）。</p>
+    <div class="fig">
+      <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Microsoft YaHei,sans-serif">
+        <defs>
+          <marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#888"/></marker>
+        </defs>
+        <rect x="20" y="55" width="160" height="70" rx="8" fill="#e3f2fd" stroke="#42a5f5"/>
+        <text x="40" y="82" font-size="13" fill="#1565c0">取数 SPL</text>
+        <text x="40" y="102" font-size="11" fill="#444">返回序表变量</text>
+        <text x="40" y="118" font-size="11" fill="#444">score, class…</text>
+        <rect x="260" y="55" width="160" height="70" rx="8" fill="#e8f5e9" stroke="#66bb6a"/>
+        <text x="280" y="82" font-size="13" fill="#2e7d32">填报表 SHT</text>
+        <text x="280" y="102" font-size="11" fill="#444">变量名.字段名</text>
+        <text x="280" y="118" font-size="11" fill="#444">score.SCORE</text>
+        <rect x="500" y="55" width="160" height="70" rx="8" fill="#fff3e0" stroke="#ffa726"/>
+        <text x="520" y="82" font-size="13" fill="#e65100">回填 SPL</text>
+        <text x="520" y="102" font-size="11" fill="#444">取走填写后序表</text>
+        <text x="520" y="118" font-size="11" fill="#444">写库 / score_old</text>
+        <line x1="180" y1="90" x2="258" y2="90" stroke="#888" stroke-width="2" marker-end="url(#ar)"/>
+        <line x1="420" y1="90" x2="498" y2="90" stroke="#888" stroke-width="2" marker-end="url(#ar)"/>
+        <path d="M580 125 C 620 195, 60 195, 100 125" fill="none" stroke="#999" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#ar)"/>
+        <text x="250" y="185" font-size="11" fill="#777">序表变量贯穿：填写前→展示，填写后→回填</text>
+      </svg>
+      <div class="cap">图 35　取数 SPL → 填报表 SHT → 回填 SPL 的序表变量闭环</div>
+    </div>
+    <p>维度格表达式遵循集算器脚本语法，可直接返回单值或维序列；也可在单元格里直接定义（如只取 STUDENTID 为 1、3 的数据）。</p>
+
+    <h3 id="s14d">14.4 与本设计文档的映射</h3>
+    <table>
+      <tr><th>采集模型概念</th><th>本稿对应</th><th>说明</th></tr>
+      <tr><td>三类单元格（普通/维度/数值格）</td><td><a href="#s2">§2 表格结构</a>、<a href="#s11a">§11.1 对象模型</a></td><td>Cell 的 state/value/expr 可扩展一个 role 标记</td></tr>
+      <tr><td>自动分片 / 序表</td><td><a href="#s4">§4 报表填写</a>、<a href="#s11d">§11.4 增量扩展</a></td><td>序表 ≈ 一个可写回的实例分片</td></tr>
+      <tr><td>取数/回填 SPL + 变量名.字段名</td><td><a href="#s11">§11 Runtime</a>、<a href="#s12b">§12.2 数据模型</a></td><td>对应数据层与填写引擎的 I/O 接口</td></tr>
+      <tr><td>行式分片 / 自由增删行</td><td><a href="#s4">§4.3 动态增删</a></td><td>§4 已实现其工程化定义</td></tr>
+    </table>
+    <div class="callout note"><b>定位：</b>采集模型与扩展模型（§15）共同构成润乾"五模型"中<strong>填报表模型</strong>的完整工程来源（本稿 §3 扩展 + §4 报表填写已实现其理论）。至此，润乾《非线性报表模型》五模型——展现、数据、运算、子报表、填报表——的工程来源已全部覆盖。</div>
+  </section>
+
+  <!-- ===== 第十五章 填报表扩展模型 ===== -->
+  <section id="s15">
+    <h2>十五、填报表扩展模型（润乾官方）</h2>
+    <p>本章并入润乾《高级指南·填报表模型·扩展模型》（<code>kzmx59.html</code>，蒋步星），是 §14 采集模型的同级子章。它规定填报场景下"维度格如何把维序列展开成多行/多列"，与展现模型的扩展（§12.1、§3）同源，但其数据源是<strong>维序列</strong>而非数据集行集，且扩展后由 §14 的采集程序再拼成序表——即"先扩展、后采集"。</p>
+
+    <h3 id="s15a">15.1 扩展触发条件</h3>
+    <p>当<b>维度格的单元格表达式是维序列</b>时，按序列成员<b>纵向或横向扩展</b>表格。即：扩展以维度格为单位，数据源是写在单元格里的维序列（如 <code>["中国","美国"]</code> 或嵌套的 <code>[[...],[...]]</code>），而不是普通数据集的行集。</p>
+
+    <h3 id="s15b">15.2 扩展方向判定规则</h3>
+    <p>对每个需要扩展的维度格，方向按如下优先级判定：</p>
+    <ul>
+      <li><b>若其左（上）有扩展格</b> → 延用该扩展格的方向；</li>
+      <li><b>否则，若其右（下）有数值格</b> → 纵（右）/横（下）向扩展；</li>
+      <li><b>若右、下均有 或 均无数值格</b> → 默认<b>纵向扩展</b>。</li>
+    </ul>
+    <div class="fig">
+      <svg viewBox="0 0 680 360" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Microsoft YaHei,sans-serif">
+        <defs><marker id="ar2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#888"/></marker></defs>
+        <rect x="230" y="20" width="220" height="40" rx="6" fill="#e3f2fd" stroke="#42a5f5"/>
+        <text x="340" y="45" font-size="13" fill="#1565c0" text-anchor="middle">维度格表达式 = 维序列？</text>
+        <rect x="500" y="28" width="120" height="34" rx="6" fill="#eeeeee" stroke="#bbb"/>
+        <text x="560" y="50" font-size="12" fill="#555" text-anchor="middle">不扩展</text>
+        <line x1="450" y1="40" x2="498" y2="42" stroke="#888" stroke-width="2" marker-end="url(#ar2)"/>
+        <rect x="230" y="100" width="220" height="40" rx="6" fill="#e3f2fd" stroke="#42a5f5"/>
+        <text x="340" y="125" font-size="13" fill="#1565c0" text-anchor="middle">左/上 有扩展格？</text>
+        <line x1="340" y1="60" x2="340" y2="98" stroke="#888" stroke-width="2" marker-end="url(#ar2)"/>
+        <rect x="20" y="110" width="160" height="34" rx="6" fill="#e8f5e9" stroke="#66bb6a"/>
+        <text x="100" y="132" font-size="12" fill="#2e7d32" text-anchor="middle">延用其方向</text>
+        <line x1="230" y1="120" x2="182" y2="122" stroke="#888" stroke-width="2" marker-end="url(#ar2)"/>
+        <text x="205" y="116" font-size="11" fill="#777">是</text>
+        <rect x="230" y="190" width="220" height="40" rx="6" fill="#e3f2fd" stroke="#42a5f5"/>
+        <text x="340" y="215" font-size="13" fill="#1565c0" text-anchor="middle">右/下 有数值格？</text>
+        <line x1="340" y1="140" x2="340" y2="188" stroke="#888" stroke-width="2" marker-end="url(#ar2)"/>
+        <text x="355" y="166" font-size="11" fill="#777">否</text>
+        <rect x="20" y="210" width="190" height="44" rx="6" fill="#fff3e0" stroke="#ffa726"/>
+        <text x="115" y="230" font-size="11" fill="#e65100" text-anchor="middle">右有→纵向扩展</text>
+        <text x="115" y="246" font-size="11" fill="#e65100" text-anchor="middle">下有→横向扩展</text>
+        <line x1="230" y1="210" x2="212" y2="225" stroke="#888" stroke-width="2" marker-end="url(#ar2)"/>
+        <text x="225" y="205" font-size="11" fill="#777">右/下有</text>
+        <rect x="470" y="210" width="190" height="44" rx="6" fill="#fff3e0" stroke="#ffa726"/>
+        <text x="565" y="235" font-size="11" fill="#e65100" text-anchor="middle">均有 或 均无</text>
+        <text x="565" y="251" font-size="11" fill="#e65100" text-anchor="middle">→ 纵向扩展（默认）</text>
+        <line x1="450" y1="210" x2="468" y2="225" stroke="#888" stroke-width="2" marker-end="url(#ar2)"/>
+        <text x="458" y="205" font-size="11" fill="#777">均有/均无</text>
+      </svg>
+      <div class="cap">图 36　维度格扩展方向判定决策树（左/上优先 → 右/下 → 默认纵向）</div>
+    </div>
+
+    <h3 id="s15c">15.3 撑大与终止</h3>
+    <p>扩展时，同行/列上<b>相邻的非扩展格被"撑大"</b>（随扩展方向一起增长，保持与扩展区对齐）。<b>多层扩展</b>：当维序列是嵌套结构时，按层依次展开（国家→省→市…），扩展<b>持续进行直到遇见数值格为止</b>——数值格作为叶子终止扩展。</p>
+    <div class="fig">
+      <svg viewBox="0 0 680 300" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Microsoft YaHei,sans-serif">
+        <defs><marker id="ar3" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#888"/></marker></defs>
+        <rect x="280" y="18" width="130" height="44" rx="6" fill="#90caf9" stroke="#42a5f5"/>
+        <text x="345" y="38" font-size="12" fill="#0d47a1" text-anchor="middle">A2 国家</text>
+        <text x="345" y="54" font-size="10" fill="#0d47a1" text-anchor="middle">[中国,美国]</text>
+        <rect x="140" y="100" width="100" height="38" rx="6" fill="#a5d6a7" stroke="#66bb6a"/>
+        <text x="190" y="124" font-size="12" fill="#1b5e20" text-anchor="middle">中国</text>
+        <rect x="440" y="100" width="100" height="38" rx="6" fill="#a5d6a7" stroke="#66bb6a"/>
+        <text x="490" y="124" font-size="12" fill="#1b5e20" text-anchor="middle">美国</text>
+        <line x1="300" y1="62" x2="190" y2="98" stroke="#888" stroke-width="2" marker-end="url(#ar3)"/>
+        <line x1="390" y1="62" x2="490" y2="98" stroke="#888" stroke-width="2" marker-end="url(#ar3)"/>
+        <rect x="30" y="175" width="88" height="34" rx="6" fill="#cfd8dc" stroke="#999"/>
+        <text x="74" y="196" font-size="11" fill="#333" text-anchor="middle">河南</text>
+        <rect x="128" y="175" width="88" height="34" rx="6" fill="#cfd8dc" stroke="#999"/>
+        <text x="172" y="196" font-size="11" fill="#333" text-anchor="middle">河北</text>
+        <rect x="226" y="175" width="88" height="34" rx="6" fill="#cfd8dc" stroke="#999"/>
+        <text x="270" y="196" font-size="11" fill="#333" text-anchor="middle">山东</text>
+        <line x1="190" y1="138" x2="74" y2="173" stroke="#888" stroke-width="2" marker-end="url(#ar3)"/>
+        <line x1="190" y1="138" x2="172" y2="173" stroke="#888" stroke-width="2" marker-end="url(#ar3)"/>
+        <line x1="190" y1="138" x2="270" y2="173" stroke="#888" stroke-width="2" marker-end="url(#ar3)"/>
+        <rect x="430" y="175" width="100" height="34" rx="6" fill="#cfd8dc" stroke="#999"/>
+        <text x="480" y="196" font-size="11" fill="#333" text-anchor="middle">阿拉斯加</text>
+        <rect x="540" y="175" width="100" height="34" rx="6" fill="#cfd8dc" stroke="#999"/>
+        <text x="590" y="196" font-size="11" fill="#333" text-anchor="middle">加利福尼亚</text>
+        <line x1="490" y1="138" x2="480" y2="173" stroke="#888" stroke-width="2" marker-end="url(#ar3)"/>
+        <line x1="490" y1="138" x2="590" y2="173" stroke="#888" stroke-width="2" marker-end="url(#ar3)"/>
+        <rect x="30" y="240" width="150" height="40" rx="6" fill="#fff3e0" stroke="#ffa726"/>
+        <text x="105" y="258" font-size="11" fill="#e65100" text-anchor="middle">C2 市（第3层）</text>
+        <text x="105" y="273" font-size="10" fill="#e65100" text-anchor="middle">[郑州,安阳]…</text>
+        <rect x="210" y="240" width="150" height="40" rx="6" fill="#eeeeee" stroke="#bbb"/>
+        <text x="285" y="258" font-size="11" fill="#555" text-anchor="middle">D2 数值格</text>
+        <text x="285" y="273" font-size="10" fill="#555" text-anchor="middle">终止扩展（叶子）</text>
+        <line x1="74" y1="209" x2="105" y2="238" stroke="#888" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ar3)"/>
+        <line x1="180" y1="262" x2="208" y2="262" stroke="#888" stroke-width="2" marker-end="url(#ar3)"/>
+        <text x="35" y="222" font-size="10" fill="#999">多层：每个省再经 C2 维序列展开到市</text>
+      </svg>
+      <div class="cap">图 37　多层扩展嵌套树：国家→省→市→数值格（D2 终止）</div>
+    </div>
+
+    <h3 id="s15d">15.4 示例</h3>
+    <ul>
+      <li><b>例1</b>：B4 纵向扩展，A3 被撑大；</li>
+      <li><b>例2</b>：B4 纵向扩展 + C2 横向扩展，C1、A3 被撑大（纵横混合）；</li>
+      <li><b>例3（多层）</b>：A2 <code>["中国","美国"]</code> → B2 <code>[["河南","河北","山东"],["阿拉斯加","加州"]]</code> → C2 三层嵌套到市 → D2 数值格终止。</li>
+    </ul>
+
+    <h3 id="s15e">15.5 与本设计文档的映射</h3>
+    <table>
+      <tr><th>扩展模型概念</th><th>本稿对应</th><th>说明</th></tr>
+      <tr><td>维度格 + 维序列触发扩展</td><td><a href="#s3">§3 扩展变换</a>、<a href="#s12a">§12.1 展现模型扩展</a>、<a href="#s11c">§11.3/§11.11</a></td><td>扩展单位下沉为 Band 的工程化定义</td></tr>
+      <tr><td>方向判定（左/上→右/下→默认纵）</td><td><a href="#s2">§2.4 自动主格</a>、<a href="#s3">§3.2 主格扩展方向</a></td><td>方向规则与主格设置同源</td></tr>
+      <tr><td>多层扩展直到数值格终止</td><td><a href="#s3">§3.3 报表扩展</a>、<a href="#s11l">§11.12 交替扩展树</a></td><td>父子方向交替的递归扩展</td></tr>
+      <tr><td>相邻格撑大</td><td><a href="#s11m">§11.13 分页/拉伸</a>、<a href="#s13">§13.5 定位与拉伸</a></td><td>空白格优先占用、分页伸缩</td></tr>
+      <tr><td>先扩展后采集</td><td><a href="#s14">§14 采集模型</a></td><td>扩展生成实例分片 → 采集拼成序表</td></tr>
+    </table>
+    <div class="callout note"><b>定位：</b>扩展模型与采集模型共同构成润乾"五模型"中<b>填报表模型</b>的完整工程来源（本稿 §3 扩展 + §4 报表填写已实现其理论）。至此，润乾《非线性报表模型》五模型——展现、数据、运算、子报表、填报表——的工程来源已全部覆盖。</div>
+  </section>
+
+  <section id="append">
+    <h2>附：本文所据原文与材料说明</h2>
+    <ul>
+      <li><b>主依据</b>：《非线性报表模型原理》（蒋步星，中国科学技术出版社，2007）文本（由同名词 <code>.docx</code> 提取），覆盖第 1–6 章全部定义、算法（2.1–2.4、3.1–3.3、4.4–4.7、5.1–5.3）与定理（2.1–2.12、3.1–3.12、4.1–4.4、5.1–5.12）。本设计文档的算法与设计均据此重构。</li>
+      <li>《基于单元格扩展的报表引擎的研究与实现》（豆丁网 PDF）：文本提取仅为网页抓取外壳（页眉、页码、下载/会员按钮），<b>不含正文</b>，未作为算法来源。</li>
+      <li><b>润乾报表官方《高级指南·非线性报表模型》</b>（蒋步星，Raqsoft）：<code>展现模型</code>（https://d.raqsoft.com.cn:6443/report/senior/zxmx36.html）与 <code>数据模型</code>（https://d.raqsoft.com.cn:6443/report/senior/sjmx43.html）为 §12 模型基础层的权威在线来源，与本书同源；同系列还有<code>运算模型</code>（ysmx46.html）与<code>子报表模型</code>两章未纳入本稿。</li>
+      <li>其余 4 份 PDF（《报表》《报表引擎设计》《报表引擎设计(20160305112551)》《报表引擎系统研究开发》）均为<b>扫描图像版</b>，原 PDF 文本层缺失。已安装中文 OCR（<code>chi_sim</code>）并对《报表引擎设计》做抽样 OCR（前 50 页）。其目录可辨认为<b>周金根《报表引擎设计》（2010）</b>一类<b>工程实现文档</b>——目录含"报表应用思路 / 报表类型 / 主要技术 / 横向扩展 / 横伸主格 / 单元格的层次坐标和汇总运算 / 相对层次坐标到位移 / 用例模型 / 操作符 / 单元格背景图 / 打印模型 / 填报表"等，明显是<b>复用非线性报表模型的概念去落地一个报表引擎</b>。但扫描件版面含大量表格与示意图，OCR 识别率过低（正文严重乱码），无法逐字提取其独立算法；其复用概念已在本设计文档中严格化，故不再另列。如需高质量识别，建议提供清晰文本层版本或人工校对后的 OCR 精修。</li>
+      <li>同目录 <code>extracted/</code>（文本提取）与 <code>ocr/</code>（图像 OCR 中间产物）保留以供核对。</li>
+    </ul>
+  </section>
+
+  <footer>非线性报表模型与设计详解（图示版）· 基于《非线性报表模型原理》(蒋步星, 2007) 与润乾官方文档重构 · 37 张核心示意图</footer>
+</div>
+<div class="topbar" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑ 回到顶部</div>
+</body>
+</html>
