@@ -758,6 +758,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   useEffect(() => {
     if (!open || mode !== 'free') return
     let disposed = false
+    const listeners: Array<{ dispose: () => void }> = []
     const timer = setTimeout(() => {
       if (disposed || !containerRef.current) return
       try {
@@ -768,10 +769,73 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           locales: { [LocaleType.ZH_CN]: mergeLocales(UniverPresetSheetsCoreZhCN) },
           presets: [UniverSheetsCorePreset({ container: containerRef.current })],
         })
-        ;(univerAPI as any).createWorkbook(
-          gridToWorkbookData(grid, { selected: selectedPos }),
-        )
+        // 选中格不自绘高亮：Univer 自己会画选区光框，再叠一层反而打架
+        ;(univerAPI as any).createWorkbook(gridToWorkbookData(grid))
         univerRef.current = univerAPI as unknown as { dispose: () => void }
+
+        /**
+         * 事件接线。API 名称已对着 @univerjs/*@0.25.1 的 .d.ts 核过：
+         * - `univerAPI.addEvent(univerAPI.Event.SelectionChanged, p => p.selections)`（sheets-ui facade）
+         * - `univerAPI.addEvent(univerAPI.Event.SheetValueChanged, p => p.effectedRanges)`（sheets facade）
+         * 仍整体包在 try/catch 里：拿不到事件就退化成「只用右侧属性面板」，
+         * 不至于让整块区域白屏。
+         */
+        const api = univerAPI as any
+        try {
+          listeners.push(
+            api.addEvent(api.Event.SelectionChanged, (p: any) => {
+              const s = p?.selections?.[0]
+              if (!s) return
+              setSelRow((s.startRow ?? 0) + 1)
+              setSelCol((s.startColumn ?? 0) + 1)
+            }),
+          )
+          listeners.push(
+            api.addEvent(api.Event.SheetValueChanged, (p: any) => {
+              const range = p?.effectedRanges?.[0]
+              if (!range) return
+              const r = range.getRow()
+              const c = range.getColumn()
+              const raw = range.getValue()
+              const text = raw === null || raw === undefined ? '' : String(raw)
+              setGrid((g) => {
+                const cur = g[r]?.[c]
+                if (!cur) return g
+                const parsed = parseCellText(text)
+                let next: CellTpl
+                if (parsed.kind === 'literal') {
+                  next = { ...cur, value: text || null }
+                } else if (parsed.kind === 'field') {
+                  next = {
+                    ...cur,
+                    value: null,
+                    model: {
+                      ...(cur.model ?? {}),
+                      ds: parsed.ds,
+                      field: parsed.field,
+                      agg: parsed.agg,
+                      value_expr: undefined,
+                    },
+                  }
+                } else {
+                  next = {
+                    ...cur,
+                    value: null,
+                    model: {
+                      ...(cur.model ?? {}),
+                      ds: cur.model?.ds ?? 'ds1',
+                      field: undefined,
+                      value_expr: parsed.expr,
+                    },
+                  }
+                }
+                return setGridCell(g, r, c, next)
+              })
+            }),
+          )
+        } catch {
+          /* 事件不可用：属性面板仍可编辑，静默降级 */
+        }
       } catch (e) {
         if (!disposed) setError(`Univer 初始化失败：${e instanceof Error ? e.message : String(e)}`)
       }
@@ -779,8 +843,15 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     return () => {
       disposed = true
       clearTimeout(timer)
+      for (const l of listeners) {
+        try {
+          l.dispose()
+        } catch {
+          /* 忽略 */
+        }
+      }
     }
-  }, [open, mode, grid, selectedPos])
+  }, [open, mode, grid])
 
   useEffect(() => {
     if (!open) return
