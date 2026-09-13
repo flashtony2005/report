@@ -42,6 +42,7 @@ import {
   buildDetailTemplate,
   buildGroupTemplate,
   cellPos,
+  clearGridMerge,
   DEFAULT_FIELD_LABELS,
   deleteGridCol,
   deleteGridRow,
@@ -51,12 +52,14 @@ import {
   headerRowCount,
   insertGridCol,
   insertGridRow,
+  mergeAt,
   parseCellText,
   isValidReportId,
   parseParams,
   REPORT_FORMAT,
   REPORT_VERSION,
   setGridCell,
+  setGridMerge,
   suggestReportId,
   stripArrayPrefix,
   templateToGrid,
@@ -69,6 +72,7 @@ import {
   type CellModel,
   type CellTpl,
   type ExpandDir,
+  type MergeRect,
   type RenderRequest,
   type RenderResponse,
   type ReportDef,
@@ -281,14 +285,33 @@ function CellModelEditor({
   pos,
   cell,
   columns,
+  merge,
+  mergeError,
+  onMerge,
+  onUnmerge,
   onChange,
 }: {
   pos: string
   cell: CellTpl
   columns: string[]
+  /** 覆盖本格的合并块（含锚点格自己）；没合并时为 null */
+  merge: MergeRect | null
+  /** 上一次合并被拒绝的原因（越界 / 有内容 / 交叠） */
+  mergeError: string
+  onMerge: (rows: number, cols: number) => void
+  onUnmerge: () => void
   onChange: (next: CellTpl) => void
 }) {
   const m = cell.model
+  const [spanRows, setSpanRows] = useState(1)
+  const [spanCols, setSpanCols] = useState(1)
+  // 换格就把跨度归位：否则输入框里还留着上一格的「3 行 × 2 列」，
+  // 看着像当前格已经是那个跨度。（不用 key 重挂：--noResolve 下 JSX 的 key
+  // 会因为解析不到 React 类型被误报成类型错误。）
+  useEffect(() => {
+    setSpanRows(1)
+    setSpanCols(1)
+  }, [pos])
   const patch = (p: Partial<CellModel>): void => {
     const next: CellModel = { ...(m ?? {}), ...p }
     // 全空就没必要留个空 model
@@ -427,6 +450,55 @@ function CellModelEditor({
           data-testid="free-cell-value-expr"
         />
       </Space>
+
+      <Space wrap size="small">
+        <Typography.Text style={{ fontSize: 12 }}>合并</Typography.Text>
+        {merge ? (
+          <>
+            <Typography.Text style={{ fontSize: 12 }} type="success">
+              {cellPos(merge.r, merge.c)} 起 {merge.rows} 行 × {merge.cols} 列
+            </Typography.Text>
+            <Button size="small" onClick={onUnmerge} data-testid="free-merge-clear">
+              取消合并
+            </Button>
+          </>
+        ) : (
+          <>
+            <InputNumber
+              size="small"
+              style={{ width: 62 }}
+              min={1}
+              addonAfter="行"
+              value={spanRows}
+              onChange={(v: number | null) => setSpanRows(Math.max(1, v ?? 1))}
+              data-testid="free-merge-rows"
+            />
+            <InputNumber
+              size="small"
+              style={{ width: 62 }}
+              min={1}
+              addonAfter="列"
+              value={spanCols}
+              onChange={(v: number | null) => setSpanCols(Math.max(1, v ?? 1))}
+              data-testid="free-merge-cols"
+            />
+            <Button
+              size="small"
+              onClick={() => onMerge(spanRows, spanCols)}
+              disabled={spanRows === 1 && spanCols === 1}
+              data-testid="free-merge-apply"
+            >
+              合并
+            </Button>
+          </>
+        )}
+        {/* 合并会丢掉被覆盖格里的内容，所以只允许并**空**格；有内容时明确报错而不是硬做 */}
+        {mergeError && (
+          <Typography.Text type="danger" style={{ fontSize: 12 }} data-testid="free-merge-error">
+            {mergeError}
+          </Typography.Text>
+        )}
+      </Space>
     </Space>
   )
 }
@@ -479,6 +551,29 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const [grid, setGrid] = useState<TemplateGrid>(() => templateToGrid({ name: '模板', rows: [] }))
   const [selRow, setSelRow] = useState(1)
   const [selCol, setSelCol] = useState(1)
+  /** 合并被拒的原因（越界 / 被覆盖格有内容 / 与已有合并块交叠） */
+  const [mergeError, setMergeError] = useState('')
+  /**
+   * 画布重建令牌。**改动来自画布自身时不 +1。**
+   *
+   * 为什么不能直接让 Univer 的 effect 依赖 `grid`：画布改一格 → `SheetValueChanged`
+   * → `setGrid` → effect 重跑 → `dispose()` 掉整个 Univer 再重建。内容本来就已经
+   * 在画布上了，这一趟纯属白拆，还会把选区、滚动位置、正在编辑的格一起丢掉。
+   *
+   * 反过来，**属性面板的改动必须重建**：画布显示的文字来自 `formatCellText(cell)`，
+   * 改字段 / 聚合 / 值表达式同样会改变显示内容，不重建就是脏的。
+   */
+  const [canvasKey, setCanvasKey] = useState(0)
+  /** effect 里读的是「最新」的 grid；effect 本身只在 canvasKey 变化时重跑 */
+  const gridRef = useRef(grid)
+  useEffect(() => {
+    gridRef.current = grid
+  }, [grid])
+  /** 改 grid 并请画布重建（结构变更 / 属性面板改动）。**画布自身的改动别走这里。** */
+  const applyGrid = useCallback((next: TemplateGrid) => {
+    setGrid(next)
+    setCanvasKey((v) => v + 1)
+  }, [])
   /** 报表文件：id / 名称 / 已保存列表 */
   const [reportId, setReportId] = useState('')
   const [reportName, setReportName] = useState('')
@@ -795,7 +890,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       if (!res.ok) throw new Error(text || `打开失败 ${res.status}`)
       const def = JSON.parse(text) as ReportDef
       setMode('free')
-      setGrid(templateToGrid(def.template.sheets?.[0] ?? { name: '模板', rows: [] }))
+      applyGrid(templateToGrid(def.template.sheets?.[0] ?? { name: '模板', rows: [] }))
       setReportId(def.id)
       setReportName(def.name)
       setExportFormula(def.options?.exportFormula ?? false)
@@ -819,7 +914,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     } finally {
       setFileBusy(false)
     }
-  }, [selectDatabase, selectTable])
+  }, [selectDatabase, selectTable, applyGrid])
 
   /**
    * 执行已保存的报表：**不依赖当前表单**，直接按文件里存的定义跑。
@@ -982,7 +1077,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           presets: [UniverSheetsCorePreset({ container: containerRef.current })],
         })
         // 选中格不自绘高亮：Univer 自己会画选区光框，再叠一层反而打架
-        ;(univerAPI as any).createWorkbook(gridToWorkbookData(grid))
+        ;(univerAPI as any).createWorkbook(gridToWorkbookData(gridRef.current))
         univerRef.current = univerAPI as unknown as { dispose: () => void }
 
         /**
@@ -1000,6 +1095,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
               if (!s) return
               setSelRow((s.startRow ?? 0) + 1)
               setSelCol((s.startColumn ?? 0) + 1)
+              // 换了格子，上一格「合并被拒」的提示就不该还挂着
+              setMergeError('')
             }),
           )
           listeners.push(
@@ -1010,6 +1107,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
               const c = range.getColumn()
               const raw = range.getValue()
               const text = raw === null || raw === undefined ? '' : String(raw)
+              // 注意这里**故意**用 setGrid 而不是 applyGrid：改动就来自画布，
+              // 内容已经在画布上了，再 bump 一次 canvasKey 只会把整张表拆了重建。
               setGrid((g) => {
                 const cur = g[r]?.[c]
                 if (!cur) return g
@@ -1063,7 +1162,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         }
       }
     }
-  }, [open, mode, grid])
+  }, [open, mode, canvasKey])
 
   useEffect(() => {
     if (!open) return
@@ -1416,16 +1515,16 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
                   data-testid="free-sel-col"
                 />
               </Space>
-              <Button size="small" onClick={() => setGrid(insertGridRow(grid, selRow - 1))}>
+              <Button size="small" onClick={() => applyGrid(insertGridRow(grid, selRow - 1))}>
                 插入行
               </Button>
-              <Button size="small" onClick={() => setGrid(deleteGridRow(grid, selRow - 1))}>
+              <Button size="small" onClick={() => applyGrid(deleteGridRow(grid, selRow - 1))}>
                 删除行
               </Button>
-              <Button size="small" onClick={() => setGrid(insertGridCol(grid, selCol - 1))}>
+              <Button size="small" onClick={() => applyGrid(insertGridCol(grid, selCol - 1))}>
                 插入列
               </Button>
-              <Button size="small" onClick={() => setGrid(deleteGridCol(grid, selCol - 1))}>
+              <Button size="small" onClick={() => applyGrid(deleteGridCol(grid, selCol - 1))}>
                 删除列
               </Button>
               <Button
@@ -1451,7 +1550,24 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
                 pos={selectedPos}
                 cell={selCell}
                 columns={columnNames}
-                onChange={(next) => setGrid(setGridCell(grid, selRow - 1, selCol - 1, next))}
+                merge={mergeAt(grid, selRow - 1, selCol - 1)}
+                mergeError={mergeError}
+                onMerge={(rows, cols) => {
+                  const r = setGridMerge(grid, selRow - 1, selCol - 1, rows, cols)
+                  if (r.ok) {
+                    // 合并改了版面，必须让画布重建才能看见
+                    applyGrid(r.grid)
+                    setMergeError('')
+                  } else {
+                    // 拒绝理由原样显示：合并会丢数据，不能默默照做
+                    setMergeError(r.message)
+                  }
+                }}
+                onUnmerge={() => {
+                  applyGrid(clearGridMerge(grid, selRow - 1, selCol - 1))
+                  setMergeError('')
+                }}
+                onChange={(next) => applyGrid(setGridCell(grid, selRow - 1, selCol - 1, next))}
               />
             )}
             {tplWarnings.length > 0 && (

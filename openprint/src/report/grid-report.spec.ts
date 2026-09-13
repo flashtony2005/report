@@ -10,15 +10,22 @@ import {
   labelOf,
   parseParams,
   colIndex,
+  clearGridMerge,
   deleteGridCol,
   deleteGridRow,
+  emptyGrid,
   formatCellText,
   gridToSheet,
+  gridToWorkbookData,
   insertGridCol,
   insertGridRow,
+  isMergeAnchor,
+  mergeAt,
+  mergeSpanOf,
   parseCellText,
   parsePos,
   setGridCell,
+  setGridMerge,
   stripArrayPrefix,
   templateToGrid,
   toWorkbookData,
@@ -516,7 +523,11 @@ describe('展开控制：min / max / keepEmpty 打在不同层级', () => {
       valueFields: ['amount'],
     })
     const out = withExpandControl(tpl, { minCount: 2, maxCount: 7, keepEmpty: true })
-    const all = out.sheets[0]!.rows.flatMap((r) => r.cells.map((c) => c.model!))
+    // 交叉表里有纯字面量格（"地区" 这类表头）没有 model，`c.model!` 会骗过类型系统
+    // 却把 undefined 混进数组，下一行读 expand_type 直接抛。
+    const all = out.sheets[0]!.rows
+      .flatMap((r) => r.cells.map((c) => c.model))
+      .filter((m): m is NonNullable<typeof m> => !!m)
     const rowExp = all.filter((m) => m.expand_type === 'r')
     const colExp = all.filter((m) => m.expand_type === 'c')
     expect(rowExp.length).toBeGreaterThan(0)
@@ -798,5 +809,159 @@ describe('自由模板：模板体检', () => {
       ]),
     )
     expect(w).toEqual([])
+  })
+})
+
+describe('自由模板：合并单元格', () => {
+  const tpl = (rows: ReportTemplate['sheets'][number]['rows']): ReportTemplate => ({
+    sheets: [{ name: 's', rows }],
+  })
+
+  it('合并后锚点带跨度，被覆盖的格清空且不再是锚点', () => {
+    const r = setGridMerge(emptyGrid(4, 4), 0, 0, 2, 2)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(mergeSpanOf(r.grid[0][0])).toMatchObject({ rows: 2, cols: 2 })
+    expect(isMergeAnchor(r.grid[0][0])).toBe(true)
+    // 被盖住的格必须是空的，否则服务端布局时那一格会冒出来
+    expect(formatCellText(r.grid[1][1])).toBe('')
+    expect(isMergeAnchor(r.grid[1][1])).toBe(false)
+  })
+
+  it('mergeAt 能从任意一格反查到整个合并块', () => {
+    const r = setGridMerge(emptyGrid(4, 5), 1, 1, 2, 3)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    for (const [rr, cc] of [
+      [1, 1],
+      [1, 3],
+      [2, 1],
+      [2, 3],
+    ] as const) {
+      expect(mergeAt(r.grid, rr, cc)).toMatchObject({ r: 1, c: 1, rows: 2, cols: 3 })
+    }
+    // 区域外一格都不该命中
+    expect(mergeAt(r.grid, 0, 1)).toBeNull()
+    expect(mergeAt(r.grid, 1, 0)).toBeNull()
+    expect(mergeAt(r.grid, 1, 4)).toBeNull()
+    expect(mergeAt(r.grid, 3, 1)).toBeNull()
+  })
+
+  it('越界拒绝', () => {
+    const r = setGridMerge(emptyGrid(3, 3), 2, 2, 2, 2)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.message).toContain('超出网格')
+  })
+
+  it('被覆盖的格有内容时拒绝 —— 不静默丢数据', () => {
+    const grid = emptyGrid(3, 3)
+    grid[0][1] = { value: '表头', model: undefined }
+    const r = setGridMerge(grid, 0, 0, 1, 2)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.message).toContain('B1')
+    expect(r.message).toContain('有内容')
+  })
+
+  it('与已有合并块交叠时拒绝', () => {
+    const first = setGridMerge(emptyGrid(4, 4), 1, 1, 2, 2)
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+    const second = setGridMerge(first.grid, 2, 2, 2, 2)
+    expect(second.ok).toBe(false)
+    if (second.ok) return
+    expect(second.message).toContain('已经有')
+  })
+
+  it('取消合并：从被覆盖的格也能取消，锚点回到单格', () => {
+    const r = setGridMerge(emptyGrid(3, 3), 0, 0, 2, 2)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    const cleared = clearGridMerge(r.grid, 1, 1)
+    expect(isMergeAnchor(cleared[0][0])).toBe(false)
+    expect(mergeAt(cleared, 1, 1)).toBeNull()
+  })
+
+  it('插行落在合并块内部 → 跨度 +1；落在外面 / 锚点上方 → 不动', () => {
+    const r = setGridMerge(emptyGrid(6, 4), 0, 0, 2, 2)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+
+    // 插在第 2 行 → 落在 [0,1] 内部，块要长高
+    const inside = insertGridRow(r.grid, 1)
+    expect(mergeSpanOf(inside[0][0])).toMatchObject({ rows: 3, cols: 2 })
+
+    // 插在第 4 行 → 合并块够不着
+    expect(mergeSpanOf(insertGridRow(r.grid, 3)[0][0]).rows).toBe(2)
+
+    // 插在第 1 行 → 在锚点上方，锚点平移、跨度不变
+    const above = insertGridRow(r.grid, 0)
+    expect(mergeSpanOf(above[1][0])).toMatchObject({ rows: 2, cols: 2 })
+  })
+
+  it('删行落在合并块内部 → 跨度 -1；缩到 1 行自动解除行合并', () => {
+    const two = setGridMerge(emptyGrid(6, 4), 0, 0, 2, 2)
+    expect(two.ok).toBe(true)
+    if (!two.ok) return
+    const shrunk = deleteGridRow(two.grid, 1)
+    // 行跨度回到 1，但列跨度还在 → 整体仍算合并
+    expect(mergeSpanOf(shrunk[0][0])).toMatchObject({ rows: 1, cols: 2 })
+    expect(isMergeAnchor(shrunk[0][0])).toBe(true)
+
+    const three = setGridMerge(emptyGrid(6, 4), 0, 0, 3, 2)
+    expect(three.ok).toBe(true)
+    if (!three.ok) return
+    expect(mergeSpanOf(deleteGridRow(three.grid, 2)[0][0]).rows).toBe(2)
+  })
+
+  it('删列落在合并块内部 → 列跨度 -1', () => {
+    const r = setGridMerge(emptyGrid(6, 5), 0, 1, 2, 3)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(mergeSpanOf(deleteGridCol(r.grid, 2)[0][1])).toMatchObject({ rows: 2, cols: 2 })
+  })
+
+  it('合并跨度与位置引用两条重映射互不干扰', () => {
+    const grid = emptyGrid(5, 4)
+    grid[3][0] = { value: null, model: { ds: 'ds1', field: 'a', row_parent: 'A2' } }
+    const r = setGridMerge(grid, 0, 0, 2, 2)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    const out = insertGridRow(r.grid, 1)
+    expect(mergeSpanOf(out[0][0]).rows).toBe(3) // 合并块长高
+    expect(out[4][0].model?.row_parent).toBe('A3') // 引用同步平移
+  })
+
+  it('体检能报出手写 JSON 里的越界与交叠合并', () => {
+    const outOfRange = validateTemplate(
+      tpl([{ cells: [{ value: '标题', model: undefined, merge_across: 5, merge_down: 0 }] }]),
+    )
+    expect(outOfRange.some((x) => x.includes('列'))).toBe(true)
+
+    const overlap = validateTemplate(
+      tpl([
+        {
+          cells: [
+            { value: 'a', model: undefined, merge_across: 2, merge_down: 0 },
+            { value: null, model: undefined },
+            { value: 'b', model: undefined, merge_across: 2, merge_down: 0 },
+          ],
+        },
+      ]),
+    )
+    expect(overlap.some((x) => x.includes('交叠'))).toBe(true)
+  })
+
+  it('设计态画布把合并块喂给 Univer 的 mergeData', () => {
+    const r = setGridMerge(emptyGrid(4, 4), 0, 0, 2, 2)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    const data = gridToWorkbookData(r.grid) as {
+      sheets: Record<string, { mergeData: unknown[] }>
+    }
+    expect(data.sheets.sheet1.mergeData).toEqual([
+      { startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    ])
   })
 })

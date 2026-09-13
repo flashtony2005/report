@@ -858,6 +858,138 @@ export function setGridCell(grid: TemplateGrid, r: number, c: number, cell: Cell
 }
 
 /* ------------------------------------------------------------------ *
+ * 合并单元格
+ *
+ * 服务端早就支持三种合并原语（`merge_across` / `merge_down` / `merge_to_end`），
+ * 六个内置模板都在用（多级表头的表头格、铺满行尾的标题）。
+ * 但自由模板这一层此前**完全没法表达合并**，两个后果：
+ * - 「类 Excel 逐格设计」做不出多级表头，而那是报表模板最常见的版式需求；
+ * - 缺省父格规则 3 永远触发不了 —— 它只在**子格跨行合并**把展开范围撑开时才有意义。
+ *
+ * 这里把合并补齐，并把「插删行列要跟着改跨度」一并处理掉。
+ * ------------------------------------------------------------------ */
+
+const BLANK_CELL: CellTpl = { value: null, model: undefined }
+
+/** 一个格的合并跨度。`rows`/`cols` 为 1 表示该方向没合并。 */
+export interface MergeSpan {
+  rows: number
+  cols: number
+  /** 横向铺到行尾（列数随数据变化，模板期算不出确切列数） */
+  toEnd: boolean
+}
+
+export function mergeSpanOf(cell: CellTpl | undefined): MergeSpan {
+  return {
+    rows: Math.max(1, (cell?.merge_down ?? 0) + 1),
+    cols: Math.max(1, (cell?.merge_across ?? 0) + 1),
+    toEnd: !!cell?.merge_to_end,
+  }
+}
+
+/** 这一格是不是合并块的锚点（左上角那格） */
+export function isMergeAnchor(cell: CellTpl | undefined): boolean {
+  const s = mergeSpanOf(cell)
+  return s.rows > 1 || s.cols > 1 || s.toEnd
+}
+
+/** 合并块：锚点位置 + 实际跨度（`toEnd` 已按网格宽度摊成具体列数） */
+export interface MergeRect {
+  r: number
+  c: number
+  rows: number
+  cols: number
+  toEnd: boolean
+}
+
+/**
+ * 覆盖 (r,c) 的合并块（锚点格自己也算「被覆盖」）。没有则 null。
+ *
+ * 锚点必然落在 (r,c) 的左上方向，所以从 (r,c) 往回扫就够，不必全网格扫。
+ */
+export function mergeAt(grid: TemplateGrid, r: number, c: number): MergeRect | null {
+  for (let rr = r; rr >= 0; rr--) {
+    const row = grid[rr]
+    if (!row) continue
+    for (let cc = Math.min(c, row.length - 1); cc >= 0; cc--) {
+      const s = mergeSpanOf(row[cc])
+      if (s.rows === 1 && s.cols === 1 && !s.toEnd) continue
+      const cols = s.toEnd ? row.length - cc : s.cols
+      if (r <= rr + s.rows - 1 && c <= cc + cols - 1) {
+        return { r: rr, c: cc, rows: s.rows, cols, toEnd: s.toEnd }
+      }
+    }
+  }
+  return null
+}
+
+export type MergeResult = { ok: true; grid: TemplateGrid } | { ok: false; message: string }
+
+/**
+ * 把 (r,c) 起、跨 `rows × cols` 的区域合并成一格（锚点在左上）。
+ *
+ * 三种情况**拒绝**而不是硬做：
+ * - 越界；
+ * - 区域里已经压着别的合并块（交叠 / 嵌套的合并在 Excel 里同样不允许）；
+ * - 被覆盖的格里**已经有内容**。Excel 会直接丢掉，但模板里那往往是作者写好的
+ *   表头或绑定 —— 丢掉之后只剩下「数据怎么没了」这个谜。宁可报错让人先清空。
+ */
+export function setGridMerge(
+  grid: TemplateGrid,
+  r: number,
+  c: number,
+  rows: number,
+  cols: number,
+): MergeResult {
+  const height = Math.max(1, Math.floor(rows))
+  const width = Math.max(1, Math.floor(cols))
+  const rowCount = grid.length
+  const colCount = grid[r]?.length ?? 0
+  if (r < 0 || c < 0 || r + height > rowCount || c + width > colCount) {
+    return { ok: false, message: `合并区域超出网格（当前 ${rowCount} 行 × ${colCount} 列）` }
+  }
+
+  for (let i = r; i < r + height; i++) {
+    for (let j = c; j < c + width; j++) {
+      const hit = mergeAt(grid, i, j)
+      if (hit && !(hit.r === r && hit.c === c)) {
+        return { ok: false, message: `${cellPos(hit.r, hit.c)} 那里已经有一个合并块，先取消它` }
+      }
+      if (i === r && j === c) continue
+      if (formatCellText(grid[i][j]) !== '') {
+        return { ok: false, message: `${cellPos(i, j)} 有内容，先清空再合并（合并会把它丢掉）` }
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    grid: grid.map((row, ri) =>
+      row.map((cell, ci) => {
+        if (ri === r && ci === c) {
+          return { ...cell, merge_down: height - 1, merge_across: width - 1, merge_to_end: false }
+        }
+        if (ri >= r && ri < r + height && ci >= c && ci < c + width) return { ...BLANK_CELL }
+        return cell
+      }),
+    ),
+  }
+}
+
+/** 取消覆盖 (r,c) 的合并块（锚点回到单格）。本来就没有合并块时原样返回。 */
+export function clearGridMerge(grid: TemplateGrid, r: number, c: number): TemplateGrid {
+  const hit = mergeAt(grid, r, c)
+  if (!hit) return grid
+  return grid.map((row, ri) =>
+    row.map((cell, ci) =>
+      ri === hit.r && ci === hit.c
+        ? { ...cell, merge_down: 0, merge_across: 0, merge_to_end: false }
+        : cell,
+    ),
+  )
+}
+
+/* ------------------------------------------------------------------ *
  * 位置引用的整体平移
  *
  * 插/删行列时，`row_parent:"A3"`、`value_expr:"D3[B3:+0].sum()"` 这些**文本引用**
@@ -963,32 +1095,69 @@ function shiftGrid(
   insert: boolean,
 ): TemplateGrid {
   const blank: CellTpl = { value: null, model: undefined }
-  // 1) 先按轴平移结构
+  // 0) 先按插/删点调整合并**跨度**。
+  //
+  // 锚点位置由下面的结构平移（splice）自动带走，但跨度不会自己变：
+  // 在一个 2 行高的合并表头**内部**插一行，跨度不跟着 +1，合并块就少盖一行，
+  // 表头最后一行变成没合并的散格 —— 表照常出，只是版式悄悄错了。
+  const spanned = grid.map((row, ri) =>
+    row.map((cell, ci) => adjustSpanOnShift(cell, axis === 'row' ? ri : ci, at, delta, axis)),
+  )
+  // 1) 再按轴平移结构
   let out: TemplateGrid
   if (axis === 'row') {
-    if (at < 0 || at > grid.length) return grid
-    const copy = grid.map((row) => row.slice())
+    if (at < 0 || at > spanned.length) return grid
+    const copy = spanned.map((row) => row.slice())
     if (insert) {
-      copy.splice(at, 0, (grid[0] ?? []).map(() => ({ ...blank })))
+      copy.splice(at, 0, (spanned[0] ?? []).map(() => ({ ...blank })))
     } else {
       copy.splice(at, 1)
     }
     out = copy
   } else {
-    const copy = grid.map((row) => row.slice())
+    const copy = spanned.map((row) => row.slice())
     for (const row of copy) {
       if (insert) row.splice(at, 0, { ...blank })
       else row.splice(at, 1)
     }
     out = copy
   }
-  // 2) 再平移文本引用（这一句才是重点：结构挪了，引用必须跟着挪）
+  // 2) 最后平移文本引用（这一句才是重点：结构挪了，引用必须跟着挪）
   return out.map((row) =>
     row.map((cell) => {
       if (!cell.model) return cell
       return { ...cell, model: shiftModel(cell.model, axis, at, delta) }
     }),
   )
+}
+
+/**
+ * 插/删行列时调整合并跨度（只动跨度，锚点位置交给结构平移）。
+ *
+ * 只有「插/删点落在锚点**之后**、跨度**之内**」才需要动：
+ * - 落在锚点之前或等于锚点：锚点自己平移，跨度不变；
+ * - 落在跨度之外：与这个合并块无关。
+ *
+ * 删除把跨度缩到 1 时自动解除合并（`merge_down` 归 0），不会留下一个 0 行高的块。
+ * 删除锚点所在行列时这里不动手 —— 锚点格随结构一起被删掉，合并自然消失；
+ * 用户删的就是这个表头，符合预期。
+ */
+function adjustSpanOnShift(
+  cell: CellTpl,
+  index: number,
+  at: number,
+  delta: number,
+  axis: 'row' | 'col',
+): CellTpl {
+  const s = mergeSpanOf(cell)
+  const span = axis === 'row' ? s.rows : s.cols
+  if (span <= 1) return cell
+  if (index >= at || at > index + span - 1) return cell
+  const next = Math.max(1, span + delta)
+  if (next === span) return cell
+  return axis === 'row'
+    ? { ...cell, merge_down: next - 1 }
+    : { ...cell, merge_across: next - 1 }
 }
 
 /**
@@ -1053,6 +1222,32 @@ export function validateTemplate(tpl: ReportTemplate): string[] {
     })
   })
 
+  // 合并块检查：越界 / 交叠。手写 JSON 绕过了 setGridMerge 的守卫，这里兜一遍。
+  const seenMerges: Array<{ r: number; c: number; rows: number; cols: number }> = []
+  sheet.rows?.forEach((row, r) => {
+    row.cells?.forEach((cell, c) => {
+      const s = mergeSpanOf(cell)
+      if (s.rows === 1 && s.cols === 1 && !s.toEnd) return
+      const cols = s.toEnd ? Math.max(1, (row.cells?.length ?? 0) - c) : s.cols
+      const endR = r + s.rows - 1
+      const endC = c + cols - 1
+      const pos = cellPos(r, c)
+      if (endR > (sheet.rows?.length ?? 0) - 1) {
+        out.push(`${pos}：合并跨到第 ${endR + 1} 行，但模板只有 ${sheet.rows?.length ?? 0} 行`)
+      }
+      if (!s.toEnd && endC > (row.cells?.length ?? 0) - 1) {
+        out.push(`${pos}：合并跨到第 ${endC + 1} 列，但这一行只有 ${row.cells?.length ?? 0} 列`)
+      }
+      for (const m of seenMerges) {
+        if (r <= m.r + m.rows - 1 && m.r <= endR && c <= m.c + m.cols - 1 && m.c <= endC) {
+          out.push(`${pos} 与 ${cellPos(m.r, m.c)} 的合并区域交叠`)
+          break
+        }
+      }
+      seenMerges.push({ r, c, rows: s.rows, cols })
+    })
+  })
+
   return [...new Set(out)]
 }
 
@@ -1064,18 +1259,37 @@ export function validateTemplate(tpl: ReportTemplate): string[] {
  */
 export function gridToWorkbookData(grid: TemplateGrid, opts: { selected?: string } = {}) {
   const cellData: Record<number, Record<number, { v: string; s?: string }>> = {}
+  const mergeData: Array<{
+    startRow: number
+    endRow: number
+    startColumn: number
+    endColumn: number
+  }> = []
   grid.forEach((row, r) => {
     row.forEach((cell, c) => {
       const text = formatCellText(cell)
-      if (!text) return
-      cellData[r] = cellData[r] || {}
       const pos = cellPos(r, c)
       const m = cell.model
+      const anchor = isMergeAnchor(cell)
+      // 合并锚点即使没文字也要占一格：否则 Univer 可能把它当成未合并区域
+      if (!text && !anchor) return
+      cellData[r] = cellData[r] || {}
       let s: string | undefined
       if (pos === opts.selected) s = SELECTED_STYLE_ID
       else if (m?.expand_type) s = EXPAND_STYLE_ID
       else if (text.startsWith('{{')) s = BINDING_STYLE_ID
       cellData[r][c] = { v: text, ...(s ? { s } : {}) }
+
+      const span = mergeSpanOf(cell)
+      const cols = span.toEnd ? Math.max(1, row.length - c) : span.cols
+      if (span.rows > 1 || cols > 1) {
+        mergeData.push({
+          startRow: r,
+          endRow: r + span.rows - 1,
+          startColumn: c,
+          endColumn: c + cols - 1,
+        })
+      }
     })
   })
 
@@ -1096,7 +1310,7 @@ export function gridToWorkbookData(grid: TemplateGrid, opts: { selected?: string
         rowCount: Math.max(grid.length, 50),
         columnCount: Math.max(columnCount, 12),
         cellData,
-        mergeData: [],
+        mergeData,
       },
     },
   }
