@@ -53,11 +53,16 @@ import {
   insertGridCol,
   insertGridRow,
   mergeAt,
+  PARENT_HIGHLIGHT,
   parseCellText,
+  parentPosOf,
+  semanticBgOf,
   isValidReportId,
   parseParams,
+  parsePos,
   REPORT_FORMAT,
   REPORT_VERSION,
+  SEMANTIC_LEGEND,
   setGridCell,
   setGridMerge,
   suggestReportId,
@@ -569,6 +574,11 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   useEffect(() => {
     gridRef.current = grid
   }, [grid])
+  /**
+   * 当前被点亮的主格：`{ 位置, 原本的语义底色 }`。
+   * 移开选中时要照着这个还原，否则主格会永久留一块橙色 —— 那是**假的语义**。
+   */
+  const litParentRef = useRef<Array<{ pos: string; color: string | null }>>([])
   /** 改 grid 并请画布重建（结构变更 / 属性面板改动）。**画布自身的改动别走这里。** */
   const applyGrid = useCallback((next: TemplateGrid) => {
     setGrid(next)
@@ -1088,6 +1098,25 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
          * 不至于让整块区域白屏。
          */
         const api = univerAPI as any
+        /**
+         * 主格是「关系」不是「属性」，静态样式画不出来 —— 选中一格时把它的主格
+         * 点亮，就是最省事的关系可视化。
+         *
+         * 用 `setBackgroundColor` 直接改，不重建工作簿：重建会把整张表拆了再装，
+         * 光标和选区都会丢（这正是 `SheetValueChanged` 里**刻意**不用 applyGrid
+         * 的原因）。代价是要自己记着还原，见 `litParentRef`。
+         */
+        const sheet = () => api.getActiveWorkbook?.()?.getActiveSheet?.()
+        const paintCell = (pos: string, color: string | null) => {
+          const rc = parsePos(pos)
+          const sh = sheet()
+          if (!rc || !sh) return
+          try {
+            sh.getRange(rc.r, rc.c, 1, 1).setBackgroundColor(color ?? '#ffffff')
+          } catch {
+            /* 拿不到 range 就算了，图例仍在 */
+          }
+        }
         try {
           listeners.push(
             api.addEvent(api.Event.SelectionChanged, (p: any) => {
@@ -1097,6 +1126,18 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
               setSelCol((s.startColumn ?? 0) + 1)
               // 换了格子，上一格「合并被拒」的提示就不该还挂着
               setMergeError('')
+
+              // 先把上一个主格还原成它本来的语义底色，再点亮新的
+              for (const { pos, color } of litParentRef.current) paintCell(pos, color)
+              litParentRef.current = []
+              const g = gridRef.current
+              const cur = g?.[s.startRow ?? 0]?.[s.startColumn ?? 0]
+              for (const pp of parentPosOf(cur)) {
+                const rc = parsePos(pp)
+                const target = rc ? g?.[rc.r]?.[rc.c] : undefined
+                litParentRef.current.push({ pos: pp, color: semanticBgOf(target) })
+                paintCell(pp, PARENT_HIGHLIGHT)
+              }
             }),
           )
           listeners.push(
@@ -1543,7 +1584,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
             </Space>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               格内容写字面量或 <code>{'{{ds1.city}}'}</code>；插删行列会自动平移主格与表达式里的位置引用。
-              黄底 = 扩展格，蓝字 = 绑定格。
+              格子的底色 / 字色就是它的语义，对照下方图例看。
             </Typography.Text>
             {selCell && (
               <CellModelEditor
@@ -1768,6 +1809,50 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           <div style={{ maxHeight: '52vh', overflow: 'auto' }} dangerouslySetInnerHTML={{ __html: fallbackHtml }} />
         )}
       </div>
+
+      {/*
+        语义图例：格子的底色 / 字色是**非线性语义的唯一可见载体**（文本不能加标记，
+        因为文本就是回写载体）。没有图例的话这些颜色只是"看起来好看"，用户解码不了。
+      */}
+      {mode === 'free' && (
+        <div
+          data-testid="grid-report-semantic-legend"
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '4px 16px',
+            alignItems: 'center',
+            marginTop: 8,
+            fontSize: 12,
+            color: '#555',
+          }}
+        >
+          {SEMANTIC_LEGEND.map((it) => (
+            <span key={it.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: 22,
+                  height: 15,
+                  lineHeight: '15px',
+                  textAlign: 'center',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  borderRadius: 2,
+                  border: it.fg === '#D85A30' ? '2px solid #D85A30' : '1px solid #d9d9d9',
+                  background: it.bg ?? '#fff',
+                  color: it.fg ?? '#333',
+                  fontStyle: it.key === 'expr' ? 'italic' : 'normal',
+                }}
+              >
+                Aa
+              </span>
+              {it.label}
+            </span>
+          ))}
+          <span style={{ color: '#888' }}>· 选中一格会点亮它的主格（橙底）</span>
+        </div>
+      )}
 
       {dumpText && (
         <details style={{ marginTop: 12 }} data-testid="grid-report-dump-panel">

@@ -22,8 +22,14 @@ import {
   isMergeAnchor,
   mergeAt,
   mergeSpanOf,
+  PARENT_HIGHLIGHT,
+  PARENT_STYLE_ID,
+  parentPosOf,
   parseCellText,
   parsePos,
+  SEMANTIC_LEGEND,
+  semanticBgOf,
+  SELECTED_STYLE_ID,
   setGridCell,
   setGridMerge,
   stripArrayPrefix,
@@ -963,5 +969,176 @@ describe('自由模板：合并单元格', () => {
     expect(data.sheets.sheet1.mergeData).toEqual([
       { startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
     ])
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 非线性语义「画进网格」
+ *
+ * 用户看模板时看不见三件事：哪一格会往下长、哪一格的数是算出来的、
+ * 谁挂在谁下面。这三者决定报表形状，却都藏在 model 里。
+ * 这里把它们编码成**样式**（不是文本标记 —— 文本是回写载体，塞标记会
+ * 在用户编辑时静默冲掉 model）。
+ * ------------------------------------------------------------------ */
+describe('自由模板：非线性语义画进网格', () => {
+  const cell = (value: string | null, model?: CellTpl['model']): CellTpl => ({ value, model })
+
+  /**
+   * 一格一种语义，位置固定：
+   *   A1 字面量      B1 字段         C1 表达式        D1 字段+行测试   E1 只扩展
+   *   A2 纵扩展+字段  B2 横扩展+字段  C2 字段+左主格   D2 表达式+双主格 E2 空
+   */
+  function semGrid(): ReturnType<typeof emptyGrid> {
+    return [
+      [
+        cell('地区'),
+        cell(null, { ds: 'ds1', field: 'city' }),
+        cell(null, { ds: 'ds1', value_expr: 'B1[A1:+0].sum()' }),
+        cell(null, { ds: 'ds1', field: 'amount', row_test_expr: 'amount > 0' }),
+        cell(null, { ds: 'ds1', expand_type: 'r' }),
+      ],
+      [
+        cell(null, { ds: 'ds1', field: 'region', expand_type: 'r' }),
+        cell(null, { ds: 'ds1', field: 'city', expand_type: 'c' }),
+        cell(null, { ds: 'ds1', field: 'amount', row_parent: 'A2' }),
+        cell(null, { ds: 'ds1', value_expr: 'C2[A2:+0].sum()', row_parent: 'A2', col_parent: 'B2' }),
+        cell(null),
+      ],
+    ]
+  }
+
+  type Wb = {
+    styles: Record<string, Record<string, unknown>>
+    sheets: Record<string, { cellData: Record<number, Record<number, { v?: string; s?: string }>> }>
+  }
+  const build = (selected?: string): Wb =>
+    gridToWorkbookData(semGrid(), { selected }) as unknown as Wb
+
+  /** 某格最终套到的样式对象；没套样式返回 null */
+  const styleAt = (wb: Wb, r: number, c: number): Record<string, unknown> | null => {
+    const id = wb.sheets.sheet1.cellData[r]?.[c]?.s
+    return id ? wb.styles[id] ?? null : null
+  }
+  /** 深挖出样式表里出现过的所有 #rrggbb —— 用来交叉核对图例 */
+  const allColors = (wb: Wb): Set<string> => {
+    const out = new Set<string>()
+    const walk = (v: unknown) => {
+      if (typeof v === 'string') {
+        if (/^#[0-9A-Fa-f]{6}$/.test(v)) out.add(v.toUpperCase())
+        return
+      }
+      if (Array.isArray(v)) v.forEach(walk)
+      else if (v && typeof v === 'object') Object.values(v).forEach(walk)
+    }
+    walk(wb.styles)
+    return out
+  }
+
+  it('底色 = 扩展方向：纵向黄 / 横向绿 / 不扩展无底色', () => {
+    const wb = build()
+    expect(styleAt(wb, 1, 0)?.bg).toEqual({ rgb: '#FFF1B8' }) // A2 纵向
+    expect(styleAt(wb, 1, 1)?.bg).toEqual({ rgb: '#D7F0E3' }) // B2 横向
+    expect(styleAt(wb, 0, 1)?.bg).toBeUndefined() // B1 只绑字段，不扩展
+    expect(styleAt(wb, 0, 0)).toBeNull() // A1 纯字面量：完全不套样式
+  })
+
+  it('字色 = 内容来源：字段蓝 / 表达式紫斜 / 字面量不标', () => {
+    const wb = build()
+    expect(styleAt(wb, 0, 1)?.cl).toEqual({ rgb: '#1668DC' })
+    expect(styleAt(wb, 0, 2)?.cl).toEqual({ rgb: '#6B4FBB' })
+    expect(styleAt(wb, 0, 2)?.it).toBe(1)
+    expect(styleAt(wb, 0, 0)).toBeNull()
+  })
+
+  it('挂了测试表达式 → 底边框橙色（运行期可能整行消失）', () => {
+    const wb = build()
+    // s: 8 = Univer BorderStyleTypes.MEDIUM（不是 2，2 是发丝线）
+    expect(styleAt(wb, 0, 3)?.bd).toEqual({ b: { s: 8, cl: { rgb: '#D85A30' } } })
+    // 同是字段格，没挂测试的 B1 不该有边框
+    expect(styleAt(wb, 0, 1)?.bd).toBeUndefined()
+  })
+
+  it('两个维度可以叠：扩展格同时是字段格 → 既有底色又有字色', () => {
+    const wb = build()
+    const a2 = styleAt(wb, 1, 0)
+    expect(a2?.bg).toEqual({ rgb: '#FFF1B8' })
+    expect(a2?.cl).toEqual({ rgb: '#1668DC' })
+  })
+
+  it('语义样式按需注册：没用到的组合不进 styles', () => {
+    const wb = build()
+    expect(Object.keys(wb.styles).sort()).toEqual(
+      [
+        SELECTED_STYLE_ID,
+        PARENT_STYLE_ID,
+        'tpl-n-field',
+        'tpl-n-expr',
+        'tpl-n-field-rule',
+        'tpl-r-n',
+        'tpl-r-field',
+        'tpl-c-field',
+      ].sort(),
+    )
+  })
+
+  it('选中格压过语义样式，主格高亮压过语义底色', () => {
+    const wb = build('C2')
+    expect(wb.sheets.sheet1.cellData[1]?.[2]?.s).toBe(SELECTED_STYLE_ID)
+    // C2 的左主格是 A2（本身是黄色扩展格），此时应该让位给主格色
+    expect(wb.sheets.sheet1.cellData[1]?.[0]?.s).toBe(PARENT_STYLE_ID)
+    expect(wb.styles[PARENT_STYLE_ID].bg).toEqual({ rgb: PARENT_HIGHLIGHT })
+  })
+
+  it('主格框不比选中框细 —— 曾经把 s 写成 2，那是 HAIR（最细）不是 MEDIUM', () => {
+    const wb = build('C2')
+    const sel = wb.styles[SELECTED_STYLE_ID].bd as { b: { s: number } }
+    const par = wb.styles[PARENT_STYLE_ID].bd as { b: { s: number } }
+    expect(par.b.s).toBeGreaterThan(sel.b.s)
+    // Univer BorderStyleTypes：1=THIN 8=MEDIUM。发丝线（2）在 1x 屏上几乎看不见
+    expect(par.b.s).toBe(8)
+  })
+
+  it('没选中任何格时，不产生主格高亮', () => {
+    const wb = build()
+    expect(wb.sheets.sheet1.cellData[1]?.[0]?.s).toBe('tpl-r-field')
+  })
+
+  it('图例里的每个颜色都真的被用上 —— 改了配色忘了改图例会红', () => {
+    // 用不带 selected 的那份：选中 C2 会让 A2 让位给主格色，黄色就注册不进来了
+    const used = allColors(build())
+    const declared = SEMANTIC_LEGEND.flatMap((x) => [x.bg, x.fg]).filter(
+      (x): x is string => typeof x === 'string',
+    )
+    expect(declared.length).toBeGreaterThan(0)
+    for (const color of declared) {
+      expect(used).toContain(color.toUpperCase())
+    }
+  })
+
+  it('semanticBgOf：还原主格时要知道它本来的语义底色', () => {
+    const g = semGrid()
+    expect(semanticBgOf(g[1][0])).toBe('#FFF1B8')
+    expect(semanticBgOf(g[1][1])).toBe('#D7F0E3')
+    expect(semanticBgOf(g[0][1])).toBeNull() // 字段格：字色有、底色无
+    expect(semanticBgOf(g[0][0])).toBeNull()
+    expect(semanticBgOf(undefined)).toBeNull()
+  })
+
+  it('还原色与画布实际底色同源：涂回 semanticBgOf 就等于没动过', () => {
+    const wb = build()
+    const g = semGrid()
+    // A2 是扩展格：它自己的语义底色 == 渲染时套的底色
+    expect(wb.styles['tpl-r-field'].bg).toEqual({ rgb: semanticBgOf(g[1][0]) })
+    expect(wb.styles['tpl-c-field'].bg).toEqual({ rgb: semanticBgOf(g[1][1]) })
+  })
+
+  it('parentPosOf：左右主格去重，没有主格返回空', () => {
+    const g = semGrid()
+    expect(parentPosOf(g[1][2])).toEqual(['A2']) // C2 只有左主格
+    expect(parentPosOf(g[1][3])).toEqual(['A2', 'B2']) // D2 左右都有
+    expect(parentPosOf(g[0][0])).toEqual([])
+    expect(parentPosOf(undefined)).toEqual([])
+    // 左右主格写同一格时只点亮一次
+    expect(parentPosOf(cell(null, { row_parent: 'A2', col_parent: 'A2' }))).toEqual(['A2'])
   })
 })

@@ -593,10 +593,128 @@ export function buildCrossTemplate(opts: CrossTemplateOptions): ReportTemplate {
 
 /** 表头样式 id（Univer IStyleData：加粗 + 居中 + 浅蓝底） */
 const HEADER_STYLE_ID = 'grid-hdr'
-/** 设计态样式：扩展格（黄底加粗） / 绑定格（蓝字） / 当前选中（蓝底蓝框） */
-const EXPAND_STYLE_ID = 'tpl-expand'
-const BINDING_STYLE_ID = 'tpl-binding'
-const SELECTED_STYLE_ID = 'tpl-selected'
+/** 当前选中格 */
+export const SELECTED_STYLE_ID = 'tpl-selected'
+/** 选中格的**主格**（row_parent / col_parent 指向的格） */
+export const PARENT_STYLE_ID = 'tpl-parent'
+/**
+ * Univer `BorderStyleTypes` 的取值（抄自 @univerjs/core types/enum/border-style-types.d.ts）。
+ *
+ * **别写魔法数字**：这个枚举里 `2` 是 **HAIR（最细）**、`8` 才是 MEDIUM。
+ * 想画「比选中框更醒目的一条」很容易顺手写 `s: 2`，结果画成最细的发丝线，
+ * 在 1x 屏上几乎看不见 —— 等于没标。
+ */
+const BORDER_THIN = 1
+const BORDER_MEDIUM = 8
+
+/**
+ * 主格高亮色。
+ *
+ * 画布上「选中一格 → 点亮它的主格」是在 **Univer 上直接改底色** 做的（不重建工作簿，
+ * 否则会丢选区），所以 UI 侧要自己拿这个色去涂、去还原。
+ * 和 `PARENT_STYLE_ID` 的底色同源 —— 两条路画出来的主格必须同色，故只留这一份常量。
+ */
+export const PARENT_HIGHLIGHT = '#FFE8D6'
+
+/**
+ * 设计态语义样式 —— 把非线性语义编码进格子外观。
+ *
+ * **为什么只能走样式、不能往文本里加标记**：格子里显示的文本就是**回写载体**
+ * （`formatCellText` 输出 `{{...}}`，`SheetValueChanged` 再 `parseCellText`
+ * 还原成 model）。往文本里塞 `↓` 这类标记，用户一编辑就会把整格的 model
+ * 冲成字面量 —— 静默丢数据，比不标还糟。
+ *
+ * 两个正交维度，各管一件事（超过两个维度用户就记不住了）：
+ *
+ * - **底色 = 这一格会不会"长"出来**（扩展方向）
+ *   纵向 `r` 往下长行、横向 `c` 往右长列。这是决定报表形状的属性，最该被看见。
+ * - **字色 = 内容从哪儿来**（字段绑定 / 表达式 / 静态文本）
+ *   `{{ds1.city}}` 和字面量「城市」在格子里长得几乎一样，不标分不清。
+ *
+ * 第三个弱维度：**底边框橙色** = 这一格挂了 row/col_test_expr，
+ * 意味着运行期可能整行整列消失。罕见，所以只用一条边框，不抢主维度。
+ */
+const SEM_BG = {
+  r: { bl: 1, bg: { rgb: '#FFF1B8' } },
+  c: { bl: 1, bg: { rgb: '#D7F0E3' } },
+} as const
+const SEM_FG = {
+  field: { cl: { rgb: '#1668DC' } },
+  expr: { cl: { rgb: '#6B4FBB' }, it: 1 },
+} as const
+/** 挂了测试表达式 → 底边框橙色（运行期可能整行/整列消失） */
+const SEM_RULE_BD = { bd: { b: { s: BORDER_MEDIUM, cl: { rgb: '#D85A30' } } } } as const
+
+/** 供 UI 画图例：语义 → 颜色。改样式时这里要跟着改。 */
+export const SEMANTIC_LEGEND = [
+  { key: 'expand-r', label: '纵向扩展（往下长行）', bg: '#FFF1B8', fg: null },
+  { key: 'expand-c', label: '横向扩展（往右长列）', bg: '#D7F0E3', fg: null },
+  { key: 'field', label: '字段绑定', bg: null, fg: '#1668DC' },
+  { key: 'expr', label: '表达式 / 层次坐标', bg: null, fg: '#6B4FBB' },
+  { key: 'rule', label: '有条测试（可能整行消失）', bg: null, fg: '#D85A30' },
+] as const
+
+/** 一格的设计态语义样式；无语义（纯静态文本）返回 null。 */
+function semanticStyleOf(cell: CellTpl): { id: string; style: Record<string, unknown> } | null {
+  const m = cell.model
+  const bgKey = m?.expand_type === 'r' ? 'r' : m?.expand_type === 'c' ? 'c' : ''
+  const fgKey = m?.value_expr ? 'expr' : m?.field ? 'field' : ''
+  const hasRule = !!(m?.row_test_expr || m?.col_test_expr)
+  if (!bgKey && !fgKey && !hasRule) return null
+  const id = `tpl-${bgKey || 'n'}-${fgKey || 'n'}${hasRule ? '-rule' : ''}`
+  const style: Record<string, unknown> = {
+    ...(bgKey ? SEM_BG[bgKey] : {}),
+    ...(fgKey ? SEM_FG[fgKey] : {}),
+    ...(hasRule ? SEM_RULE_BD : {}),
+  }
+  return { id, style }
+}
+
+/**
+ * 一格的设计态底色；无语义底色返回 null。
+ *
+ * 主格高亮是**临时**的（选中时点亮、移开要还原），还原时需要知道它原本该是什么色。
+ */
+export function semanticBgOf(cell: CellTpl | undefined): string | null {
+  const m = cell?.model
+  if (m?.expand_type === 'r') return SEM_BG.r.bg.rgb
+  if (m?.expand_type === 'c') return SEM_BG.c.bg.rgb
+  return null
+}
+
+/** 一格的 row/col_parent 位置（已去重、去空）。供 UI 点亮主格。 */
+export function parentPosOf(cell: CellTpl | undefined): string[] {
+  const out: string[] = []
+  const rp = cell?.model?.row_parent
+  const cp = cell?.model?.col_parent
+  if (rp) out.push(rp)
+  if (cp && cp !== rp) out.push(cp)
+  return out
+}
+
+/** 按 A1 这样的位置取格；越界返回 null。 */
+function findCellAtPos(grid: TemplateGrid, pos: string): CellTpl | null {
+  for (let r = 0; r < grid.length; r++) {
+    for (let c = 0; c < (grid[r]?.length ?? 0); c++) {
+      if (cellPos(r, c) === pos) return grid[r][c]
+    }
+  }
+  return null
+}
+
+/**
+ * 选中格的**主格**位置集合。
+ *
+ * 主格是「关系」不是「属性」——平时画不出来，但选中一个格时把它的主格点亮，
+ * 就是最省事的关系可视化：用户一眼看到「我挂在谁下面」。
+ */
+function parentPositionsOf(grid: TemplateGrid, selected: string): Set<string> {
+  const out = new Set<string>()
+  const cell = findCellAtPos(grid, selected)
+  if (cell?.model?.row_parent) out.add(cell.model.row_parent)
+  if (cell?.model?.col_parent) out.add(cell.model.col_parent)
+  return out
+}
 
 /**
  * 模板前部的表头行数（标题行 + 各级列头 + 指标子表头），到第一个行展开格为止。
@@ -1265,19 +1383,29 @@ export function gridToWorkbookData(grid: TemplateGrid, opts: { selected?: string
     startColumn: number
     endColumn: number
   }> = []
+  // 语义样式按需注册：只把**实际用到**的组合放进 styles，避免堆一堆用不上的
+  const semStyles: Record<string, Record<string, unknown>> = {}
+  const parentPos = opts.selected ? parentPositionsOf(grid, opts.selected) : new Set<string>()
   grid.forEach((row, r) => {
     row.forEach((cell, c) => {
       const text = formatCellText(cell)
       const pos = cellPos(r, c)
-      const m = cell.model
       const anchor = isMergeAnchor(cell)
-      // 合并锚点即使没文字也要占一格：否则 Univer 可能把它当成未合并区域
-      if (!text && !anchor) return
+      // 合并锚点即使没文字也要占一格：否则 Univer 可能把它当成未合并区域。
+      // 扩展格同理 ——「这一格会长」正是最该被看见的语义，若因为没文字就整格不输出，
+      // 底色标记根本画不出来，等于没标。
+      if (!text && !anchor && !cell.model?.expand_type) return
       cellData[r] = cellData[r] || {}
       let s: string | undefined
       if (pos === opts.selected) s = SELECTED_STYLE_ID
-      else if (m?.expand_type) s = EXPAND_STYLE_ID
-      else if (text.startsWith('{{')) s = BINDING_STYLE_ID
+      else if (parentPos.has(pos)) s = PARENT_STYLE_ID
+      else {
+        const sem = semanticStyleOf(cell)
+        if (sem) {
+          s = sem.id
+          semStyles[sem.id] = sem.style
+        }
+      }
       cellData[r][c] = { v: text, ...(s ? { s } : {}) }
 
       const span = mergeSpanOf(cell)
@@ -1299,9 +1427,18 @@ export function gridToWorkbookData(grid: TemplateGrid, opts: { selected?: string
     name: '模板',
     sheetOrder: ['sheet1'],
     styles: {
-      [EXPAND_STYLE_ID]: { bl: 1, bg: { rgb: '#FFF1B8' } },
-      [BINDING_STYLE_ID]: { cl: { rgb: '#1668DC' } },
-      [SELECTED_STYLE_ID]: { bl: 1, bg: { rgb: '#D6E4FF' }, bd: { b: { s: 1, cl: { rgb: '#1677FF' } } } },
+      [SELECTED_STYLE_ID]: {
+        bl: 1,
+        bg: { rgb: '#D6E4FF' },
+        bd: { b: { s: BORDER_THIN, cl: { rgb: '#1677FF' } } },
+      },
+      // 主格：选中格的 row/col_parent 指向的格，橙底 + 橙框
+      [PARENT_STYLE_ID]: {
+        bl: 1,
+        bg: { rgb: PARENT_HIGHLIGHT },
+        bd: { b: { s: BORDER_MEDIUM, cl: { rgb: '#D85A30' } } },
+      },
+      ...semStyles,
     },
     sheets: {
       sheet1: {
