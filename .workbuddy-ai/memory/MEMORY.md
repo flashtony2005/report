@@ -10,7 +10,7 @@
 
 混用这三个词是沟通事故的主要来源。用户说"自由表格"时先确认指哪个。
 
-## Univer 的两个硬约束（实测，别再试）
+## Univer 的三个硬约束（实测，别再试）
 
 1. **列宽单位是 px，不是 mm** —— `FWorksheet.setColumnWidths` 文档明写
    `to 100 pixels`。打印侧是 mm 精确，需要自己维护一层映射。
@@ -18,14 +18,29 @@
    `createUniver()`：**不抛异常，但完全不渲染**（容器内 0 canvas）。
    第一个不受影响。→ 任何"每个表格各嵌一个"的方案都出局，
    只能做单例 + 跟随选中切换。
+3. **样式通道只有「底色 + 字色」两个能画**（0.25 core preset，截图数像素实测）：
+   - ✅ `bg` 底色、`cl` 字色、`bl` 加粗、`it` 斜体
+   - ❌ `bd` 单元格边框：**完全不渲染**，THIN / MEDIUM 都试过，0 像素
+   - ⚠️ `ul` 下划线：会画，但**永远用字色** —— `ITextDecoration.c` 缺省
+     TRUE（"follow the font color"），显式写 `c: 0` 也无效，`cl` 被无视
+   → 别再设计依赖边框 / 下划线的第三个视觉维度。
+
+   **配套教训**：单测只能证明我们**输出了**某个样式，证明不了 Univer
+   **画得出**它。曾带着一个画不出来的橙色边框过了 11 条单测并提交。
+   要验渲染只能截图数像素（`scripts/verify-semantic-colors.py`）。
 
 ## 自由模板已经在 Univer 里编辑了
 
 `GridReportModal.tsx` 的 `free` 模式装的**就是模板本身**（不是展开结果），
 靠 `SelectionChanged` + `SheetValueChanged` 回写。
-但 `gridToWorkbookData` 只搬了「文本 + 合并 + 3 种颜色样式」，
-`expand_type` / `row_parent` / `value_expr` / `row_test_expr` / `dict` /
-`format_expr` / `export_formula` 等在 Univer 里**零表达**，只能走右侧属性面板。
+
+**2026-09-14 更新**：语义已经画进网格了（`SEM_BG` / `SEM_FG`，
+见 `grid-report.ts`）—— 底色 = 扩展方向（纵黄 / 横绿），
+字色 = 内容来源（字段蓝 / 表达式紫斜）。属性面板也已补上
+`row_test_expr` / `col_test_expr` 输入框。
+
+**仍未表达的**：`row_parent`（只在选中时点亮主格，静态画不出关系）、
+`dict` / `format_expr` / `export_formula` / `agg` / `expand_min_max_count`。
 → 别把"能在 Univer 里打字"当成"非线性语义已经迁过去了"。
 
 ## 沙箱：npm / vite 的两个绕行脚本（已入库，别再写 /tmp）
