@@ -651,26 +651,49 @@ impl Engine {
                     None => vec![None],
                 };
 
+                // 列主格「数据行 → 所属实例」的索引，用来把逐列主格过滤换成一次分桶。
+                // 每个模板格建一次，O(总行数)。
+                let row_to_cp = self.col_parent_index(&col_parents);
+
                 for parent in &row_parents {
-                    for col_parent in &col_parents {
-                        let mut view = match parent {
-                            Some(p) => self.insts[*p].rows.clone(),
-                            None => all_rows.clone(),
-                        };
-                        if let Some(cp) = col_parent {
-                            // 行列主格求交。`rows` 是升序的（见 group_by_field / view 的构造），
-                            // 所以用二分而不是 `cv.contains(r)`：这段在 row_parents × col_parents
-                            // 双循环里，线性扫会退化成 (R×M)²（交叉表 160×80 时约 8e7 次比较）。
-                            let cv = &self.insts[*cp].rows;
-                            // 二分的前提：rows 严格升序。将来若有人改成非有序构造，
-                            // 这里会立刻炸，而不是静默少取数（少取数是「合计悄悄变小」，
-                            // 比崩溃难查得多）。
-                            debug_assert!(
-                                cv.windows(2).all(|w| w[0] < w[1]),
-                                "insts[..].rows 必须严格升序，否则下面的二分取交会算错"
-                            );
-                            view.retain(|r| cv.binary_search(r).is_ok());
+                    let base = match parent {
+                        Some(p) => self.insts[*p].rows.clone(),
+                        None => all_rows.clone(),
+                    };
+                    // 按列主格分桶：整个 base 只走一遍，O(|base|)。
+                    //
+                    // 原来是「每个 (行主格 × 列主格) 组合都克隆一遍 base 再二分过滤」，
+                    // 也就是 O(R×M×M)：交叉表 640×320 实测这一项占 705 ms 里的 459 ms
+                    // （判别实验：总量固定只变月份数，705→483→362→303 ms，与 M 成正比）。
+                    let mut buckets: HashMap<Option<usize>, Vec<usize>> = HashMap::new();
+                    if let Some(map) = &row_to_cp {
+                        for &r in &base {
+                            buckets.entry(map.get(&r).copied()).or_default().push(r);
                         }
+                    }
+                    for col_parent in &col_parents {
+                        let view = match &row_to_cp {
+                            Some(_) => buckets.remove(col_parent).unwrap_or_default(),
+                            // 没有列主格 / 列主格 rows 有重叠：走原来的求交口径
+                            None => {
+                                let mut v = base.clone();
+                                if let Some(cp) = col_parent {
+                                    // 行列主格求交。`rows` 是升序的（见 group_by_field /
+                                    // view 的构造），所以用二分而不是 `cv.contains(r)`：
+                                    // 线性扫会退化成 (R×M)²。
+                                    let cv = &self.insts[*cp].rows;
+                                    // 二分的前提：rows 严格升序。将来若有人改成非有序构造，
+                                    // 这里会立刻炸，而不是静默少取数（少取数是「合计悄悄
+                                    // 变小」，比崩溃难查得多）。
+                                    debug_assert!(
+                                        cv.windows(2).all(|w| w[0] < w[1]),
+                                        "insts[..].rows 必须严格升序，否则二分取交会算错"
+                                    );
+                                    v.retain(|r| cv.binary_search(r).is_ok());
+                                }
+                                v
+                            }
+                        };
                         let created = self.make_insts(&pos, r, c, *parent, *col_parent, &view, cell, &model);
                         for (idx, inst_idx) in created.iter().enumerate() {
                             self.insts[*inst_idx].expand_index = idx;
@@ -1620,6 +1643,33 @@ impl Engine {
             idx.prefix.push(idx.prefix[k] + add);
         }
         idx.prefix[n]
+    }
+
+    /// 列主格「数据行 → 所属实例」索引，供展开时按列主格分桶（见 `expand_sheet`）。
+    ///
+    /// 只有列主格的 `rows` **互不相交**时才能用：`group_by_field` 是划分，正常都满足。
+    /// 一旦有重叠就返回 None，调用方退回「逐列主格求交」的旧口径 ——
+    /// 分桶会把重叠的行只分给一个列主格，**静默少取数**（合计悄悄变小），
+    /// 这种错误比慢难查得多，宁可慢也不能错。
+    fn col_parent_index(&self, col_parents: &[Option<usize>]) -> Option<HashMap<usize, usize>> {
+        // 没有列主格（col_parents == [None]）时谈不上分桶
+        if col_parents.len() == 1 && col_parents[0].is_none() {
+            return None;
+        }
+        let mut m: HashMap<usize, usize> = HashMap::new();
+        let mut disjoint = true;
+        for cp in col_parents.iter().flatten() {
+            for r in &self.insts[*cp].rows {
+                if m.insert(*r, *cp).is_some() {
+                    disjoint = false;
+                }
+            }
+        }
+        if disjoint {
+            Some(m)
+        } else {
+            None
+        }
     }
 
     /// 找到「对当前格可见」的位置名为 target 的实例：
@@ -2637,6 +2687,27 @@ mod scale {
             let (rows, cells, ms, insts) = time_one(r, m);
             let per = if insts > 0 { ms * 1000.0 / insts as f64 } else { 0.0 };
             println!("  {r:>5} × {m:<5}  {rows:>7}  {cells:>8}  {insts:>8}  {ms:>9.1}  {per:>10.3}");
+        }
+        println!();
+    }
+
+    /// 交叉表的**形状依赖**：总量固定（约 20 万实例），只改「地区数 × 月份数」的比例。
+    ///
+    /// 存在的理由：交叉表每个数值格都要做「行主格 ∩ 列主格」求交。若实现是
+    /// 「每个 (行主格 × 列主格) 组合都把行主格的行集扫一遍」，总成本就是
+    /// O(R×M×M) —— 总量固定时**仍与 M 成正比**。这个基准正是用来暴露它的：
+    /// 只看「总量 vs 耗时」看不出来，因为总量被钉死了。
+    ///
+    /// 优化前（分桶前）：705 / 483 / 362 / 303 ms，与 M 同向变化；
+    /// 改成「一次分桶」后应当基本持平。
+    #[test]
+    #[ignore = "性能基准，手动跑：见本模块头部注释"]
+    fn bench_cross_tab_shape() {
+        println!("\n   地区 × 月份    物理行     实例数    耗时(ms)   每实例(µs)");
+        for (r, m) in [(640usize, 320usize), (1280, 160), (2560, 80), (5120, 40)] {
+            let (rows, _cells, ms, insts) = time_one(r, m);
+            let per = if insts > 0 { ms * 1000.0 / insts as f64 } else { 0.0 };
+            println!("  {r:>5} × {m:<5}  {rows:>7}  {insts:>8}  {ms:>9.1}  {per:>10.3}");
         }
         println!();
     }
