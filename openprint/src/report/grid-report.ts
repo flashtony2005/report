@@ -703,14 +703,39 @@ export function parentPosOf(cell: CellTpl | undefined): string[] {
   return out
 }
 
-/** 按 A1 这样的位置取格；越界返回 null。 */
+/**
+ * 按 A1 这样的位置取格；越界 / 位置非法返回 null。
+ *
+ * 直接反算下标（`parsePos` 是 `cellPos` 的逆），不做全网格线性扫 ——
+ * 主格链要顺着 parent 一级级往上取，一次 O(R×C) 的扫描会被放大成 O(链长×R×C)。
+ */
 function findCellAtPos(grid: TemplateGrid, pos: string): CellTpl | null {
-  for (let r = 0; r < grid.length; r++) {
-    for (let c = 0; c < (grid[r]?.length ?? 0); c++) {
-      if (cellPos(r, c) === pos) return grid[r][c]
-    }
+  const rc = parsePos(pos)
+  if (!rc) return null
+  return grid[rc.r]?.[rc.c] ?? null
+}
+
+/**
+ * 一格的主格链：**由近及远**（`[直接主格, 祖父格, …]`）。
+ *
+ * 只跟 `row_parent` —— 行方向是非线性报表的主层次，混进 `col_parent`
+ * 会让"链"变成一张图，既画不出来也说不清。成环时截断（`validateTemplate`
+ * 已另行报警，这里只保证不死循环）。
+ */
+export function parentChainOf(grid: TemplateGrid, cell: CellTpl | undefined): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  let cur = cell
+  // 上界给足：链最长也就是格子总数，超过说明有环
+  let guard = grid.length * (grid[0]?.length ?? 0) + 1
+  while (cur && guard-- > 0) {
+    const p = cur.model?.row_parent
+    if (!p || seen.has(p)) break
+    seen.add(p)
+    out.push(p)
+    cur = findCellAtPos(grid, p) ?? undefined
   }
-  return null
+  return out
 }
 
 /**
@@ -1386,7 +1411,96 @@ export function validateTemplate(tpl: ReportTemplate): string[] {
  * 这里只是「把每格的模板文本摆进格子」，不做任何展开。扩展格用底色标出来，
  * 因为 `{{ds1.city}}` 和字面量「城市」在格子里长得几乎一样，不标根本分不清。
  */
-export function gridToWorkbookData(grid: TemplateGrid, opts: { selected?: string } = {}) {
+/** 主格树的一个节点。 */
+export interface TplNode {
+  pos: string
+  /** 格子里显示的文本（`formatCellText` 的结果，可能是 `{{ds1.city}}`） */
+  text: string
+  expand: 'r' | 'c' | ''
+  /** 主格指向的格没有 model —— 关系悬空（模板体检会另行报警） */
+  orphan?: boolean
+  /** 主格链成环，只能当根挂出来 */
+  cycle?: boolean
+  children: TplNode[]
+}
+
+/**
+ * 把网格按 `row_parent` 组织成**主格树**（森林）。
+ *
+ * 为什么需要它：主格是「关系」不是「属性」，而 Univer 只画底色 + 字色两个通道
+ * （`bd` / `ul` 实测画不出来，见上文），两个通道已经给了扩展方向和内容来源 ——
+ * **格子里根本没有第三个通道能静态表达关系**，之前只能做成「选中时点亮」。
+ * 关系本质是树，树不必画在格子里：常显一棵树，一眼看到整张模板的层次。
+ *
+ * 只收**带 model 的格**：字面量标题（"2026 年销售汇总"）不属于任何主格链，
+ * 混进来只是噪音。
+ *
+ * 两种异常情况都不会让节点凭空消失：
+ * - 主格成环 → 谁都不是根、也从任何根走不到，拎出来当根并标 `cycle`；
+ * - 主格指向没有 model 的格 → 当根并标 `orphan`（`validateTemplate` 会报警）。
+ */
+export function parentTreeOf(grid: TemplateGrid): TplNode[] {
+  const nodes: Array<{ pos: string; cell: CellTpl }> = []
+  grid.forEach((row, r) =>
+    row.forEach((cell, c) => {
+      if (cell.model) nodes.push({ pos: cellPos(r, c), cell })
+    }),
+  )
+  const byPos = new Map(nodes.map((n) => [n.pos, n]))
+  const parentOf = (n: { pos: string; cell: CellTpl }): string | null => {
+    const p = n.cell.model?.row_parent
+    if (!p || p === n.pos) return null
+    return byPos.has(p) ? p : null
+  }
+
+  const kids = new Map<string, string[]>()
+  const roots: string[] = []
+  for (const n of nodes) {
+    const p = parentOf(n)
+    if (p) {
+      const arr = kids.get(p)
+      if (arr) arr.push(n.pos)
+      else kids.set(p, [n.pos])
+    } else {
+      roots.push(n.pos)
+    }
+  }
+
+  // 成环的节点不在 roots 里，也从任何根都走不到 —— 不拎出来就整棵消失
+  const reached = new Set<string>()
+  const stack = [...roots]
+  while (stack.length) {
+    const p = stack.pop() as string
+    if (reached.has(p)) continue
+    reached.add(p)
+    for (const k of kids.get(p) ?? []) stack.push(k)
+  }
+  const cycleRoots = nodes.filter((n) => !reached.has(n.pos)).map((n) => n.pos)
+
+  const build = (pos: string, path: Set<string>): TplNode => {
+    const n = byPos.get(pos) as { pos: string; cell: CellTpl }
+    const nextPath = new Set(path).add(pos)
+    const m = n.cell.model
+    const declared = n.cell.model?.row_parent
+    return {
+      pos,
+      text: formatCellText(n.cell),
+      expand: m?.expand_type === 'r' ? 'r' : m?.expand_type === 'c' ? 'c' : '',
+      ...(declared && declared !== pos && !byPos.has(declared) ? { orphan: true } : {}),
+      children: (kids.get(pos) ?? [])
+        // 环：路径里出现过的不再展开，否则无限递归
+        .filter((k) => !nextPath.has(k))
+        .map((k) => build(k, nextPath)),
+    }
+  }
+
+  return [
+    ...roots.map((p) => build(p, new Set())),
+    ...cycleRoots.map((p) => ({ ...build(p, new Set()), cycle: true })),
+  ]
+}
+
+export function gridToWorkbookData(grid: TemplateGrid, opts: { selected?: string }= {}) {
   const cellData: Record<number, Record<number, { v: string; s?: string }>> = {}
   const mergeData: Array<{
     startRow: number

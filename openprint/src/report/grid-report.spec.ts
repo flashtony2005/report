@@ -24,7 +24,9 @@ import {
   mergeSpanOf,
   PARENT_HIGHLIGHT,
   PARENT_STYLE_ID,
+  parentChainOf,
   parentPosOf,
+  parentTreeOf,
   parseCellText,
   parsePos,
   SEMANTIC_LEGEND,
@@ -39,6 +41,7 @@ import {
   withExpandControl,
   type CellTpl,
   type ReportTemplate,
+  type TplNode,
 } from './grid-report'
 
 describe('位置名', () => {
@@ -969,6 +972,116 @@ describe('自由模板：合并单元格', () => {
     expect(data.sheets.sheet1.mergeData).toEqual([
       { startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
     ])
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 主格树：让「关系」常显
+ *
+ * 主格是关系不是属性，而 Univer 只画底色 + 字色两个通道（bd / ul 实测画不出来），
+ * 两个通道都已经被占满 —— 格子里没有第三个通道能静态表达关系。
+ * 关系本质是树，所以常显一棵树，而不是硬塞进格子。
+ * ------------------------------------------------------------------ */
+describe('自由模板：主格树（关系常显）', () => {
+  const cell = (value: string | null, model?: CellTpl['model']): CellTpl => ({ value, model })
+
+  /**
+   *   A1 字面量    B1 字段     C1 表达式   D1 字段    E1 只扩展
+   *   A2 纵扩展    B2 横扩展   C2 ←A2      D2 ←A2(上主格 B2)
+   */
+  function treeGrid(): ReturnType<typeof emptyGrid> {
+    return [
+      [
+        cell('地区'),
+        cell(null, { ds: 'ds1', field: 'city' }),
+        cell(null, { ds: 'ds1', value_expr: 'B1[A1:+0].sum()' }),
+        cell(null, { ds: 'ds1', field: 'amount' }),
+        cell(null, { ds: 'ds1', expand_type: 'r' }),
+      ],
+      [
+        cell(null, { ds: 'ds1', field: 'region', expand_type: 'r' }),
+        cell(null, { ds: 'ds1', field: 'city', expand_type: 'c' }),
+        cell(null, { ds: 'ds1', field: 'amount', row_parent: 'A2' }),
+        cell(null, { ds: 'ds1', value_expr: 'C2[A2:+0].sum()', row_parent: 'A2', col_parent: 'B2' }),
+        cell(null),
+      ],
+    ]
+  }
+  /** 树压成 `pos(孩子1,孩子2)` 的形式，好断言 */
+  const shape = (ns: TplNode[]): string[] =>
+    ns.map((n) => n.pos + (n.children.length ? `(${n.children.map((c) => c.pos).join(',')})` : ''))
+
+  it('按 row_parent 分层：A2 挂着 C2 / D2', () => {
+    expect(shape(parentTreeOf(treeGrid()))).toEqual(['B1', 'C1', 'D1', 'E1', 'A2(C2,D2)', 'B2'])
+  })
+
+  it('字面量格不进树 —— 标题不属于任何主格链', () => {
+    const all = parentTreeOf(treeGrid())
+    const flat: string[] = []
+    const walk = (ns: TplNode[]) => ns.forEach((n) => (flat.push(n.pos), walk(n.children)))
+    walk(all)
+    expect(flat).not.toContain('A1') // A1 是字面量，没有 model
+    expect(flat).toContain('C2')
+  })
+
+  it('col_parent 不参与建树 —— 混进来「链」就变成图了', () => {
+    const all = parentTreeOf(treeGrid())
+    const b2 = all.find((n) => n.pos === 'B2')
+    expect(b2?.children).toEqual([]) // D2 有 col_parent B2，但不该挂到 B2 下
+  })
+
+  it('主格成环：不会死循环，也不会让节点凭空消失', () => {
+    const g: ReturnType<typeof emptyGrid> = [
+      [
+        cell(null, { ds: 'ds1', field: 'a', expand_type: 'r', row_parent: 'B1' }),
+        cell(null, { ds: 'ds1', field: 'b', expand_type: 'r', row_parent: 'A1' }),
+      ],
+    ]
+    const tree = parentTreeOf(g)
+    expect(tree.map((n) => n.pos).sort()).toEqual(['A1', 'B1'])
+    expect(tree.every((n) => n.cycle)).toBe(true)
+  })
+
+  it('主格指向没有 model 的格 → 当根并标 orphan，不静默丢关系', () => {
+    const g: ReturnType<typeof emptyGrid> = [
+      [cell('标题'), cell(null, { ds: 'ds1', field: 'a', row_parent: 'A1' })],
+    ]
+    const tree = parentTreeOf(g)
+    expect(tree.map((n) => n.pos)).toEqual(['B1'])
+    expect(tree[0]?.orphan).toBe(true)
+    // 它是「悬空」不是「成环」：若主格判定放水把它挂到一个不存在的父格下，
+    // 它会被当成环拎出来（cycle: true），这里就会红。
+    expect(tree[0]?.cycle).toBeFalsy()
+  })
+
+  it('主格指向自己 → 当根，不自我嵌套', () => {
+    const g: ReturnType<typeof emptyGrid> = [[cell(null, { ds: 'ds1', field: 'a', row_parent: 'A1' })]]
+    const tree = parentTreeOf(g)
+    expect(tree.map((n) => n.pos)).toEqual(['A1'])
+    expect(tree[0]?.children).toEqual([])
+  })
+
+  it('parentChainOf：由近及远，只跟 row_parent', () => {
+    const g = treeGrid()
+    expect(parentChainOf(g, g[1][2])).toEqual(['A2']) // C2
+    expect(parentChainOf(g, g[1][3])).toEqual(['A2']) // D2 的上主格 B2 不算进链
+    expect(parentChainOf(g, g[1][0])).toEqual([]) // A2 自己是根
+    expect(parentChainOf(g, undefined)).toEqual([])
+  })
+
+  it('parentChainOf 遇到环会截断，不死循环', () => {
+    const g: ReturnType<typeof emptyGrid> = [
+      [
+        cell(null, { ds: 'ds1', field: 'a', row_parent: 'B1' }),
+        cell(null, { ds: 'ds1', field: 'b', row_parent: 'A1' }),
+      ],
+    ]
+    expect(parentChainOf(g, g[0][0]).length).toBeLessThanOrEqual(2)
+  })
+
+  it('空网格 / 全字面量 → 空树，不报错', () => {
+    expect(parentTreeOf(emptyGrid(3, 3))).toEqual([])
+    expect(parentTreeOf([[cell('标题')]])).toEqual([])
   })
 })
 

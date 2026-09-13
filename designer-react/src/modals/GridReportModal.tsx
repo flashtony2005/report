@@ -18,7 +18,7 @@
  *   服务端渲染文本与 xlsx 数字格式同时生效；小计 / 合计 / 总计同列同口径
  * - **合并美化**：标题铺满整行、多级列头下表头格纵向合并、双指标显示「金额/数量」子表头
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -56,7 +56,9 @@ import {
   mergeAt,
   PARENT_HIGHLIGHT,
   parseCellText,
+  parentChainOf,
   parentPosOf,
+  parentTreeOf,
   semanticBgOf,
   isValidReportId,
   parseParams,
@@ -85,6 +87,7 @@ import {
   type ReportOptions,
   type ReportSource,
   type ReportSummary,
+  type TplNode,
   type ReportTemplate,
   type TemplateGrid,
 } from '@/report/grid-report'
@@ -278,6 +281,93 @@ function FormatFields({
       })}
     </Space>
   )
+}
+
+/** 图例里的底色按 key 取，避免 UI 里再硬编码一份颜色 */
+const LEGEND_BG: Record<string, string | null> = Object.fromEntries(
+  SEMANTIC_LEGEND.map((x) => [x.key, x.bg]),
+)
+
+/**
+ * 主格树：让「关系」**常显**。
+ *
+ * 为什么不在格子里画：Univer 只渲染底色 + 字色两个通道（`bd` / `ul` 实测画不出来），
+ * 两个通道已经给了「扩展方向」和「内容来源」，没有第三个能静态表达关系。
+ * 关系本质是树，树不一定要画进格子 —— 常显一棵树，选中时再回网格点亮整条主格链。
+ */
+function ParentTree({
+  tree,
+  selected,
+  onPick,
+}: {
+  tree: TplNode[]
+  selected: string
+  onPick: (pos: string) => void
+}): ReactNode {
+  const rows: ReactNode[] = []
+  const walk = (ns: TplNode[], depth: number): void => {
+    for (const n of ns) {
+      const dot =
+        n.expand === 'r' ? LEGEND_BG['expand-r'] : n.expand === 'c' ? LEGEND_BG['expand-c'] : null
+      rows.push(
+        <div
+          key={n.pos}
+          onClick={() => onPick(n.pos)}
+          data-testid={`parent-tree-node-${n.pos}`}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            paddingLeft: depth * 16,
+            cursor: 'pointer',
+            fontSize: 12,
+            lineHeight: '20px',
+            borderRadius: 3,
+            background: n.pos === selected ? '#FFF7E6' : 'transparent',
+          }}
+        >
+          <span style={{ color: '#bbb', width: 12 }}>{depth > 0 ? '└' : ''}</span>
+          <span
+            style={{
+              display: 'inline-block',
+              width: 10,
+              height: 10,
+              borderRadius: 2,
+              border: '1px solid #d9d9d9',
+              background: dot ?? '#fff',
+              flex: '0 0 auto',
+            }}
+          />
+          <Typography.Text code style={{ fontSize: 11 }}>
+            {n.pos}
+          </Typography.Text>
+          <span
+            style={{
+              color: '#333',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {n.text || <span style={{ color: '#bbb' }}>（空）</span>}
+          </span>
+          {n.cycle && (
+            <Typography.Text type="danger" style={{ fontSize: 11 }}>
+              成环
+            </Typography.Text>
+          )}
+          {n.orphan && (
+            <Typography.Text type="warning" style={{ fontSize: 11 }}>
+              主格悬空
+            </Typography.Text>
+          )}
+        </div>,
+      )
+      walk(n.children, depth + 1)
+    }
+  }
+  walk(tree, 0)
+  return <div>{rows}</div>
 }
 
 /**
@@ -614,7 +704,46 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
    * 移开选中时要照着这个还原，否则主格会永久留一块橙色 —— 那是**假的语义**。
    */
   const litParentRef = useRef<Array<{ pos: string; color: string | null }>>([])
+  /**
+   * 画格子的函数由 Univer 那条 effect 提供（要拿到 `univerAPI`），
+   * 但树面板点击也要用它，故挂到 ref 上。拿不到时整体跳过点亮，不报错。
+   */
+  const paintRef = useRef<((pos: string, color: string | null) => void) | null>(null)
+  /**
+   * 点亮某格的**整条**主格链（不是只点亮直接主格 —— 多级分组下
+   * 「我挂在谁下面」要看到完整路径才有用）。先还原上一次点亮的。
+   */
+  const lightParentChain = useCallback((row: number, col: number) => {
+    const paint = paintRef.current
+    for (const { pos, color } of litParentRef.current) paint?.(pos, color)
+    litParentRef.current = []
+    if (!paint) return
+    const g = gridRef.current
+    const cur = g?.[row]?.[col]
+    // 整条行主格链（多级分组要看全路径）+ 直接列主格（交叉表的列方向层次）；
+    // 列方向也跟链会变成一张图，所以那里只取直接主格。
+    const targets = [...new Set([...parentChainOf(g, cur), ...parentPosOf(cur)])]
+    for (const pp of targets) {
+      const rc = parsePos(pp)
+      const target = rc ? g?.[rc.r]?.[rc.c] : undefined
+      litParentRef.current.push({ pos: pp, color: semanticBgOf(target) })
+      paint(pp, PARENT_HIGHLIGHT)
+    }
+  }, [])
+  /** 从树面板点一格：同步属性面板选中，并把整条链点亮 */
+  const pickFromTree = useCallback(
+    (pos: string) => {
+      const rc = parsePos(pos)
+      if (!rc) return
+      setSelRow(rc.r + 1)
+      setSelCol(rc.c + 1)
+      lightParentChain(rc.r, rc.c)
+    },
+    [lightParentChain],
+  )
   /** 改 grid 并请画布重建（结构变更 / 属性面板改动）。**画布自身的改动别走这里。** */
+  /** 主格树：随 grid 变，关系常显（不依赖选中） */
+  const parentTree = useMemo(() => parentTreeOf(grid), [grid])
   const applyGrid = useCallback((next: TemplateGrid) => {
     setGrid(next)
     setCanvasKey((v) => v + 1)
@@ -1152,6 +1281,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
             /* 拿不到 range 就算了，图例仍在 */
           }
         }
+        // 树面板点击也要用；实例销毁时清空，别留着指向已 dispose 的 sheet
+        paintRef.current = paintCell
         try {
           listeners.push(
             api.addEvent(api.Event.SelectionChanged, (p: any) => {
@@ -1161,18 +1292,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
               setSelCol((s.startColumn ?? 0) + 1)
               // 换了格子，上一格「合并被拒」的提示就不该还挂着
               setMergeError('')
-
-              // 先把上一个主格还原成它本来的语义底色，再点亮新的
-              for (const { pos, color } of litParentRef.current) paintCell(pos, color)
-              litParentRef.current = []
-              const g = gridRef.current
-              const cur = g?.[s.startRow ?? 0]?.[s.startColumn ?? 0]
-              for (const pp of parentPosOf(cur)) {
-                const rc = parsePos(pp)
-                const target = rc ? g?.[rc.r]?.[rc.c] : undefined
-                litParentRef.current.push({ pos: pp, color: semanticBgOf(target) })
-                paintCell(pp, PARENT_HIGHLIGHT)
-              }
+              lightParentChain(s.startRow ?? 0, s.startColumn ?? 0)
             }),
           )
           listeners.push(
@@ -1230,6 +1350,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     return () => {
       disposed = true
       clearTimeout(timer)
+      paintRef.current = null
+      litParentRef.current = []
       for (const l of listeners) {
         try {
           l.dispose()
@@ -1238,7 +1360,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         }
       }
     }
-  }, [open, mode, canvasKey])
+  }, [open, mode, canvasKey, lightParentChain])
 
   useEffect(() => {
     if (!open) return
@@ -1621,6 +1743,26 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
               格内容写字面量或 <code>{'{{ds1.city}}'}</code>；插删行列会自动平移主格与表达式里的位置引用。
               格子的底色 / 字色就是它的语义，对照下方图例看。
             </Typography.Text>
+            {parentTree.length > 0 && (
+              <div
+                data-testid="grid-report-parent-tree"
+                style={{
+                  border: '1px solid #f0f0f0',
+                  borderRadius: 4,
+                  padding: '6px 8px',
+                  background: '#fcfcfc',
+                }}
+              >
+                <Typography.Text style={{ fontSize: 12 }} strong>
+                  主格树（行方向）
+                </Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  {' '}
+                  —— 谁挂在谁下面；点一格跳过去并点亮整条主格链
+                </Typography.Text>
+                <ParentTree tree={parentTree} selected={selectedPos} onPick={pickFromTree} />
+              </div>
+            )}
             {selCell && (
               <CellModelEditor
                 pos={selectedPos}
