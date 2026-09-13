@@ -30,6 +30,7 @@ import {
   Space,
   Spin,
   Switch,
+  Tooltip,
   Typography,
 } from 'antd'
 import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets'
@@ -454,6 +455,40 @@ function CellModelEditor({
           onChange={(e) => patch({ value_expr: e.target.value || undefined })}
           data-testid="free-cell-value-expr"
         />
+      </Space>
+
+      {/*
+        行 / 列测试：引擎早就支持（返回 false 就整行 / 整列删掉），但设计器一直没入口，
+        只能手写 JSON。补上之后，格子的橙色底边框才真正「用户可设」——
+        否则图例里那条「有条测试」是个够不着的开关。
+      */}
+      <Space wrap size="small">
+        <Tooltip title="运行期求值，返回 false 则整行不输出（如 amount > 0）">
+          <Space size={4}>
+            <Typography.Text style={{ fontSize: 12 }}>行测试</Typography.Text>
+            <Input
+              size="small"
+              style={{ width: 148 }}
+              placeholder="如 amount > 0"
+              value={m?.row_test_expr ?? ''}
+              onChange={(e) => patch({ row_test_expr: e.target.value || undefined })}
+              data-testid="free-cell-row-test-expr"
+            />
+          </Space>
+        </Tooltip>
+        <Tooltip title="运行期求值，返回 false 则整列不输出">
+          <Space size={4}>
+            <Typography.Text style={{ fontSize: 12 }}>列测试</Typography.Text>
+            <Input
+              size="small"
+              style={{ width: 148 }}
+              placeholder="如 amount > 0"
+              value={m?.col_test_expr ?? ''}
+              onChange={(e) => patch({ col_test_expr: e.target.value || undefined })}
+              data-testid="free-cell-col-test-expr"
+            />
+          </Space>
+        </Tooltip>
       </Space>
 
       <Space wrap size="small">
@@ -1839,10 +1874,10 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
                   fontSize: 11,
                   fontWeight: 600,
                   borderRadius: 2,
-                  border: it.fg === '#D85A30' ? '2px solid #D85A30' : '1px solid #d9d9d9',
+                  border: it.swatch === 'border' ? `2px solid ${it.fg}` : '1px solid #d9d9d9',
                   background: it.bg ?? '#fff',
                   color: it.fg ?? '#333',
-                  fontStyle: it.key === 'expr' ? 'italic' : 'normal',
+                  fontStyle: it.italic ? 'italic' : 'normal',
                 }}
               >
                 Aa

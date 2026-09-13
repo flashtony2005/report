@@ -1050,12 +1050,15 @@ describe('自由模板：非线性语义画进网格', () => {
     expect(styleAt(wb, 0, 0)).toBeNull()
   })
 
-  it('挂了测试表达式 → 底边框橙色（运行期可能整行消失）', () => {
+  it('挂了测试表达式：不再画边框/下划线 —— Univer 画不出来，画了等于没画', () => {
     const wb = build()
-    // s: 8 = Univer BorderStyleTypes.MEDIUM（不是 2，2 是发丝线）
-    expect(styleAt(wb, 0, 3)?.bd).toEqual({ b: { s: 8, cl: { rgb: '#D85A30' } } })
-    // 同是字段格，没挂测试的 B1 不该有边框
-    expect(styleAt(wb, 0, 1)?.bd).toBeUndefined()
+    // 实测（截图数像素）：`bd` 完全不渲染；`ul` 虽渲染但永远用字色，`cl` 被无视。
+    // 所以这里断言的是**没有**多余样式，而不是它长什么样 ——
+    // 若哪天有人又加回 bd/ul，这条会红，提醒他去看《Univer 实际能画什么》。
+    expect(styleAt(wb, 0, 3)?.bd).toBeUndefined()
+    expect(styleAt(wb, 0, 3)?.ul).toBeUndefined()
+    // 但它仍然是字段格，该有的字色还在
+    expect(styleAt(wb, 0, 3)?.cl).toEqual({ rgb: '#1668DC' })
   })
 
   it('两个维度可以叠：扩展格同时是字段格 → 既有底色又有字色', () => {
@@ -1073,7 +1076,6 @@ describe('自由模板：非线性语义画进网格', () => {
         PARENT_STYLE_ID,
         'tpl-n-field',
         'tpl-n-expr',
-        'tpl-n-field-rule',
         'tpl-r-n',
         'tpl-r-field',
         'tpl-c-field',
@@ -1089,13 +1091,13 @@ describe('自由模板：非线性语义画进网格', () => {
     expect(wb.styles[PARENT_STYLE_ID].bg).toEqual({ rgb: PARENT_HIGHLIGHT })
   })
 
-  it('主格框不比选中框细 —— 曾经把 s 写成 2，那是 HAIR（最细）不是 MEDIUM', () => {
+  it('选中 / 主格样式不带边框 —— Univer 画不出 bd，加了是自欺', () => {
     const wb = build('C2')
-    const sel = wb.styles[SELECTED_STYLE_ID].bd as { b: { s: number } }
-    const par = wb.styles[PARENT_STYLE_ID].bd as { b: { s: number } }
-    expect(par.b.s).toBeGreaterThan(sel.b.s)
-    // Univer BorderStyleTypes：1=THIN 8=MEDIUM。发丝线（2）在 1x 屏上几乎看不见
-    expect(par.b.s).toBe(8)
+    expect(wb.styles[SELECTED_STYLE_ID].bd).toBeUndefined()
+    expect(wb.styles[PARENT_STYLE_ID].bd).toBeUndefined()
+    // 两者靠底色区分，且底色必须不同，否则主格高亮等于没有
+    expect(wb.styles[PARENT_STYLE_ID].bg).toEqual({ rgb: PARENT_HIGHLIGHT })
+    expect(wb.styles[PARENT_STYLE_ID].bg).not.toEqual(wb.styles[SELECTED_STYLE_ID].bg)
   })
 
   it('没选中任何格时，不产生主格高亮', () => {
@@ -1112,6 +1114,33 @@ describe('自由模板：非线性语义画进网格', () => {
     expect(declared.length).toBeGreaterThan(0)
     for (const color of declared) {
       expect(used).toContain(color.toUpperCase())
+    }
+  })
+
+  it('图例声明的呈现方式与实际一致：标了 border 就得真画在边框上', () => {
+    const wb = build()
+    const walk = (v: unknown, into: Set<string>) => {
+      if (typeof v === 'string') {
+        if (/^#[0-9A-Fa-f]{6}$/.test(v)) into.add(v.toUpperCase())
+        return
+      }
+      if (Array.isArray(v)) v.forEach((x) => walk(x, into))
+      else if (v && typeof v === 'object') Object.values(v).forEach((x) => walk(x, into))
+    }
+    const pools: Record<string, Set<string>> = { bg: new Set(), fg: new Set() }
+    for (const st of Object.values(wb.styles)) {
+      if (st.bg) walk(st.bg, pools.bg)
+      if (st.cl) walk(st.cl, pools.fg)
+    }
+    for (const it of SEMANTIC_LEGEND) {
+      const color = (it.bg ?? it.fg) as string | null
+      if (!color) continue
+      // 三种 swatch 都要查，少查一种就等于给「改声明不改实现」留了后门
+      expect(pools[it.swatch]).toContain(color.toUpperCase())
+    }
+    // 别让这条检查变成空转：两种 swatch 都得有人用
+    for (const k of ['bg', 'fg']) {
+      expect(SEMANTIC_LEGEND.filter((x) => x.swatch === k).length).toBeGreaterThan(0)
     }
   })
 

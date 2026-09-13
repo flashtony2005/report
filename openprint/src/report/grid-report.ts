@@ -598,16 +598,6 @@ export const SELECTED_STYLE_ID = 'tpl-selected'
 /** 选中格的**主格**（row_parent / col_parent 指向的格） */
 export const PARENT_STYLE_ID = 'tpl-parent'
 /**
- * Univer `BorderStyleTypes` 的取值（抄自 @univerjs/core types/enum/border-style-types.d.ts）。
- *
- * **别写魔法数字**：这个枚举里 `2` 是 **HAIR（最细）**、`8` 才是 MEDIUM。
- * 想画「比选中框更醒目的一条」很容易顺手写 `s: 2`，结果画成最细的发丝线，
- * 在 1x 屏上几乎看不见 —— 等于没标。
- */
-const BORDER_THIN = 1
-const BORDER_MEDIUM = 8
-
-/**
  * 主格高亮色。
  *
  * 画布上「选中一格 → 点亮它的主格」是在 **Univer 上直接改底色** 做的（不重建工作簿，
@@ -631,8 +621,28 @@ export const PARENT_HIGHLIGHT = '#FFE8D6'
  * - **字色 = 内容从哪儿来**（字段绑定 / 表达式 / 静态文本）
  *   `{{ds1.city}}` 和字面量「城市」在格子里长得几乎一样，不标分不清。
  *
- * 第三个弱维度：**底边框橙色** = 这一格挂了 row/col_test_expr，
- * 意味着运行期可能整行整列消失。罕见，所以只用一条边框，不抢主维度。
+ * **为什么只有两个维度、没有第三个**：试过用 `bd`（底边框）或 `ul`（下划线）
+ * 标「挂了 row/col_test_expr，整行可能消失」—— 实测**都画不出来**，
+ * 原因见下面《Univer 实际能画什么》。底色 + 字色已经用满，
+ * 罕见属性不值得再挤一个维度，交给属性面板承载（那里现在有输入框了）。
+ */
+
+/**
+ * Univer 0.25（core preset）**实际能画出来**的样式通道 —— 实测结论，别再试：
+ *
+ * - ✅ `bg` 底色、`cl` 字色、`bl` 加粗、`it` 斜体：都正常。
+ * - ❌ `bd` 单元格边框：**完全不渲染**。THIN / MEDIUM 都试过，
+ *   网格区域 0 个橙色像素（底色、字色同样的位置都有几百像素）。
+ * - ⚠️ `ul` 下划线：会画，但**永远用字色**。`ITextDecoration.c` 的语义是
+ *   "color is follow the font color"，缺省 TRUE，显式写 `c: 0` 也无效，
+ *   `cl` 被无视 —— 蓝色字段格上的"橙色"下划线实测画成了蓝色。
+ *
+ * 结论：**配色能表达的语义上限就是底色 + 字色两个维度**。
+ * 别再设计依赖边框 / 下划线的第三个维度。
+ *
+ * 更要紧的一条教训：单元测试只能证明我们**输出了**某个样式，证明不了
+ * Univer **画得出**它。第一版就带着一个永远画不出来的橙色边框过了 11 条
+ * 单测并提交 —— 要验渲染，只能截图数像素（`scripts/verify-semantic-colors.py`）。
  */
 const SEM_BG = {
   r: { bl: 1, bg: { rgb: '#FFF1B8' } },
@@ -642,16 +652,19 @@ const SEM_FG = {
   field: { cl: { rgb: '#1668DC' } },
   expr: { cl: { rgb: '#6B4FBB' }, it: 1 },
 } as const
-/** 挂了测试表达式 → 底边框橙色（运行期可能整行/整列消失） */
-const SEM_RULE_BD = { bd: { b: { s: BORDER_MEDIUM, cl: { rgb: '#D85A30' } } } } as const
 
-/** 供 UI 画图例：语义 → 颜色。改样式时这里要跟着改。 */
+/**
+ * 供 UI 画图例：语义 → 颜色。改样式时这里要跟着改（有测试盯着，见 spec）。
+ *
+ * `swatch` / `italic` 是**显式**的呈现方式，别让 UI 去反查 `fg === '#D85A30'`
+ * 或 `key === 'expr'` —— 那种拿颜色 / 字符串当枚举用的写法，改一次配色
+ * 图例就静默变丑，而且没有任何检查会红。
+ */
 export const SEMANTIC_LEGEND = [
-  { key: 'expand-r', label: '纵向扩展（往下长行）', bg: '#FFF1B8', fg: null },
-  { key: 'expand-c', label: '横向扩展（往右长列）', bg: '#D7F0E3', fg: null },
-  { key: 'field', label: '字段绑定', bg: null, fg: '#1668DC' },
-  { key: 'expr', label: '表达式 / 层次坐标', bg: null, fg: '#6B4FBB' },
-  { key: 'rule', label: '有条测试（可能整行消失）', bg: null, fg: '#D85A30' },
+  { key: 'expand-r', label: '纵向扩展（往下长行）', bg: '#FFF1B8', fg: null, swatch: 'bg', italic: false },
+  { key: 'expand-c', label: '横向扩展（往右长列）', bg: '#D7F0E3', fg: null, swatch: 'bg', italic: false },
+  { key: 'field', label: '字段绑定', bg: null, fg: '#1668DC', swatch: 'fg', italic: false },
+  { key: 'expr', label: '表达式 / 层次坐标', bg: null, fg: '#6B4FBB', swatch: 'fg', italic: true },
 ] as const
 
 /** 一格的设计态语义样式；无语义（纯静态文本）返回 null。 */
@@ -659,13 +672,11 @@ function semanticStyleOf(cell: CellTpl): { id: string; style: Record<string, unk
   const m = cell.model
   const bgKey = m?.expand_type === 'r' ? 'r' : m?.expand_type === 'c' ? 'c' : ''
   const fgKey = m?.value_expr ? 'expr' : m?.field ? 'field' : ''
-  const hasRule = !!(m?.row_test_expr || m?.col_test_expr)
-  if (!bgKey && !fgKey && !hasRule) return null
-  const id = `tpl-${bgKey || 'n'}-${fgKey || 'n'}${hasRule ? '-rule' : ''}`
+  if (!bgKey && !fgKey) return null
+  const id = `tpl-${bgKey || 'n'}-${fgKey || 'n'}`
   const style: Record<string, unknown> = {
     ...(bgKey ? SEM_BG[bgKey] : {}),
     ...(fgKey ? SEM_FG[fgKey] : {}),
-    ...(hasRule ? SEM_RULE_BD : {}),
   }
   return { id, style }
 }
@@ -1427,17 +1438,11 @@ export function gridToWorkbookData(grid: TemplateGrid, opts: { selected?: string
     name: '模板',
     sheetOrder: ['sheet1'],
     styles: {
-      [SELECTED_STYLE_ID]: {
-        bl: 1,
-        bg: { rgb: '#D6E4FF' },
-        bd: { b: { s: BORDER_THIN, cl: { rgb: '#1677FF' } } },
-      },
-      // 主格：选中格的 row/col_parent 指向的格，橙底 + 橙框
-      [PARENT_STYLE_ID]: {
-        bl: 1,
-        bg: { rgb: PARENT_HIGHLIGHT },
-        bd: { b: { s: BORDER_MEDIUM, cl: { rgb: '#D85A30' } } },
-      },
+      // 注意：这里**不要**加 `bd` 边框 —— Univer 画不出来，加了只是自欺
+      // （实测见上面《Univer 实际能画什么》）。选中态靠 Univer 自己的选区光框，
+      // 主格靠底色，两条路都实测有效。
+      [SELECTED_STYLE_ID]: { bl: 1, bg: { rgb: '#D6E4FF' } },
+      [PARENT_STYLE_ID]: { bl: 1, bg: { rgb: PARENT_HIGHLIGHT } },
       ...semStyles,
     },
     sheets: {
