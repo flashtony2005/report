@@ -39,9 +39,13 @@
 字色 = 内容来源（字段蓝 / 表达式紫斜）。属性面板也已补上
 `row_test_expr` / `col_test_expr` 输入框。
 
-**仍未表达的**：`row_parent`（只在选中时点亮主格，静态画不出关系）、
-`dict` / `format_expr` / `export_formula` / `agg` / `expand_min_max_count`。
+**仍未表达的**：`dict` / `format_expr` / `export_formula` / `agg` /
+`expand_min_max_count`。
 → 别把"能在 Univer 里打字"当成"非线性语义已经迁过去了"。
+
+**主格关系**（`row_parent`）不画在格子里，而是网格旁**常显一棵主格树**
+（`parentTreeOf`）+ 选中时点亮整条链（`parentChainOf`）——
+理由见上面第 3 条硬约束：格子里没有第三个通道。
 
 ## 沙箱：npm / vite 的两个绕行脚本（已入库，别再写 /tmp）
 
