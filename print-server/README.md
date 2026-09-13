@@ -16,6 +16,7 @@ print-server.exe --host 0.0.0.0 --port 18888 --config print-server.json
 - `--port` 默认 18888
 - `--config` 配置文件路径（默认当前目录 `print-server.json`，也可用环境变量 `OPENPRINT_PRINT_SERVER_CONFIG`）
 - spool 打印落盘目录默认 `./spool`
+- `--list-reports` / `--run-report` / `--help`：报表命令行，**不启服务**，见下方「报表命令行」
 
 设计器侧：「设置 → 本地打印」填 `http://127.0.0.1:18888`。
 
@@ -37,6 +38,41 @@ print-server.exe --host 0.0.0.0 --port 18888 --config print-server.json
 | GET | /api/data/tables | 表/视图列表（sqlite 只读 / postgres information_schema） |
 | GET | /api/data/columns | 字段元信息（type/nullable/PRI/UNI/default） |
 | GET/POST | /api/data/rows | 取数（默认 100 行、上限 1000；POST 支持 where + params 参数化） |
+| POST | /api/report/render | 网格报表渲染（非线性展开 / 求值都在服务端，前端只做 UI） |
+| POST | /api/report/xlsx | 同上，直接回 xlsx |
+| GET | /api/report/sample | 内置样例的渲染结果（不开前端也能验证） |
+| GET | /api/report/sample.xlsx | 内置样例导出 xlsx |
+| GET | /api/report/sample-template | 内置样例模板（设计器「打开样例」用） |
+| GET | /api/report/cross-tab-* | 交叉表样例模板：基本 / 带合计 / 双指标 / 双指标带合计 / 多级表头 |
+| GET | /api/reports | 报表文件列表（只回元信息，不回模板本体） |
+| PUT | /api/reports/save | 保存报表定义（模板 + 数据源 + 渲染选项） |
+| GET/DELETE | /api/reports/:id | 读取 / 删除一个报表定义 |
+| POST | /api/reports/:id/run | 执行报表定义，回渲染结果 |
+| POST | /api/reports/:id/xlsx | 执行并导出 xlsx |
+
+## 报表命令行
+
+存下来的报表定义是纯 JSON，可以直接被 cron / 脚本跑，**不必起前端设计器**。
+命中子命令时不启 HTTP 服务，跑完即退。
+
+```bash
+print-server --list-reports
+print-server --run-report <id>
+print-server --run-report <id> --param ds1=华东
+print-server --run-report <id> --params '{"ds1":["华东"]}'
+print-server --run-report <id> --out 销售.xlsx
+print-server --help
+```
+
+- `--list-reports`：列出 id / 名称 / 数据源数 / 大小 / 更新时间
+- `--run-report <id>`：不给 `--out` 就在终端打印文本表格，给了就导出 xlsx
+- 参数两种写法可混用，**后写的覆盖先写的**：
+  - `--param k=v`：单个参数，可重复。`v` 先按 JSON 解析（`2026` → 数字），解不动就当字符串
+  - `--params '<json>'`：一次给全。值收数组 `{"ds1":["华东"]}`，单个参数也可省成 `{"ds1":"华东"}`
+- 参数是**按数据源名**覆盖的；数据源必须写了 `WHERE` 占位符（如 `region = ?`），否则会提前报错
+- 退出码：`0` 成功 / `1` 执行失败 / `2` 用法错误（同时打印帮助）
+
+报表默认存在**配置文件同级的 `reports/` 目录**，用 `--config` 换配置文件即换目录。
 
 ## 可视化配置数据库（推荐）
 
