@@ -73,6 +73,7 @@ import {
   type RenderResponse,
   type ReportDef,
   type ReportOptions,
+  type ReportSource,
   type ReportSummary,
   type ReportTemplate,
   type TemplateGrid,
@@ -721,20 +722,46 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   }, [open, refreshReports])
 
   const saveReport = useCallback(async () => {
-    const built = buildRequest()
     const id = reportId.trim()
     if (!isValidReportId(id)) {
       setError('报表 id 只能用字母、数字、-、_（最长 80），不能带空格或中文')
       return
     }
+    const built = buildRequest()
+    if (built.kind === 'error') {
+      setError(built.message)
+      return
+    }
+
+    let template: ReportTemplate
+    let sources: ReportSource[] | undefined
+    let options: ReportOptions | undefined
+    if (built.kind === 'sample') {
+      // 内置样例的模板在服务端手上，得先拉回来才能存。
+      // （第一版这里直接写了 { sheets: [] }，等于存了个空报表，还不报错。）
+      try {
+        const res = await fetch(`${REPORT_SERVER}/api/report/sample-template`)
+        if (!res.ok) throw new Error(`取样例模板失败 ${res.status}`)
+        template = (await res.json()) as ReportTemplate
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return
+      }
+      options = { exportFormula: exportFormula || undefined, dump: dump || undefined }
+    } else {
+      template = built.rawTemplate
+      sources = built.req.sources
+      options = built.options
+    }
+
     const def: ReportDef = {
       format: REPORT_FORMAT,
       version: REPORT_VERSION,
       id,
       name: reportName.trim() || id,
-      template: built.kind === 'request' ? built.rawTemplate : { sheets: [] },
-      sources: built.kind === 'request' ? built.req.sources : undefined,
-      options: built.kind === 'request' ? built.options : undefined,
+      template,
+      sources,
+      options,
     }
     setFileBusy(true)
     try {
@@ -752,7 +779,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     } finally {
       setFileBusy(false)
     }
-  }, [buildRequest, reportId, reportName, refreshReports])
+  }, [buildRequest, reportId, reportName, refreshReports, exportFormula, dump])
 
   /**
    * 打开已保存的报表。
@@ -801,6 +828,16 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const runReport = useCallback(async (id: string) => {
     setFileBusy(true)
     try {
+      // 先取定义：要它算表头行数（给 Univer 加粗用），顺便提前告诉用户「没数据源」
+      const defRes = await fetch(`${REPORT_SERVER}/api/reports/${encodeURIComponent(id)}`)
+      if (!defRes.ok) throw new Error((await defRes.text()) || `打开失败 ${defRes.status}`)
+      const def = JSON.parse(await defRes.text()) as ReportDef
+      if (!def.sources?.length && !def.template?.datasets?.length) {
+        setError(`报表「${def.name || id}」没有数据源也没有内嵌数据，执行会没有数据。先补上数据源再执行。`)
+        return
+      }
+      const rows = headerRowCount(def.template)
+
       const res = await fetch(`${REPORT_SERVER}/api/reports/${encodeURIComponent(id)}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -822,7 +859,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           locales: { [LocaleType.ZH_CN]: mergeLocales(UniverPresetSheetsCoreZhCN) },
           presets: [UniverSheetsCorePreset({ container: containerRef.current! })],
         })
-        ;(univerAPI as any).createWorkbook(toWorkbookData(data.sheets[0], { headerRows: 2 }))
+        ;(univerAPI as any).createWorkbook(toWorkbookData(data.sheets[0], { headerRows: rows }))
         univerRef.current = univerAPI as unknown as { dispose: () => void }
       } catch (e) {
         setError(`Univer 初始化失败：${e instanceof Error ? e.message : String(e)}`)
