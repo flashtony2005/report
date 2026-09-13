@@ -5,6 +5,9 @@
 # 为什么不能直接 `npx vitest`：本仓库装不出 node_modules（见 ts-check.sh 同样的困境），
 # 所以这里从别的项目**借用**一份 vitest + vite。纯只读借用，不往人家目录里写东西。
 #
+# 这套「借依赖」的办法已抽成通用 skill（sandbox-ts-verify），含自动找 DONOR 的版本；
+# 本脚本是钉死路径、贴合本仓库的那份。
+#
 # 为什么要把源码**拷到临时目录**再跑（这一步看着莫名其妙，但少一行就报错）：
 # vite 会从被测文件所在目录逐级向上找 tsconfig.json，找到 openprint/tsconfig.json 后
 # 顺着它的 project references 去解析 openprint/tsconfig.node.json，而后者
