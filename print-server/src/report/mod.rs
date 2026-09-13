@@ -1456,6 +1456,88 @@ mod tests {
         assert!(text.iter().any(|l| l.contains("华东") && l.contains("上海")), "{text:#?}");
     }
 
+    /// 规则 1（跟随）：B2 不声明父格，向左扫到 A2——A2 **不是**扩展格但它显式挂了 A1，
+    /// 于是 B2 跟到 A1，和 A2 一样按地区分组。
+    ///
+    /// 没有这条规则时扫描会「跨过」非扩展格继续找，本行左边没有扩展格 → B2 挂根，
+    /// 出来的会是一个 116,400 的总计而不是三个地区小计。
+    #[test]
+    fn default_row_parent_follows_neighbour() {
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), sample_data());
+        let cell = |model: Option<CellModel>| CellTpl {
+            pos: None,
+            value: None,
+            model,
+            merge_across: 0,
+            merge_down: 0,
+            merge_to_end: false,
+        };
+        let m = |field: &str, expand: bool, row_parent: Option<&str>| {
+            Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: Some(field.to_string()),
+                agg: Some(AggType::Sum),
+                expand_type: if expand { Some(ExpandType::R) } else { None },
+                row_parent: row_parent.map(|s| s.to_string()),
+                col_parent: None,
+                col_after: None,
+                value_expr: None,
+                expand_expr: None,
+                expand_min_count: None,
+                expand_max_count: None,
+                keep_expand_empty: None,
+                format: None,
+                format_expr: None,
+                dict: None,
+                row_test_expr: None,
+                col_test_expr: None,
+                export_formula: None,
+            })
+        };
+        let tpl = ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "t".into(),
+                page: None,
+                rows: vec![
+                    // 第 1 行：A1 按地区展开
+                    RowTpl {
+                        cells: vec![cell(m("region", true, None))],
+                    },
+                    // 第 2 行：col0 留空，A2 显式挂 A1，B2 什么都不写。
+                    // B2 往左只扫得到 A2（非扩展格、父格是 A1）——本行没有扩展格，
+                    // 最左格也没有父格，所以**只有**「跟随」能救它；
+                    // 少了这条规则 B2 就会挂根，吐一个总计出来。
+                    RowTpl {
+                        cells: vec![
+                            cell(None),
+                            cell(m("amount", false, Some("A1"))),
+                            cell(m("amount", false, None)),
+                        ],
+                    },
+                ],
+            }],
+            datasets,
+        };
+
+        let resp = render(RenderRequest {
+            template: tpl,
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        let text = lines(&resp.sheets[0].rows);
+
+        assert_eq!(text.len(), 3, "{text:#?}");
+        // 华东 37900 / 华南 40200 / 华北 38300
+        assert!(text.iter().any(|l| l.contains("37,900")), "{text:#?}");
+        assert!(text.iter().any(|l| l.contains("40,200")), "{text:#?}");
+        assert!(text.iter().any(|l| l.contains("38,300")), "{text:#?}");
+        // 关键：不能出现总计 116,400——那说明 B2 挂根了，没有跟随
+        assert!(!text.iter().any(|l| l.contains("116,400")), "{text:#?}");
+    }
+
     /// `dump=true` 时返回展开中间结果，便于排查扩展 / 求值问题
     #[test]
     fn dump_returns_expansion_trace() {

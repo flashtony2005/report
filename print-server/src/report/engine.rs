@@ -14,41 +14,120 @@ use std::collections::BTreeMap;
 /// 布局递归深度上限（防御异常模板导致的深递归）
 const MAX_LAYOUT_DEPTH: usize = 256;
 
-/// `A0` 是 NopReport 约定的「根单元格」——显式声明没有父格，不再套用缺省推断
+/// `A0` 是 NopReport 的 `CellPosition.NONE`——**显式**声明「没有父格」
 fn is_root_ref(p: &str) -> bool {
     p.trim().eq_ignore_ascii_case("a0")
 }
 
-/// 缺省行父格：向左查找最近的**纵向**扩展格（NopReport 的缺省规则）
-fn default_row_parent(sheet: &SheetTpl, r: usize, c: usize) -> Option<String> {
+/// 模板里 (r, c) 处的格子
+fn tpl_cell(sheet: &SheetTpl, r: usize, c: usize) -> Option<&CellTpl> {
+    sheet.rows.get(r).and_then(|row| row.cells.get(c))
+}
+
+/// 格子的位置名：优先用显式 `pos`，否则按下标推
+fn tpl_pos(cell: &CellTpl, r: usize, c: usize) -> String {
+    cell.pos.clone().unwrap_or_else(|| cell_pos(r, c))
+}
+
+/// 父格声明的三态
+///
+/// 关键在 `ExplicitNone` 与 `Unset` 的区别：上游 `getRowParent` 开头就是
+/// `if (rowParent == CellPosition.NONE) return null`——声明了 `A0` 就是明确不要父格，
+/// **不再套用缺省推断**。（之前我们用一个 `filter(|p| !is_root_ref(p))` 把 `A0`
+/// 当成「没写」，结果落进缺省推断，与注释和上游都不符。）
+///
+/// 这个三态同时也是「跟随」规则要读的东西：上游 `initParentChildren` 会把**推断结果
+/// 回写**进 model（`if (xptModel.getRowParent() == null) setRowParent(...)`），
+/// 所以后处理的格子往左扫时，读到的是左边格子**解析后**的父格（声明的或推断出来的），
+/// 而不只是它显式声明的。
+#[derive(Clone, Debug)]
+enum ParentDecl {
+    Ref(String),
+    ExplicitNone,
+    Unset,
+}
+
+/// 已解析出的父格，按 (row, col) 缓存——等价于上游回写进 model 的那份
+type Resolved = BTreeMap<(usize, usize), ParentDecl>;
+
+fn parse_parent(p: Option<&str>) -> ParentDecl {
+    match p {
+        None => ParentDecl::Unset,
+        Some(s) if is_root_ref(s) => ParentDecl::ExplicitNone,
+        Some(s) => ParentDecl::Ref(s.trim().to_string()),
+    }
+}
+
+/// 缺省行父格（对齐 NopReport `XptModelInitializer.getRowParent`）
+///
+/// 三步，前一步命中就停：
+///
+/// 1. 向左扫到**纵向扩展格** → 它就是父格
+/// 2. 扫到的格子不是扩展格、但它**已经有**父格 → 跟随到那个父格
+///    （「有」指解析后的结果，含推断出来的——见 `ParentDecl` 的注释）
+/// 3. 都扫不到 → 取本行**最左格**（col 0）的父格
+///
+/// 第 2 步的自引用保护照抄上游：跟随结果等于本格位置时返回「无父格」而不是自己。
+/// 上游 `ExplicitNone`（A0）是「停并返回无父格」，不是继续往左扫。
+///
+/// 上游 `resolveRowParent` 对不存在的坐标直接抛异常；这里返回坐标字符串，
+/// 由调用方统一告警（`expand_sheet` 里那条「声明的 row_parent 不存在」）。
+fn default_row_parent(sheet: &SheetTpl, r: usize, c: usize, resolved: &Resolved) -> Option<String> {
+    let own = tpl_cell(sheet, r, c)
+        .map(|x| tpl_pos(x, r, c))
+        .unwrap_or_else(|| cell_pos(r, c));
     if c == 0 {
         return None;
     }
+    // 1 + 2：向左扫
     for cc in (0..c).rev() {
-        let Some(cell) = sheet.rows.get(r).and_then(|row| row.cells.get(cc)) else {
-            continue;
-        };
-        if cell.model.as_ref().map_or(false, |m| m.is_row_expand()) {
-            return Some(cell.pos.clone().unwrap_or_else(|| cell_pos(r, cc)));
+        let Some(cell) = tpl_cell(sheet, r, cc) else { continue };
+        let Some(m) = cell.model.as_ref() else { continue };
+        if m.is_row_expand() {
+            return Some(tpl_pos(cell, r, cc));
+        }
+        match resolved.get(&(r, cc)) {
+            Some(ParentDecl::Ref(p)) => {
+                return if *p == own { None } else { Some(p.clone()) }
+            }
+            Some(ParentDecl::ExplicitNone) => return None,
+            Some(ParentDecl::Unset) | None => continue,
         }
     }
-    None
+    // 3：取本行最左格（上游 L277-285）
+    match resolved.get(&(r, 0)) {
+        Some(ParentDecl::Ref(p)) => Some(p.clone()).filter(|p| p != &own),
+        _ => None,
+    }
 }
 
-/// 缺省列父格：向上查找最近的**横向**扩展格
-fn default_col_parent(sheet: &SheetTpl, r: usize, c: usize) -> Option<String> {
+/// 缺省列父格（`getColParent` 的镜像）：向上扫 → 扫不到取**第一行**同列的父格
+fn default_col_parent(sheet: &SheetTpl, r: usize, c: usize, resolved: &Resolved) -> Option<String> {
+    let own = tpl_cell(sheet, r, c)
+        .map(|x| tpl_pos(x, r, c))
+        .unwrap_or_else(|| cell_pos(r, c));
     if r == 0 {
         return None;
     }
     for rr in (0..r).rev() {
-        let Some(cell) = sheet.rows.get(rr).and_then(|row| row.cells.get(c)) else {
-            continue;
-        };
-        if cell.model.as_ref().map_or(false, |m| m.is_col_expand()) {
-            return Some(cell.pos.clone().unwrap_or_else(|| cell_pos(rr, c)));
+        let Some(cell) = tpl_cell(sheet, rr, c) else { continue };
+        let Some(m) = cell.model.as_ref() else { continue };
+        if m.is_col_expand() {
+            return Some(tpl_pos(cell, rr, c));
+        }
+        match resolved.get(&(rr, c)) {
+            Some(ParentDecl::Ref(p)) => {
+                return if *p == own { None } else { Some(p.clone()) }
+            }
+            Some(ParentDecl::ExplicitNone) => return None,
+            Some(ParentDecl::Unset) | None => continue,
         }
     }
-    None
+    // 扫不到 → 取第一行同列格子（上游 L327-335）
+    match resolved.get(&(0, c)) {
+        Some(ParentDecl::Ref(p)) => Some(p.clone()).filter(|p| p != &own),
+        _ => None,
+    }
 }
 
 /// 表达式求值结果
@@ -183,6 +262,11 @@ impl Engine {
 
         let all_rows: Vec<usize> = (0..self.ds.len()).collect();
 
+        // 已解析出的父格，按 (row, col) 缓存。等价于上游把推断结果回写进 model；
+        // 「向左扫到的相邻格有没有父格」要读它，而且必须是**解析后**的值。
+        let mut resolved_row: Resolved = BTreeMap::new();
+        let mut resolved_col: Resolved = BTreeMap::new();
+
         // ---- 阶段 1：按模板顺序（行升序、列升序）展开，父格必然先于子格 ----
         for (r, row) in sheet.rows.iter().enumerate() {
             for (c, cell) in row.cells.iter().enumerate() {
@@ -195,18 +279,33 @@ impl Engine {
 
                 // 未显式声明父格时，按 NopReport 的缺省规则推断：
                 // 行父格向左查找最近的纵向扩展格，列父格向上查找最近的横向扩展格。
-                let row_ref = model
-                    .row_parent
-                    .as_deref()
-                    .filter(|p| !is_root_ref(p))
-                    .map(|s| s.to_string())
-                    .or_else(|| default_row_parent(sheet, r, c));
-                let col_ref = model
-                    .col_parent
-                    .as_deref()
-                    .filter(|p| !is_root_ref(p))
-                    .map(|s| s.to_string())
-                    .or_else(|| default_col_parent(sheet, r, c));
+                // `A0`（ExplicitNone）是显式「无父格」，不再套用缺省推断
+                let (row_ref, row_decl) = match parse_parent(model.row_parent.as_deref()) {
+                    ParentDecl::Ref(p) => (Some(p.clone()), ParentDecl::Ref(p)),
+                    ParentDecl::ExplicitNone => (None, ParentDecl::ExplicitNone),
+                    ParentDecl::Unset => {
+                        let p = default_row_parent(sheet, r, c, &resolved_row);
+                        let d = match &p {
+                            Some(p) => ParentDecl::Ref(p.clone()),
+                            None => ParentDecl::Unset,
+                        };
+                        (p, d)
+                    }
+                };
+                let (col_ref, col_decl) = match parse_parent(model.col_parent.as_deref()) {
+                    ParentDecl::Ref(p) => (Some(p.clone()), ParentDecl::Ref(p)),
+                    ParentDecl::ExplicitNone => (None, ParentDecl::ExplicitNone),
+                    ParentDecl::Unset => {
+                        let p = default_col_parent(sheet, r, c, &resolved_col);
+                        let d = match &p {
+                            Some(p) => ParentDecl::Ref(p.clone()),
+                            None => ParentDecl::Unset,
+                        };
+                        (p, d)
+                    }
+                };
+                resolved_row.insert((r, c), row_decl);
+                resolved_col.insert((r, c), col_decl);
 
                 // 行主格实例列表
                 //
@@ -1539,5 +1638,201 @@ fn empty_cell() -> GridCell {
         raw_number: None,
         num_format: None,
         formula: None,
+    }
+}
+
+// ───────── 缺省父格推断的单元测试 ─────────
+//
+// 直接测 `default_row_parent` / `default_col_parent`：它们的判据是「向左/向上扫到了什么」，
+// 而这个结果在最终网格里很难一眼看出（要凑出行数差异），在这里断言最准。
+#[cfg(test)]
+mod parent_tests {
+    use super::*;
+
+    fn cm(expand: Option<ExpandType>, row_parent: Option<&str>, col_parent: Option<&str>) -> Option<CellModel> {
+        Some(CellModel {
+            ds: Some("ds1".to_string()),
+            field: None,
+            agg: None,
+            expand_type: expand,
+            row_parent: row_parent.map(|s| s.to_string()),
+            col_parent: col_parent.map(|s| s.to_string()),
+            col_after: None,
+            value_expr: None,
+            expand_expr: None,
+            expand_min_count: None,
+            expand_max_count: None,
+            keep_expand_empty: None,
+            format: None,
+            format_expr: None,
+            dict: None,
+            row_test_expr: None,
+            col_test_expr: None,
+            export_formula: None,
+        })
+    }
+
+    /// `rows[r][c]` 三元组：(是否行扩展, 声明的 row_parent, 声明的 col_parent)
+    fn sheet_of(rows: Vec<Vec<(bool, Option<&str>, Option<&str>)>>) -> SheetTpl {
+        SheetTpl {
+            name: "t".into(),
+            page: None,
+            rows: rows
+                .into_iter()
+                .map(|cells| RowTpl {
+                    cells: cells
+                        .into_iter()
+                        .map(|(exp, rp, cp)| CellTpl {
+                            pos: None,
+                            value: Some(JsonValue::from("x")),
+                            model: cm(if exp { Some(ExpandType::R) } else { None }, rp, cp),
+                            merge_across: 0,
+                            merge_down: 0,
+                            merge_to_end: false,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    /// 复刻 `expand_sheet` 里行序解析的那一遍，返回每格**解析后**的父格
+    fn resolve(sheet: &SheetTpl, col: bool) -> Vec<Vec<Option<String>>> {
+        let mut resolved: Resolved = BTreeMap::new();
+        let mut out = Vec::new();
+        for (r, row) in sheet.rows.iter().enumerate() {
+            let mut line = Vec::new();
+            for (c, cell) in row.cells.iter().enumerate() {
+                let model = cell.model.clone().unwrap_or_default();
+                let decl = if col {
+                    parse_parent(model.col_parent.as_deref())
+                } else {
+                    parse_parent(model.row_parent.as_deref())
+                };
+                let d = match decl {
+                    ParentDecl::Ref(p) => ParentDecl::Ref(p),
+                    ParentDecl::ExplicitNone => ParentDecl::ExplicitNone,
+                    ParentDecl::Unset => {
+                        let p = if col {
+                            default_col_parent(sheet, r, c, &resolved)
+                        } else {
+                            default_row_parent(sheet, r, c, &resolved)
+                        };
+                        match p {
+                            Some(p) => ParentDecl::Ref(p),
+                            None => ParentDecl::Unset,
+                        }
+                    }
+                };
+                line.push(match &d {
+                    ParentDecl::Ref(p) => Some(p.clone()),
+                    _ => None,
+                });
+                resolved.insert((r, c), d);
+            }
+            out.push(line);
+        }
+        out
+    }
+
+    #[test]
+    fn nearest_left_expand_cell_wins() {
+        // A1 行扩展、B1 不是扩展格但声明了父格 A1、C1 什么都不写
+        let s = sheet_of(vec![vec![
+            (true, None, None),
+            (false, Some("A1"), None),
+            (false, None, None),
+        ]]);
+        // C1 往左扫先撞上 B1（非扩展、有父格）→ 跟随到 A1
+        assert_eq!(resolve(&s, false)[0][2], Some("A1".to_string()));
+    }
+
+    /// 规则 1：左边相邻格不是扩展格、但它有父格 → 跟随（而不是跳过它继续找扩展格）
+    #[test]
+    fn follows_neighbour_parent_instead_of_scanning_past_it() {
+        // 第 2 行往左扫：A2 不是扩展格，本行左边也没有扩展格——
+        // 没有「跟随」的话 B2 会挂根；有了就跟到 A2 的父格 A1
+        let s = sheet_of(vec![
+            vec![(true, None, None)],
+            vec![(false, Some("A1"), None), (false, None, None)],
+        ]);
+        assert_eq!(resolve(&s, false)[1][1], Some("A1".to_string()));
+    }
+
+    /// 跟随的是**解析后**的父格（含推断出来的），不是只跟显式声明的
+    ///
+    /// 上游 `initParentChildren` 会把推断结果回写进 model，所以后处理的格子
+    /// 读到的是回写后的值。这里 B1 自己没声明父格，是靠「向左扫」推断出 A1 的，
+    /// C1 应当跟到这个推断结果。
+    #[test]
+    fn follows_inferred_parent_not_just_declared() {
+        let s = sheet_of(vec![vec![
+            (true, None, None),
+            (false, None, None),
+            (false, None, None),
+        ]]);
+        // B1 推断出 A1，C1 跟随 B1 → A1
+        assert_eq!(resolve(&s, false)[0][1], Some("A1".to_string()));
+        assert_eq!(resolve(&s, false)[0][2], Some("A1".to_string()));
+    }
+
+    /// `A0`（CellPosition.NONE）是显式「无父格」：既不套用缺省推断，也会**截断**左邻的扫描
+    #[test]
+    fn explicit_a0_stops_the_scan_and_disables_inference() {
+        let s = sheet_of(vec![vec![
+            (true, None, None),
+            (false, Some("A0"), None),
+            (false, None, None),
+        ]]);
+        // B1 自己声明 A0 → 没有父格
+        assert_eq!(resolve(&s, false)[0][1], None);
+        // C1 往左先撞上声明了 A0 的 B1 → 停在这里返回「无父格」，
+        // 不会跳过 B1 去找到 A1（这是上游 `resolveRowParent(NONE) → null` 的行为）
+        assert_eq!(resolve(&s, false)[0][2], None);
+    }
+
+    /// 自引用保护：跟随结果指向自己时返回「无父格」
+    #[test]
+    fn self_reference_guard() {
+        // B1 声明父格就是 C1；C1 往左扫跟到 B1 的父格 == 自己 → 无父格
+        let s = sheet_of(vec![vec![
+            (false, None, None),
+            (false, Some("C1"), None),
+            (false, None, None),
+        ]]);
+        assert_eq!(resolve(&s, false)[0][2], None);
+    }
+
+    /// 规则 2 的兜底：最左格没有父格时，整行都不会凭空造出父格
+    ///
+    /// 顺带说明这条兜底在当前行序下基本不可达——扫描一定会检查到 col 0，
+    /// 若 col 0 有父格，规则 1 就已经跟随了；兜底读的是同一个格子。
+    /// 只有合并格（上游 `getRealCell()`）那种「扫到的和兜底取到的不是同一个格子」
+    /// 的情况才会走到。我们不做合并格语义，所以这里保持返回 None。
+    #[test]
+    fn leftmost_fallback_does_not_invent_a_parent() {
+        let s = sheet_of(vec![vec![(false, None, None), (false, None, None)]]);
+        assert_eq!(resolve(&s, false)[0], vec![None, None]);
+    }
+
+    /// 列父格是镜像：向上扫，扫到非扩展格就跟它的 col_parent
+    #[test]
+    fn col_parent_scans_up_and_follows() {
+        let s = sheet_of(vec![
+            vec![(false, None, Some("Z9"))],
+            vec![(false, None, None)],
+        ]);
+        // A2 向上扫 → A1 非扩展格、有 col_parent Z9 → 跟随
+        assert_eq!(resolve(&s, true)[1][0], Some("Z9".to_string()));
+    }
+
+    #[test]
+    fn col_parent_nearest_up_expand_cell_wins() {
+        let s = sheet_of(vec![
+            vec![(false, None, None)],
+            vec![(false, None, None)],
+        ]);
+        // 上面没有列扩展格 → 无父格（列扩展是 ExpandType::C，这里没造）
+        assert_eq!(resolve(&s, true)[1][0], None);
     }
 }
