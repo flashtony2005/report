@@ -670,6 +670,90 @@ export function toWorkbookData(sheet: RenderedSheet, opts: { headerRows?: number
 }
 
 /* ------------------------------------------------------------------ *
+ * 报表定义文件（*.json）
+ *
+ * 「做个报表」和「跑个报表」原本是两件事：每次都要重选库、表、字段、选项。
+ * 这里把它们合成一个文件：模板 + 数据源声明 + 渲染选项 + 元信息。
+ * 存进 reports/ 后，**打开报表就能跑出数据**。
+ *
+ * 刻意只存「声明」不存数据快照：存快照会让报表过期，且几万行塞进文件没法看。
+ * 选项也存开关而非算好的模板——存开关才能在打开时改。
+ * ------------------------------------------------------------------ */
+
+export const REPORT_FORMAT = 'openprint.report'
+export const REPORT_VERSION = 1
+
+/** 渲染选项。对应设计器里那排开关；执行时由服务端套到模板上。 */
+export interface ReportOptions {
+  /** 每页数据行数；>0 才分页 */
+  rowsPerPage?: number | null
+  repeatHeaderRows?: number | null
+  repeatFooterRows?: number | null
+  /** 小计/合计落成 Excel 公式而非写死的值 */
+  exportFormula?: boolean | null
+  /** 展开条数下限（作用于最内层明细） */
+  expandMinCount?: number | null
+  /** 展开条数上限（作用于最外层分组） */
+  expandMaxCount?: number | null
+  keepExpandEmpty?: boolean | null
+  dump?: boolean | null
+}
+
+/** 一个报表定义文件的完整内容 */
+export interface ReportDef {
+  format: string
+  version: number
+  /** 文件 id，同时是文件名。只允许 [A-Za-z0-9_-] */
+  id: string
+  name: string
+  description?: string
+  updatedAt?: string | null
+  template: ReportTemplate
+  /** 数据从哪来；执行时现查 */
+  sources?: ReportSource[]
+  options?: ReportOptions
+}
+
+/** 列表项：只回元信息（模板可能有几千行） */
+export interface ReportSummary {
+  id: string
+  name: string
+  description: string
+  updatedAt?: string | null
+  sheets: string[]
+  sourceCount: number
+  bytes: number
+}
+
+/** 执行时可覆盖的东西：按数据集名覆盖查询参数 */
+export interface RunRequest {
+  params?: Record<string, unknown[]> | null
+  dump?: boolean | null
+}
+
+/**
+ * id 白名单（与服务端 store::is_valid_id 同一套规则）。
+ * id 会直接参与拼文件名，必须在前端也挡一次——既是安全边界，
+ * 也能让用户在按保存前就看到「这个名字不能用」。
+ */
+export function isValidReportId(id: string): boolean {
+  return (
+    id.length > 0 && id.length <= 80 && /^[A-Za-z0-9_-]+$/.test(id)
+  )
+}
+
+/** 显示名 → 建议 id；非 ASCII / 空格等会退化，必要时再手工改 */
+export function suggestReportId(name: string): string {
+  const s = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+  return s || 'report'
+}
+
+/* ------------------------------------------------------------------ *
  * 自由模板（类 Excel 逐格设计）
  *
  * 上面的三个构造器是「向导」：选字段 → 机器拼模板。它们盖不住

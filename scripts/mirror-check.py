@@ -38,10 +38,13 @@ PAIRS = [
     ("model.rs", "NumFmt", "CellFormatSpec"),
     ("mod.rs", "RenderRequest", "RenderRequest"),
     ("mod.rs", "RenderResponse", "RenderResponse"),
+    ("store.rs", "ReportDef", "ReportDef"),
+    ("store.rs", "ReportOptions", "ReportOptions"),
+    ("store.rs", "ReportSummary", "ReportSummary"),
 ]
 
 # 这些 Rust 类型声明了 rename_all = "camelCase"，JSON key 与字段名不同
-CAMEL_CASED = {"ReportSource"}
+CAMEL_CASED = {"ReportSource", "ReportDef", "ReportOptions", "ReportSummary"}
 
 
 def snake_to_camel(s: str) -> str:

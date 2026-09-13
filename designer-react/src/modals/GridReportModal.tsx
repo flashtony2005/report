@@ -52,8 +52,12 @@ import {
   insertGridCol,
   insertGridRow,
   parseCellText,
+  isValidReportId,
   parseParams,
+  REPORT_FORMAT,
+  REPORT_VERSION,
   setGridCell,
+  suggestReportId,
   stripArrayPrefix,
   templateToGrid,
   toWorkbookData,
@@ -67,6 +71,9 @@ import {
   type ExpandDir,
   type RenderRequest,
   type RenderResponse,
+  type ReportDef,
+  type ReportOptions,
+  type ReportSummary,
   type ReportTemplate,
   type TemplateGrid,
 } from '@/report/grid-report'
@@ -80,7 +87,18 @@ type TemplateMode = 'sample' | 'group' | 'cross' | 'canvas' | 'free'
 /** 模板构建的三种结果：内置样例 / 可提交请求 / 校验错误 */
 type BuildResult =
   | { kind: 'sample' }
-  | { kind: 'request'; req: RenderRequest; headerRows: number }
+  | {
+      kind: 'request'
+      req: RenderRequest
+      headerRows: number
+      /**
+       * 未经后处理的原始模板 + 选项。
+       * 保存报表文件时用这一对：存开关本身，而不是存「开关已经套上去」的模板——
+       * 否则打开时再套一次就重复了，而且用户改不了开关。
+       */
+      rawTemplate: ReportTemplate
+      options: ReportOptions
+    }
   | { kind: 'error'; message: string }
 
 interface CanvasTableLike {
@@ -460,6 +478,11 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const [grid, setGrid] = useState<TemplateGrid>(() => templateToGrid({ name: '模板', rows: [] }))
   const [selRow, setSelRow] = useState(1)
   const [selCol, setSelCol] = useState(1)
+  /** 报表文件：id / 名称 / 已保存列表 */
+  const [reportId, setReportId] = useState('')
+  const [reportName, setReportName] = useState('')
+  const [savedReports, setSavedReports] = useState<ReportSummary[]>([])
+  const [fileBusy, setFileBusy] = useState(false)
   /** 调试：让服务端回传展开中间结果（层次坐标 / 父格）与模板告警 */
   const [dump, setDump] = useState(false)
   const [dumpText, setDumpText] = useState('')
@@ -543,6 +566,11 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       // **不套 withExpandControl**：那个函数按「最内/最外层」猜层级，
       // 而自由模板的主格层级是用户一格一格定好的，让它再猜一遍会覆盖用户意图。
       template = withExportFormula(tpl, exportFormula)
+      const rawTemplate = tpl
+      const opts: ReportOptions = {
+        exportFormula: exportFormula || undefined,
+        dump: dump || undefined,
+      }
       const { database: db1, table: tb1, engine: eg1 } = dbSelection
       if (!db1 || !tb1) return { kind: 'error', message: '请先在数据源里选择库和表' }
       const p1 = parseParams(paramText)
@@ -564,6 +592,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           ],
         },
         headerRows: 0,
+        rawTemplate,
+        options: opts,
       }
     } else if (mode === 'canvas') {
       if (!canvasTable?.columns?.length) {
@@ -609,6 +639,19 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       })
     }
 
+    // 存原样：打开报表时由服务端按 options 再套一次
+    const rawTemplate = template
+    const opts: ReportOptions = {
+      rowsPerPage: paging ? Math.max(1, rowsPerPage) : undefined,
+      repeatHeaderRows: paging ? Math.max(0, repeatHeader) : undefined,
+      repeatFooterRows: paging ? Math.max(0, repeatFooter) : undefined,
+      exportFormula: exportFormula || undefined,
+      expandMinCount: expandMin || undefined,
+      expandMaxCount: expandMax || undefined,
+      keepExpandEmpty: keepExpandEmpty || undefined,
+      dump: dump || undefined,
+    }
+
     // 导出公式 / 展开控制：统一后处理，不动三个构造器的签名
     template = withExportFormula(template, exportFormula)
     template = withExpandControl(template, {
@@ -634,6 +677,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         sources: [{ name: dsName, database, engine, table, where: whereClause, params }],
       },
       headerRows: headerRowCount(template),
+      rawTemplate,
+      options: opts,
     }
   }, [
     mode,
@@ -658,6 +703,136 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     dbSelection,
     grid,
   ])
+
+  /* ------------------------- 报表文件：存 / 开 / 跑 ------------------------- */
+
+  const refreshReports = useCallback(async () => {
+    try {
+      const res = await fetch(`${REPORT_SERVER}/api/reports`)
+      if (!res.ok) throw new Error(`服务端返回 ${res.status}`)
+      setSavedReports((await res.json()) as ReportSummary[])
+    } catch {
+      /* 列表拉不到不影响设计器本身，静默 */
+    }
+  }, [])
+
+  useEffect(() => {
+    if (open) void refreshReports()
+  }, [open, refreshReports])
+
+  const saveReport = useCallback(async () => {
+    const built = buildRequest()
+    const id = reportId.trim()
+    if (!isValidReportId(id)) {
+      setError('报表 id 只能用字母、数字、-、_（最长 80），不能带空格或中文')
+      return
+    }
+    const def: ReportDef = {
+      format: REPORT_FORMAT,
+      version: REPORT_VERSION,
+      id,
+      name: reportName.trim() || id,
+      template: built.kind === 'request' ? built.rawTemplate : { sheets: [] },
+      sources: built.kind === 'request' ? built.req.sources : undefined,
+      options: built.kind === 'request' ? built.options : undefined,
+    }
+    setFileBusy(true)
+    try {
+      const res = await fetch(`${REPORT_SERVER}/api/reports/save`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(def),
+      })
+      const text = await res.text()
+      if (!res.ok) throw new Error(text || `保存失败 ${res.status}`)
+      setError('')
+      void refreshReports()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setFileBusy(false)
+    }
+  }, [buildRequest, reportId, reportName, refreshReports])
+
+  /**
+   * 打开已保存的报表。
+   *
+   * **一律落到「自由模板」模式**：自由模板能表达任何模板（分组/交叉/画布生成的
+   * 也一样），进去之后还能逐格改。反过来做不到——向导模式填不出手写的模板。
+   */
+  const openReport = useCallback(async (id: string) => {
+    setFileBusy(true)
+    try {
+      const res = await fetch(`${REPORT_SERVER}/api/reports/${encodeURIComponent(id)}`)
+      const text = await res.text()
+      if (!res.ok) throw new Error(text || `打开失败 ${res.status}`)
+      const def = JSON.parse(text) as ReportDef
+      setMode('free')
+      setGrid(templateToGrid(def.template.sheets?.[0] ?? { name: '模板', rows: [] }))
+      setReportId(def.id)
+      setReportName(def.name)
+      setExportFormula(def.options?.exportFormula ?? false)
+      setDump(def.options?.dump ?? false)
+      const pagingOn = !!def.options?.rowsPerPage
+      setPaging(pagingOn)
+      if (def.options?.rowsPerPage) setRowsPerPage(def.options.rowsPerPage)
+      if (def.options?.repeatHeaderRows != null) setRepeatHeader(def.options.repeatHeaderRows)
+      if (def.options?.repeatFooterRows != null) setRepeatFooter(def.options.repeatFooterRows)
+      // 数据源回填到左侧选择器，让人看得见数据从哪来
+      const s0 = def.sources?.[0]
+      if (s0?.database && s0?.table) {
+        void selectDatabase(s0.database, s0.engine)
+        void selectTable(s0.table)
+      }
+      if (s0?.where) setWhere(s0.where)
+      if (s0?.params?.length) setParamText(JSON.stringify(s0.params))
+      setError('')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setFileBusy(false)
+    }
+  }, [selectDatabase, selectTable])
+
+  /**
+   * 执行已保存的报表：**不依赖当前表单**，直接按文件里存的定义跑。
+   * 这是「打开报表就能出数据」的那一半——表单只是编辑态，文件才是事实。
+   */
+  const runReport = useCallback(async (id: string) => {
+    setFileBusy(true)
+    try {
+      const res = await fetch(`${REPORT_SERVER}/api/reports/${encodeURIComponent(id)}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      const text = await res.text()
+      if (!res.ok) throw new Error(text || `执行失败 ${res.status}`)
+      const data = JSON.parse(text) as RenderResponse
+      setWarnings(data.warnings ?? [])
+      setDumpText(data.dump ?? '')
+      setFallbackHtml(data.html || '')
+      // 先清上一次的错误，再 init —— 反过来的话 init 报的错会被这次清空盖掉
+      setError('')
+      try {
+        univerRef.current?.dispose()
+        univerRef.current = null
+        const { univerAPI } = createUniver({
+          locale: LocaleType.ZH_CN,
+          locales: { [LocaleType.ZH_CN]: mergeLocales(UniverPresetSheetsCoreZhCN) },
+          presets: [UniverSheetsCorePreset({ container: containerRef.current! })],
+        })
+        ;(univerAPI as any).createWorkbook(toWorkbookData(data.sheets[0], { headerRows: 2 }))
+        univerRef.current = univerAPI as unknown as { dispose: () => void }
+      } catch (e) {
+        setError(`Univer 初始化失败：${e instanceof Error ? e.message : String(e)}`)
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setFileBusy(false)
+    }
+  }, [])
 
   /**
    * 渲染。`silent` 用于「参数变化触发的自动刷新」：
@@ -934,6 +1109,70 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
             { label: '自由模板', value: 'free' },
           ]}
         />
+
+        {/* 报表文件：存下来之后，打开就能跑 */}
+        <Space wrap size="small">
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            报表文件
+          </Typography.Text>
+          <Input
+            size="small"
+            style={{ width: 150 }}
+            placeholder="名称，如 地区销售汇总"
+            value={reportName}
+            onChange={(e) => {
+              setReportName(e.target.value)
+              // 名称→id 只自动填一次（用户没手动改过 id 时）
+              if (!reportId || reportId === suggestReportId(reportName)) {
+                setReportId(suggestReportId(e.target.value))
+              }
+            }}
+            data-testid="report-file-name"
+          />
+          <Input
+            size="small"
+            style={{ width: 170 }}
+            placeholder="文件 id（字母数字-_）"
+            value={reportId}
+            onChange={(e) => setReportId(e.target.value)}
+            data-testid="report-file-id"
+          />
+          <Button
+            size="small"
+            type="primary"
+            loading={fileBusy}
+            onClick={() => void saveReport()}
+            data-testid="report-file-save"
+          >
+            保存
+          </Button>
+          <Select
+            size="small"
+            style={{ minWidth: 210 }}
+            placeholder="打开已保存的报表"
+            value={undefined}
+            options={savedReports.map((r) => ({
+              label: r.sourceCount ? `${r.name}（${r.sourceCount} 个数据源）` : `${r.name}（无数据源）`,
+              value: r.id,
+            }))}
+            onChange={(id: string) => void openReport(id)}
+            data-testid="report-file-open"
+          />
+          <Button
+            size="small"
+            disabled={!reportId}
+            loading={fileBusy}
+            onClick={() => void runReport(reportId.trim())}
+            data-testid="report-file-run"
+          >
+            执行
+          </Button>
+        </Space>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          保存的是「模板 + 数据源声明 + 渲染选项」，不是数据快照——打开时按声明现查。
+          打开后一律进<b>自由模板</b>（它能表达任何模板，进去还能逐格改）。
+          执行按文件里存的定义跑，与当前表单无关。
+        </Typography.Text>
 
         {showQuery && (
           <>

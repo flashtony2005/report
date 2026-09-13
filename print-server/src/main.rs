@@ -28,7 +28,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::Router;
 use tower_http::cors::CorsLayer;
 
@@ -125,6 +125,12 @@ async fn main() {
         )
         .route("/api/report/cross-tab-two-metrics", get(report::cross_tab_two_metrics_handler))
         .route("/api/report/cross-tab-multi-level", get(report::cross_tab_multi_level_handler))
+        // 报表定义文件（模板 + 数据源 + 选项）：存下来，打开就能跑
+        .route("/api/reports", get(report::reports_list_handler))
+        .route("/api/reports/save", put(report::reports_save_handler))
+        .route("/api/reports/:id", get(report::reports_get_handler).delete(report::reports_delete_handler))
+        .route("/api/reports/:id/run", post(report::reports_run_handler))
+        .route("/api/reports/:id/xlsx", post(report::reports_xlsx_handler))
         .layer(DefaultBodyLimit::max(256 * 1024 * 1024)) // 大文档 base64 传输
         .layer(CorsLayer::permissive()) // 浏览器直连本机客户端，跨域放开
         .with_state(state);

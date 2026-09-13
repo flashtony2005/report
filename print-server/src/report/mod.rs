@@ -9,9 +9,10 @@
 pub mod engine;
 pub mod expr;
 pub mod model;
+pub mod store;
 pub mod xlsx;
 
-use axum::extract::{Json, State};
+use axum::extract::{Json, Path, State};
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{Response as HttpResponse, StatusCode};
 use model::*;
@@ -317,6 +318,156 @@ pub async fn xlsx_handler(
         )
         .body(axum::body::Body::from(buf))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/* ---------------------------- 报表定义文件 ---------------------------- *
+ * 存的不是「渲染结果」，是「报表本身」：模板 + 数据源声明 + 渲染选项。
+ * 打开（run）时服务端才按 sources 现查、按 options 套到模板上再展开。
+ *
+ * 目录：配置文件同级的 reports/（见 store::reports_dir）。
+ * -------------------------------------------------------------------- */
+
+fn reports_dir_of(state: &AppState) -> std::path::PathBuf {
+    store::reports_dir(state.config_path.as_ref())
+}
+
+/// `GET /api/reports` —— 报表列表（只回元信息）
+pub async fn reports_list_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<store::ReportSummary>>, (StatusCode, String)> {
+    let dir = reports_dir_of(&state);
+    store::list(&dir)
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+/// `GET /api/reports/:id` —— 读取完整定义
+pub async fn reports_get_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<store::ReportDef>, (StatusCode, String)> {
+    let dir = reports_dir_of(&state);
+    store::load(&dir, &id)
+        .map(Json)
+        .map_err(|e| (StatusCode::NOT_FOUND, e))
+}
+
+/// `PUT /api/reports/:id` —— 保存（新建或覆盖）
+pub async fn reports_save_handler(
+    State(state): State<AppState>,
+    Json(def): Json<store::ReportDef>,
+) -> Result<Json<store::ReportDef>, (StatusCode, String)> {
+    let dir = reports_dir_of(&state);
+    store::save(&dir, def)
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))
+}
+
+/// `DELETE /api/reports/:id`
+pub async fn reports_delete_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let dir = reports_dir_of(&state);
+    store::delete(&dir, &id)
+        .map(|_| Json(serde_json::json!({ "ok": true })))
+        .map_err(|e| (StatusCode::NOT_FOUND, e))
+}
+
+/**
+ * `POST /api/reports/:id/run` —— **打开报表即执行**。
+ *
+ * 请求体可选：`{"params": {...}}` 按数据集名覆盖查询参数，
+ * 这样「华东的报表」和「华南的报表」可以是同一个文件，只是打开时传参不同。
+ * 例：`{"params": {"ds1": ["华东"]}}`
+ */
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct RunRequest {
+    /// 数据集名 → 参数数组（覆盖定义里的 params）
+    pub params: Option<BTreeMap<String, Vec<JsonValue>>>,
+    /// 覆盖定义里的 dump 开关
+    pub dump: Option<bool>,
+}
+
+pub async fn reports_run_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Option<Json<RunRequest>>,
+) -> Result<Json<RenderResponse>, (StatusCode, String)> {
+    let dir = reports_dir_of(&state);
+    let def = store::load(&dir, &id).map_err(|e| (StatusCode::NOT_FOUND, e))?;
+    run_def(&state, def, body.map(|b| b.0).unwrap_or_default())
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))
+}
+
+/// `POST /api/reports/:id/xlsx` —— 执行并导出 xlsx
+pub async fn reports_xlsx_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Option<Json<RunRequest>>,
+) -> Result<HttpResponse<axum::body::Body>, (StatusCode, String)> {
+    let dir = reports_dir_of(&state);
+    let def = store::load(&dir, &id).map_err(|e| (StatusCode::NOT_FOUND, e))?;
+    let name = if def.name.trim().is_empty() { def.id.clone() } else { def.name.clone() };
+    let resp = run_def(&state, def, body.map(|b| b.0).unwrap_or_default())
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let sheets = resp.pages.as_ref().unwrap_or(&resp.sheets);
+    let buf = xlsx::to_xlsx(sheets).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    HttpResponse::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        .header(
+            CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}.xlsx\"", name.replace('"', "")),
+        )
+        .body(axum::body::Body::from(buf))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// 执行一个报表定义：应用 options → 合并运行时参数 → 渲染
+async fn run_def(
+    state: &AppState,
+    def: store::ReportDef,
+    run: RunRequest,
+) -> Result<RenderResponse, String> {
+    let mut template = store::apply_options(def.template, &def.options);
+
+    // 运行时参数覆盖。key 是数据集名，值直接替换该数据源的 params。
+    let mut sources = def.sources;
+    if let Some(overrides) = run.params {
+        for s in sources.iter_mut() {
+            if let Some(p) = overrides.get(&s.name) {
+                s.params = Some(p.clone());
+            }
+        }
+    }
+
+    // 传了参数却没写 WHERE：底层的报错是 "Got 1, needed 0"，用户看不懂。
+    // 在这里提前拦，说清楚该怎么修。
+    for s in sources.iter() {
+        let has_params = s.params.as_ref().map(|p| !p.is_empty()).unwrap_or(false);
+        let has_where = s.r#where.as_deref().unwrap_or("").trim().is_empty() == false;
+        if has_params && !has_where {
+            return Err(format!(
+                "数据源「{}」传了 {} 个参数，但定义里没写 WHERE 子句，参数无处可填。\
+                 请在筛选条件里写占位符（如 region = ?）再传参。",
+                s.name,
+                s.params.as_ref().map(|p| p.len()).unwrap_or(0)
+            ));
+        }
+    }
+
+    let req = RenderRequest {
+        template,
+        datasets: None,
+        dump: Some(run.dump.or(def.options.dump).unwrap_or(false)),
+        sources: Some(sources),
+    };
+    render_with_sources(state, req).await
 }
 
 /// `GET /api/report/sample.xlsx`：内置样例导出，便于不开前端也能验证

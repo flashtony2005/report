@@ -39,3 +39,6 @@ Thumbs.db
 
 # 项目记忆（不入公开仓库）
 .workbuddy/
+
+# 报表定义文件（用户数据：含本地库路径，可能含连接信息；origin 是公开仓库）
+print-server/reports/
