@@ -9,9 +9,22 @@ import {
   headerRowCount,
   labelOf,
   parseParams,
+  colIndex,
+  deleteGridCol,
+  deleteGridRow,
+  formatCellText,
+  gridToSheet,
+  insertGridCol,
+  insertGridRow,
+  parseCellText,
+  parsePos,
+  setGridCell,
   stripArrayPrefix,
+  templateToGrid,
   toWorkbookData,
+  validateTemplate,
   withExpandControl,
+  type CellTpl,
   type ReportTemplate,
 } from './grid-report'
 
@@ -513,5 +526,277 @@ describe('展开控制：min / max / keepEmpty 打在不同层级', () => {
     // 列展开格一个都没被带上
     expect(colExp.every((m) => m.keep_expand_empty === undefined)).toBe(true)
     expect(colExp.every((m) => m.expand_min_count === undefined)).toBe(true)
+  })
+})
+
+describe('自由模板：格文本 ↔ 语义', () => {
+  it('字面量不套 {{}}', () => {
+    expect(parseCellText('地区')).toEqual({ kind: 'literal', text: '地区' })
+    expect(parseCellText('2026 年销售汇总')).toEqual({ kind: 'literal', text: '2026 年销售汇总' })
+    expect(parseCellText('')).toEqual({ kind: 'literal', text: '' })
+  })
+
+  it('{{ds1.city}} → 字段绑定', () => {
+    expect(parseCellText('{{ds1.city}}')).toEqual({ kind: 'field', ds: 'ds1', field: 'city' })
+  })
+
+  it('{{ds1.amount.sum()}} → 字段 + 聚合', () => {
+    expect(parseCellText('{{ds1.amount.sum()}}')).toEqual({
+      kind: 'field',
+      ds: 'ds1',
+      field: 'amount',
+      agg: 'sum',
+    })
+  })
+
+  it('{{D3[B3:+0].sum()}} → 表达式（不是字段）', () => {
+    expect(parseCellText('{{D3[B3:+0].sum()}}')).toEqual({
+      kind: 'expr',
+      expr: 'D3[B3:+0].sum()',
+    })
+  })
+
+  it('formatCellText 与 parseCellText 可往返', () => {
+    const cases: CellTpl[] = [
+      { value: '地区', model: undefined },
+      { value: null, model: { ds: 'ds1', field: 'city', expand_type: 'r' } },
+      { value: null, model: { ds: 'ds1', field: 'amount', agg: 'sum' } },
+      { value: null, model: { ds: 'ds1', value_expr: 'D3[B3:+0].sum()' } },
+    ]
+    for (const c of cases) {
+      const text = formatCellText(c)
+      const back = parseCellText(text)
+      // 字面量 / 表达式 / 字段都要能认回来
+      if (c.model?.value_expr) expect(back).toEqual({ kind: 'expr', expr: c.model.value_expr })
+      else if (c.model?.field) {
+        expect(back).toMatchObject({ kind: 'field', ds: 'ds1', field: c.model.field })
+      } else expect(back).toEqual({ kind: 'literal', text: '地区' })
+    }
+  })
+})
+
+describe('自由模板：位置名解析', () => {
+  it('列名 → 下标 / 位置名 → 行列', () => {
+    expect(colIndex('A')).toBe(0)
+    expect(colIndex('Z')).toBe(25)
+    expect(colIndex('AA')).toBe(26)
+    expect(parsePos('A1')).toEqual({ r: 0, c: 0 })
+    expect(parsePos('D3')).toEqual({ r: 2, c: 3 })
+    expect(parsePos('nonsense')).toBeNull()
+  })
+})
+
+describe('自由模板：插删行列要重映射引用', () => {
+  /** 3×3 网格：A1 字面量；B2 绑 city 且左主格 A2；C2 值表达式 D3[B3:+0].sum() */
+  function sample(): ReturnType<typeof templateToGrid> {
+    const g = templateToGrid(
+      {
+        name: 't',
+        rows: [
+          { cells: [{ value: '标题', model: undefined }] },
+          {
+            cells: [
+              { value: null, model: { ds: 'ds1', field: 'region', expand_type: 'r' } },
+              {
+                value: null,
+                model: { ds: 'ds1', field: 'city', expand_type: 'r', row_parent: 'A2' },
+              },
+              {
+                value: null,
+                model: { ds: 'ds1', value_expr: 'D3[B3:+0].sum()', row_parent: 'B2' },
+              },
+            ],
+          },
+        ],
+      },
+      3,
+      3,
+    )
+    return g
+  }
+
+  it('在第 1 行前插入一行：行引用整体 +1', () => {
+    const g = insertGridRow(sample(), 0)
+    // 在第 0 行前插入 → 原「标题」行降到第 1 行，region 那行降到第 2 行
+    expect(g[1][0].model).toBeUndefined()
+    expect(g[2][0].model?.field).toBe('region')
+    // A2 → A3
+    expect(g[2][1].model?.row_parent).toBe('A3')
+    // B2 → B3；表达式里的 D3→D4、B3→B4
+    expect(g[2][2].model?.row_parent).toBe('B3')
+    expect(g[2][2].model?.value_expr).toBe('D4[B4:+0].sum()')
+  })
+
+  it('删除第 1 行：后面的 -1，指向被删行的引用清空', () => {
+    const g = deleteGridRow(sample(), 0)
+    // 原第 2 行升到第 1 行
+    expect(g[0][0].model?.field).toBe('region')
+    // row_parent 原 A2 → 现在 A1
+    expect(g[0][1].model?.row_parent).toBe('A1')
+    // 表达式 D3[B3:+0] → D2[B2:+0]
+    expect(g[0][2].model?.value_expr).toBe('D2[B2:+0].sum()')
+  })
+
+  it('删除被引用的那一行：引用清空而不是错位', () => {
+    const g = templateToGrid(
+      {
+        name: 't',
+        rows: [
+          { cells: [{ value: null, model: { ds: 'ds1', field: 'region', expand_type: 'r' } }] },
+          {
+            cells: [
+              {
+                value: null,
+                model: { ds: 'ds1', field: 'city', expand_type: 'r', row_parent: 'A1' },
+              },
+            ],
+          },
+        ],
+      },
+      2,
+      1,
+    )
+    // 删掉 A1（被 A2 认作主格的那一行）
+    const out = deleteGridRow(g, 0)
+    expect(out[0][0].model?.row_parent).toBeUndefined()
+  })
+
+  it('插列：列引用平移', () => {
+    const g = insertGridCol(sample(), 0)
+    // A2 → B2（原来的 region 格右移了一列）
+    expect(g[1][0].model).toBeUndefined()
+    expect(g[1][1].model?.field).toBe('region')
+    expect(g[1][2].model?.row_parent).toBe('B2')
+  })
+
+  it('数据集名 ds1 不会被当成单元格引用', () => {
+    const g = templateToGrid(
+      {
+        name: 't',
+        rows: [{ cells: [{ value: null, model: { ds: 'ds1', field: 'city' } }] }],
+      },
+      1,
+      1,
+    )
+    const out = insertGridRow(g, 0)
+    // ds 名不变（关键：若把 ds1 当引用会变成 ds2）
+    expect(out[1][0].model?.ds).toBe('ds1')
+    expect(out[1][0].model?.field).toBe('city')
+  })
+
+  it('B3:+0 的相对偏移不被平移', () => {
+    const g = templateToGrid(
+      {
+        name: 't',
+        rows: [
+          { cells: [{ value: null, model: { ds: 'ds1', field: 'a', expand_type: 'r' } }] },
+          {
+            cells: [
+              {
+                value: null,
+                model: { ds: 'ds1', value_expr: 'B3:+0', row_parent: 'A1' },
+              },
+            ],
+          },
+        ],
+      },
+      2,
+      1,
+    )
+    const out = insertGridRow(g, 0)
+    // B3 是引用 → B4；:+0 是偏移，必须原样保留
+    expect(out[2][0].model?.value_expr).toBe('B4:+0')
+  })
+
+  it('setGridCell 越界不改网格', () => {
+    const g = templateToGrid({ name: 't', rows: [] }, 2, 2)
+    expect(setGridCell(g, 9, 9, { value: 'x', model: undefined })).toBe(g)
+  })
+})
+
+describe('自由模板：网格 ↔ SheetTpl', () => {
+  it('尾部空行被裁掉，中间空格保留', () => {
+    const g = templateToGrid(
+      {
+        name: 't',
+        rows: [
+          { cells: [{ value: '标题', model: undefined }, { value: null, model: undefined }] },
+          { cells: [] },
+        ],
+      },
+      2,
+      2,
+    )
+    const sheet = gridToSheet(g, 'x')
+    expect(sheet.rows.length).toBe(1)
+    expect(sheet.rows[0].cells.length).toBe(2)
+    expect(sheet.rows[0].cells[1].value).toBeNull()
+  })
+})
+
+describe('自由模板：模板体检', () => {
+  const tpl = (rows: ReportTemplate['sheets'][number]['rows']): ReportTemplate => ({
+    sheets: [{ name: 's', rows }],
+  })
+
+  it('展开格没有数据集 → 报警', () => {
+    const w = validateTemplate(
+      tpl([{ cells: [{ value: null, model: { expand_type: 'r' } }] }]),
+    )
+    expect(w.some((x) => x.includes('没有数据集'))).toBe(true)
+  })
+
+  it('主格指向没有模型的格子 → 报警', () => {
+    const w = validateTemplate(
+      tpl([
+        {
+          cells: [
+            { value: null, model: { ds: 'ds1', field: 'a', expand_type: 'r' } },
+            { value: null, model: { ds: 'ds1', field: 'b', row_parent: 'B9' } },
+          ],
+        },
+      ]),
+    )
+    expect(w.some((x) => x.includes('没有数据模型'))).toBe(true)
+  })
+
+  it('主格指向自己 → 报警', () => {
+    const w = validateTemplate(
+      tpl([{ cells: [{ value: null, model: { ds: 'ds1', field: 'a', row_parent: 'A1' } }] }]),
+    )
+    expect(w.some((x) => x.includes('指向自己'))).toBe(true)
+  })
+
+  it('主格成环 → 报警', () => {
+    const w = validateTemplate(
+      tpl([
+        {
+          cells: [
+            { value: null, model: { ds: 'ds1', field: 'a', expand_type: 'r', row_parent: 'B1' } },
+            { value: null, model: { ds: 'ds1', field: 'b', expand_type: 'r', row_parent: 'A1' } },
+          ],
+        },
+      ]),
+    )
+    expect(w.some((x) => x.includes('成环'))).toBe(true)
+  })
+
+  it('正常模板零告警', () => {
+    const w = validateTemplate(
+      tpl([
+        { cells: [{ value: '标题', model: undefined }] },
+        {
+          cells: [
+            { value: null, model: { ds: 'ds1', field: 'region', expand_type: 'r' } },
+            {
+              value: null,
+              model: { ds: 'ds1', field: 'city', expand_type: 'r', row_parent: 'A2' },
+            },
+            { value: null, model: { ds: 'ds1', value_expr: 'C2[B2:+0].sum()', row_parent: 'B2' } },
+          ],
+        },
+      ]),
+    )
+    expect(w).toEqual([])
   })
 })

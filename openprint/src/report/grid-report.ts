@@ -593,6 +593,10 @@ export function buildCrossTemplate(opts: CrossTemplateOptions): ReportTemplate {
 
 /** 表头样式 id（Univer IStyleData：加粗 + 居中 + 浅蓝底） */
 const HEADER_STYLE_ID = 'grid-hdr'
+/** 设计态样式：扩展格（黄底加粗） / 绑定格（蓝字） / 当前选中（蓝底蓝框） */
+const EXPAND_STYLE_ID = 'tpl-expand'
+const BINDING_STYLE_ID = 'tpl-binding'
+const SELECTED_STYLE_ID = 'tpl-selected'
 
 /**
  * 模板前部的表头行数（标题行 + 各级列头 + 指标子表头），到第一个行展开格为止。
@@ -660,6 +664,355 @@ export function toWorkbookData(sheet: RenderedSheet, opts: { headerRows?: number
         columnCount: Math.max(columnCount, 10),
         cellData,
         mergeData,
+      },
+    },
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 自由模板（类 Excel 逐格设计）
+ *
+ * 上面的三个构造器是「向导」：选字段 → 机器拼模板。它们盖不住
+ * 「手写模板」场景——比如验证缺省父格跟随规则的那个三层模板，
+ * 只能手写 JSON。这一层给 UI 提供逐格编辑需要的纯函数，
+ * 全部可单测，Univer 只当画布。
+ * ------------------------------------------------------------------ */
+
+/**
+ * 模板格里「绑定」的写法：`{{ds1.city}}` / `{{ds1.amount.sum()}}` / `{{D3[B3:+0].sum()}}`。
+ *
+ * **为什么不是 `=ds1.city`（润乾/类 Excel 的惯例）**：Univer 的 core preset 自带
+ * 公式引擎，任何 `=` 开头的输入都会被当 Excel 公式解析，而我们这套
+ * `D3[A3:+0].sum()` 层次坐标 DSL 在 Excel 里没有对应物，会直接显示 `#NAME?`。
+ * 用 `{{}}` 保证：Univer 永远当纯文本，回读时不丢原样。
+ */
+const BIND_RE = /^\{\{([\s\S]+)\}\}$/
+/** `ds1.city` */
+const FIELD_RE = /^([A-Za-z_]\w*)\.([A-Za-z_][\w.]*)$/
+/** `ds1.amount.sum()` */
+const AGG_RE = /^([A-Za-z_]\w*)\.([A-Za-z_][\w.]*)\.(sum|count|avg|min|max)\(\)$/
+
+/** 模板格文本解析结果 */
+export type CellText =
+  | { kind: 'literal'; text: string }
+  | { kind: 'field'; ds: string; field: string; agg?: AggType }
+  | { kind: 'expr'; expr: string }
+
+/** 模板格文本 → 语义。`{{...}}` 之外一律当字面量。 */
+export function parseCellText(raw: string): CellText {
+  const t = (raw ?? '').trim()
+  const m = BIND_RE.exec(t)
+  if (!m) return { kind: 'literal', text: raw ?? '' }
+  const inner = m[1].trim()
+  const agg = AGG_RE.exec(inner)
+  if (agg) {
+    return { kind: 'field', ds: agg[1], field: agg[2], agg: agg[3] as AggType }
+  }
+  const fld = FIELD_RE.exec(inner)
+  if (fld) return { kind: 'field', ds: fld[1], field: fld[2] }
+  // 既不是 ds.field 也不是 ds.field.agg()：当表达式（层次坐标 / 条件表达式等）
+  return { kind: 'expr', expr: inner }
+}
+
+/** 单元格 → 模板格文本（parseCellText 的逆）。空串表示这一格没内容。 */
+export function formatCellText(cell: CellTpl): string {
+  const m = cell.model
+  if (m?.value_expr) return `{{${m.value_expr}}}`
+  if (m?.field) {
+    const ds = m.ds || 'ds1'
+    const agg = m.agg ? `.${m.agg}()` : ''
+    return `{{${ds}.${m.field}${agg}}}`
+  }
+  if (cell.value === undefined || cell.value === null) return ''
+  return String(cell.value)
+}
+
+/** 模板设计网格：矩形的 CellTpl 二维数组（比 SheetTpl 多一层「固定尺寸」约束） */
+export type TemplateGrid = CellTpl[][]
+
+export function emptyGrid(rows: number, cols: number): TemplateGrid {
+  const g: TemplateGrid = []
+  for (let r = 0; r < rows; r++) {
+    const row: CellTpl[] = []
+    for (let c = 0; c < cols; c++) row.push({ value: null, model: undefined })
+    g.push(row)
+  }
+  return g
+}
+
+/** SheetTpl → 矩形网格（不足的行列补空格，方便 UI 直接按下标渲染） */
+export function templateToGrid(sheet: SheetTpl, minRows = 20, minCols = 10): TemplateGrid {
+  const src = sheet.rows ?? []
+  const rows = Math.max(src.length, minRows)
+  const cols = Math.max(src.reduce((m, r) => Math.max(m, r.cells?.length ?? 0), 0), minCols)
+  const g = emptyGrid(rows, cols)
+  src.forEach((row, r) => {
+    ;(row.cells ?? []).forEach((cell, c) => {
+      if (c < cols) g[r][c] = cell
+    })
+  })
+  return g
+}
+
+/**
+ * 网格 → SheetTpl。尾部全空的行会被裁掉（否则服务端会展开出一堆空行）；
+ * **中间的空格必须保留**——它参与「向左/向上扫找主格」的判定。
+ */
+export function gridToSheet(grid: TemplateGrid, name: string): SheetTpl {
+  const lastContentRow = grid.reduce(
+    (acc, row, r) => (row.some((c) => formatCellText(c) !== '' || c.model) ? r : acc),
+    -1,
+  )
+  const rows = grid.slice(0, lastContentRow + 1).map((row) => ({ cells: row }))
+  return { name, rows, page: null }
+}
+
+/** 不可变地改一格。越界返回原网格（UI 不应让它发生，但不让它炸）。 */
+export function setGridCell(grid: TemplateGrid, r: number, c: number, cell: CellTpl): TemplateGrid {
+  if (!grid[r] || c < 0 || c >= grid[r].length) return grid
+  return grid.map((row, ri) => (ri === r ? row.map((x, ci) => (ci === c ? cell : x)) : row))
+}
+
+/* ------------------------------------------------------------------ *
+ * 位置引用的整体平移
+ *
+ * 插/删行列时，`row_parent:"A3"`、`value_expr:"D3[B3:+0].sum()"` 这些**文本引用**
+ * 会整片失效。不做重映射的话，插一行表头就能让整个模板静默错位——
+ * 这是类 Excel 设计器最容易漏、也最难查的一类 bug。
+ * ------------------------------------------------------------------ */
+
+/**
+ * 单元格引用：`A3` / `D12`。
+ *
+ * 前后加断言是为了避开三类误伤（每一条都有对应用例，别随手放宽）：
+ * - `ds1.city` —— 数据集名带数字，但它是小写，且 `1` 后面跟 `.`；
+ * - `items[0].amount` / `qty1` —— 下标和字段名里的数字不是行号；
+ * - **断言里不能加 `[`**：`D3[B3:+0].sum()` 的 `B3` 前面就是 `[`，
+ *   加了就漏掉层次坐标里的括号引用（这个 bug 是被用例抓出来的）。
+ * 反过来，`B3:+0` 的 `B3` 本身**是**引用要平移，`:+0` 是相对偏移不动。
+ */
+const CELL_REF_RE = /(?<![A-Za-z0-9_.])([A-Z]{1,3})([1-9]\d{0,6})(?![A-Za-z0-9_.])/g
+
+/** 列名 → 列下标：A → 0，AA → 26 */
+export function colIndex(name: string): number {
+  let n = 0
+  for (const ch of name) n = n * 26 + (ch.charCodeAt(0) - 64)
+  return n - 1
+}
+
+/** 位置名 → 行列下标；非法输入返回 null */
+export function parsePos(pos: string): { r: number; c: number } | null {
+  const m = /^([A-Z]{1,3})([1-9]\d{0,6})$/.exec(pos)
+  if (!m) return null
+  return { r: Number(m[2]) - 1, c: colIndex(m[1]) }
+}
+
+/**
+ * 平移一段文本里的所有单元格引用。
+ *
+ * - 插入（delta > 0）：下标 ≥ at 的整体 +1
+ * - 删除（delta < 0）：下标 > at 的整体 -1；**正好指向 at 的返回空串**——
+ *   它引用的那一行/列没了，留着悬空引用会静默指向别处，比没有引用更危险。
+ */
+function shiftText(text: string, axis: 'row' | 'col', at: number, delta: number): string {
+  return text.replace(CELL_REF_RE, (full, col: string, rowStr: string) => {
+    const r0 = Number(rowStr) - 1
+    const c0 = colIndex(col)
+    const cur = axis === 'row' ? r0 : c0
+    if (cur < at) return full
+    if (delta < 0 && cur === at) return ''
+    const next = cur + delta
+    if (next < 0) return ''
+    return axis === 'row' ? cellPos(next, c0) : cellPos(r0, next)
+  })
+}
+
+/** 需要参与平移的字段：凡是可能写位置名的，一个都不能漏 */
+const REF_FIELDS = [
+  'row_parent',
+  'col_parent',
+  'col_after',
+  'value_expr',
+  'expand_expr',
+  'row_test_expr',
+  'col_test_expr',
+] as const
+
+function shiftModel(
+  m: CellModel | undefined,
+  axis: 'row' | 'col',
+  at: number,
+  delta: number,
+): CellModel | undefined {
+  if (!m) return m
+  const next: CellModel = { ...m }
+  for (const k of REF_FIELDS) {
+    const v = m[k]
+    if (typeof v !== 'string' || !v) continue
+    const shifted = shiftText(v, axis, at, delta)
+    // 主格被删掉 → 清空（留着悬空引用比没有主格更危险：会静默挂到别处）
+    ;(next as Record<string, unknown>)[k] = shifted === '' || shifted === null ? undefined : shifted
+  }
+  return next
+}
+
+/** 插入行（at 之前）。所有 ≥at 的行引用整体 +1。 */
+export function insertGridRow(grid: TemplateGrid, at: number): TemplateGrid {
+  return shiftGrid(grid, 'row', at, 1, true)
+}
+/** 删除行。所有 >at 的行引用 -1；正好指向 at 的引用被清空。 */
+export function deleteGridRow(grid: TemplateGrid, at: number): TemplateGrid {
+  return shiftGrid(grid, 'row', at, -1, false)
+}
+export function insertGridCol(grid: TemplateGrid, at: number): TemplateGrid {
+  return shiftGrid(grid, 'col', at, 1, true)
+}
+export function deleteGridCol(grid: TemplateGrid, at: number): TemplateGrid {
+  return shiftGrid(grid, 'col', at, -1, false)
+}
+
+function shiftGrid(
+  grid: TemplateGrid,
+  axis: 'row' | 'col',
+  at: number,
+  delta: number,
+  insert: boolean,
+): TemplateGrid {
+  const blank: CellTpl = { value: null, model: undefined }
+  // 1) 先按轴平移结构
+  let out: TemplateGrid
+  if (axis === 'row') {
+    if (at < 0 || at > grid.length) return grid
+    const copy = grid.map((row) => row.slice())
+    if (insert) {
+      copy.splice(at, 0, (grid[0] ?? []).map(() => ({ ...blank })))
+    } else {
+      copy.splice(at, 1)
+    }
+    out = copy
+  } else {
+    const copy = grid.map((row) => row.slice())
+    for (const row of copy) {
+      if (insert) row.splice(at, 0, { ...blank })
+      else row.splice(at, 1)
+    }
+    out = copy
+  }
+  // 2) 再平移文本引用（这一句才是重点：结构挪了，引用必须跟着挪）
+  return out.map((row) =>
+    row.map((cell) => {
+      if (!cell.model) return cell
+      return { ...cell, model: shiftModel(cell.model, axis, at, delta) }
+    }),
+  )
+}
+
+/**
+ * 模板体检：把「表照常出但数据不是你想要的」那类问题提前报出来。
+ *
+ * 只报**能确定是错的**，不报「可能你想这么写」——告警一多就没人看了。
+ */
+export function validateTemplate(tpl: ReportTemplate): string[] {
+  const out: string[] = []
+  const sheet = tpl.sheets?.[0]
+  if (!sheet) return ['模板至少一个 sheet']
+
+  // 位置 → 模型，用于检查主格指向的格子是否真的存在 / 是否也是展开格
+  const at = (r: number, c: number): CellTpl | undefined => sheet.rows?.[r]?.cells?.[c]
+
+  sheet.rows?.forEach((row, r) => {
+    row.cells?.forEach((cell, c) => {
+      const m = cell.model
+      if (!m) return
+      const pos = cellPos(r, c)
+
+      if (m.expand_type && !m.ds && !m.expand_expr) {
+        out.push(`${pos}：设了扩展方向却没有数据集（也没写 expand_expr），展开不出东西`)
+      }
+      if (m.expand_type && !m.field && !m.expand_expr && !m.value_expr) {
+        out.push(`${pos}：扩展格没有字段也没有表达式`)
+      }
+
+      for (const [key, ref] of [
+        ['左主格 row_parent', m.row_parent],
+        ['上主格 col_parent', m.col_parent],
+      ] as const) {
+        if (!ref) continue
+        const p = parsePos(ref)
+        if (!p) {
+          out.push(`${pos}：${key} "${ref}" 不是合法位置名`)
+          continue
+        }
+        if (p.r === r && p.c === c) {
+          out.push(`${pos}：${key} 指向自己`)
+          continue
+        }
+        const target = at(p.r, p.c)
+        if (!target?.model) {
+          out.push(`${pos}：${key} 指向 ${ref}，但那一格没有数据模型`)
+        }
+      }
+
+      // 主格成环：A3←B3←A3 会让展开停不下来
+      const seen = new Set<string>([pos])
+      let cur = m.row_parent
+      let hops = 0
+      while (cur && hops++ < 64) {
+        if (seen.has(cur)) {
+          out.push(`${pos}：左主格链成环（${[...seen, cur].join(' → ')}）`)
+          break
+        }
+        seen.add(cur)
+        const p = parsePos(cur)
+        cur = p ? at(p.r, p.c)?.model?.row_parent : undefined
+      }
+    })
+  })
+
+  return [...new Set(out)]
+}
+
+/**
+ * 模板网格 → Univer 工作簿数据（**设计态**，与展开结果的 toWorkbookData 区分开）。
+ *
+ * 这里只是「把每格的模板文本摆进格子」，不做任何展开。扩展格用底色标出来，
+ * 因为 `{{ds1.city}}` 和字面量「城市」在格子里长得几乎一样，不标根本分不清。
+ */
+export function gridToWorkbookData(grid: TemplateGrid, opts: { selected?: string } = {}) {
+  const cellData: Record<number, Record<number, { v: string; s?: string }>> = {}
+  grid.forEach((row, r) => {
+    row.forEach((cell, c) => {
+      const text = formatCellText(cell)
+      if (!text) return
+      cellData[r] = cellData[r] || {}
+      const pos = cellPos(r, c)
+      const m = cell.model
+      let s: string | undefined
+      if (pos === opts.selected) s = SELECTED_STYLE_ID
+      else if (m?.expand_type) s = EXPAND_STYLE_ID
+      else if (text.startsWith('{{')) s = BINDING_STYLE_ID
+      cellData[r][c] = { v: text, ...(s ? { s } : {}) }
+    })
+  })
+
+  const columnCount = grid.reduce((m, r) => Math.max(m, r.length), 0)
+  return {
+    id: 'grid-template',
+    name: '模板',
+    sheetOrder: ['sheet1'],
+    styles: {
+      [EXPAND_STYLE_ID]: { bl: 1, bg: { rgb: '#FFF1B8' } },
+      [BINDING_STYLE_ID]: { cl: { rgb: '#1668DC' } },
+      [SELECTED_STYLE_ID]: { bl: 1, bg: { rgb: '#D6E4FF' }, bd: { b: { s: 1, cl: { rgb: '#1677FF' } } } },
+    },
+    sheets: {
+      sheet1: {
+        id: 'sheet1',
+        name: '模板',
+        rowCount: Math.max(grid.length, 50),
+        columnCount: Math.max(columnCount, 12),
+        cellData,
+        mergeData: [],
       },
     },
   }

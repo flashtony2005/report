@@ -41,25 +41,41 @@ import {
   buildCrossTemplate,
   buildDetailTemplate,
   buildGroupTemplate,
+  cellPos,
   DEFAULT_FIELD_LABELS,
+  deleteGridCol,
+  deleteGridRow,
+  formatCellText,
+  gridToSheet,
+  gridToWorkbookData,
   headerRowCount,
+  insertGridCol,
+  insertGridRow,
+  parseCellText,
   parseParams,
+  setGridCell,
   stripArrayPrefix,
+  templateToGrid,
   toWorkbookData,
+  validateTemplate,
   withExportFormula,
   withExpandControl,
   type AggType,
   type CellFormatSpec,
+  type CellModel,
+  type CellTpl,
+  type ExpandDir,
   type RenderRequest,
   type RenderResponse,
   type ReportTemplate,
+  type TemplateGrid,
 } from '@/report/grid-report'
 import { useDataSourceStore } from '../stores/dataSource'
 import { useDesignerStore } from '../stores/designer'
 
 export const REPORT_SERVER = 'http://127.0.0.1:18888'
 
-type TemplateMode = 'sample' | 'group' | 'cross' | 'canvas'
+type TemplateMode = 'sample' | 'group' | 'cross' | 'canvas' | 'free'
 
 /** 模板构建的三种结果：内置样例 / 可提交请求 / 校验错误 */
 type BuildResult =
@@ -235,6 +251,167 @@ function FormatFields({
   )
 }
 
+/**
+ * 单元格模型编辑器（自由模板用）。
+ *
+ * 这一层存在的理由：`row_parent` / `expand_type` / `value_expr` 这些字段
+ * **没法用格子里的文字表达**，必须有独立的属性面板。三个向导构造器碰不到它们，
+ * 所以「手写模板」此前只能靠手写 JSON。
+ */
+function CellModelEditor({
+  pos,
+  cell,
+  columns,
+  onChange,
+}: {
+  pos: string
+  cell: CellTpl
+  columns: string[]
+  onChange: (next: CellTpl) => void
+}) {
+  const m = cell.model
+  const patch = (p: Partial<CellModel>): void => {
+    const next: CellModel = { ...(m ?? {}), ...p }
+    // 全空就没必要留个空 model
+    const empty = Object.values(next).every((v) => v === undefined)
+    onChange({ ...cell, model: empty ? undefined : next })
+  }
+  const text = formatCellText(cell)
+
+  return (
+    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+      <Space size={4}>
+        <Typography.Text strong style={{ fontSize: 12 }}>
+          {pos}
+        </Typography.Text>
+        <Input
+          size="small"
+          style={{ width: 260 }}
+          placeholder="格内容：字面量，或 {{ds1.city}} / {{D3[B3:+0].sum()}}"
+          value={text}
+          onChange={(e) => {
+            const parsed = parseCellText(e.target.value)
+            if (parsed.kind === 'literal') {
+              onChange({ ...cell, value: e.target.value || null, model: cell.model })
+            } else if (parsed.kind === 'field') {
+              onChange({
+                ...cell,
+                value: null,
+                model: {
+                  ...(cell.model ?? {}),
+                  ds: parsed.ds,
+                  field: parsed.field,
+                  agg: parsed.agg,
+                  value_expr: undefined,
+                },
+              })
+            } else {
+              onChange({
+                ...cell,
+                value: null,
+                model: {
+                  ...(cell.model ?? {}),
+                  ds: cell.model?.ds ?? 'ds1',
+                  field: undefined,
+                  value_expr: parsed.expr,
+                },
+              })
+            }
+          }}
+          data-testid="free-cell-text"
+        />
+      </Space>
+
+      <Space wrap size="small">
+        <Select
+          size="small"
+          style={{ width: 110 }}
+          data-testid="free-cell-expand"
+          placeholder="扩展方向"
+          value={m?.expand_type ?? ''}
+          options={[
+            { label: '不扩展', value: '' },
+            { label: '纵向 ↓', value: 'r' },
+            { label: '横向 →', value: 'c' },
+          ]}
+          onChange={(v: string) => patch({ expand_type: v ? (v as ExpandDir) : undefined })}
+        />
+        <Input
+          size="small"
+          style={{ width: 76 }}
+          placeholder="数据集"
+          value={m?.ds ?? ''}
+          onChange={(e) => patch({ ds: e.target.value || undefined })}
+          data-testid="free-cell-ds"
+        />
+        <Select
+          size="small"
+          style={{ width: 150 }}
+          placeholder="字段"
+          allowClear
+          showSearch
+          value={m?.field || undefined}
+          options={[
+            ...(m?.field && !columns.includes(m.field) ? [{ label: m.field, value: m.field }] : []),
+            ...columns.map((n) => ({ label: n, value: n })),
+          ]}
+          onChange={(v?: string) => patch({ field: v || undefined })}
+          data-testid="free-cell-field"
+        />
+        <Select
+          size="small"
+          style={{ width: 92 }}
+          placeholder="聚合"
+          value={m?.agg ?? ''}
+          options={[
+            { label: '不聚合', value: '' },
+            { label: '求和', value: 'sum' },
+            { label: '计数', value: 'count' },
+            { label: '平均', value: 'avg' },
+            { label: '最大', value: 'max' },
+            { label: '最小', value: 'min' },
+          ]}
+          onChange={(v: string) => patch({ agg: v ? (v as AggType) : undefined })}
+          data-testid="free-cell-agg"
+        />
+      </Space>
+
+      <Space wrap size="small">
+        <Space size={4}>
+          <Typography.Text style={{ fontSize: 12 }}>左主格</Typography.Text>
+          <Input
+            size="small"
+            style={{ width: 68 }}
+            placeholder="A2"
+            value={m?.row_parent ?? ''}
+            onChange={(e) => patch({ row_parent: e.target.value.trim() || undefined })}
+            data-testid="free-cell-row-parent"
+          />
+        </Space>
+        <Space size={4}>
+          <Typography.Text style={{ fontSize: 12 }}>上主格</Typography.Text>
+          <Input
+            size="small"
+            style={{ width: 68 }}
+            placeholder="B1"
+            value={m?.col_parent ?? ''}
+            onChange={(e) => patch({ col_parent: e.target.value.trim() || undefined })}
+            data-testid="free-cell-col-parent"
+          />
+        </Space>
+        <Input
+          size="small"
+          style={{ width: 240 }}
+          placeholder="值表达式，如 D3[B3:+0].sum()"
+          value={m?.value_expr ?? ''}
+          onChange={(e) => patch({ value_expr: e.target.value || undefined })}
+          data-testid="free-cell-value-expr"
+        />
+      </Space>
+    </Space>
+  )
+}
+
 export default function GridReportModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const univerRef = useRef<{ dispose: () => void } | null>(null)
@@ -279,6 +456,10 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const [expandMin, setExpandMin] = useState(0)
   const [expandMax, setExpandMax] = useState(0)
   const [keepExpandEmpty, setKeepExpandEmpty] = useState(false)
+  /** 自由模板：可逐格编辑的模板网格 + 当前选中位置（1 基行/列，避免让用户数 0） */
+  const [grid, setGrid] = useState<TemplateGrid>(() => templateToGrid({ name: '模板', rows: [] }))
+  const [selRow, setSelRow] = useState(1)
+  const [selCol, setSelCol] = useState(1)
   /** 调试：让服务端回传展开中间结果（层次坐标 / 父格）与模板告警 */
   const [dump, setDump] = useState(false)
   const [dumpText, setDumpText] = useState('')
@@ -312,6 +493,19 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
 
   const columnNames = useMemo(() => dbColumns.map((c) => c.name).filter(Boolean), [dbColumns])
 
+  /** 自由模板：当前选中格的位置名与内容（1 基输入 → 0 基下标） */
+  const selectedPos = useMemo(() => cellPos(selRow - 1, selCol - 1), [selRow, selCol])
+  const selCell = useMemo<CellTpl | undefined>(() => {
+    const r = selRow - 1
+    const c = selCol - 1
+    return grid[r]?.[c]
+  }, [grid, selRow, selCol])
+  /** 模板体检：只报「能确定是错的」，避免告警变成噪声 */
+  const tplWarnings = useMemo(
+    () => (mode === 'free' ? validateTemplate({ sheets: [gridToSheet(grid, '自由模板')] }) : []),
+    [mode, grid],
+  )
+
   /**
    * 分页配置。必须 memo：buildRequest 是 useCallback，而预览有一层 400ms 去抖，
    * 若 page 每次渲染都换新对象，doRender 身份随之变化，去抖会退化成反复请求。
@@ -340,7 +534,38 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
 
     const dsName = 'ds1'
     let template: ReportTemplate
-    if (mode === 'canvas') {
+    if (mode === 'free') {
+      const tpl = { sheets: [gridToSheet(grid, '自由模板')] }
+      if (tpl.sheets[0].rows.length === 0) {
+        return { kind: 'error', message: '模板是空的：先在格子里填内容或绑定字段' }
+      }
+      // 只套导出公式。
+      // **不套 withExpandControl**：那个函数按「最内/最外层」猜层级，
+      // 而自由模板的主格层级是用户一格一格定好的，让它再猜一遍会覆盖用户意图。
+      template = withExportFormula(tpl, exportFormula)
+      const { database: db1, table: tb1, engine: eg1 } = dbSelection
+      if (!db1 || !tb1) return { kind: 'error', message: '请先在数据源里选择库和表' }
+      const p1 = parseParams(paramText)
+      if (!p1.ok) return { kind: 'error', message: p1.message ?? '参数不合法' }
+      return {
+        kind: 'request',
+        req: {
+          template,
+          dump: dump ? true : undefined,
+          sources: [
+            {
+              name: dsName,
+              database: db1,
+              engine: eg1,
+              table: tb1,
+              where: where.trim() || undefined,
+              params: p1.params?.length ? p1.params : undefined,
+            },
+          ],
+        },
+        headerRows: 0,
+      }
+    } else if (mode === 'canvas') {
       if (!canvasTable?.columns?.length) {
         return { kind: 'error', message: '请先在画布里选中一个带字段列的表格控件' }
       }
@@ -431,6 +656,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     keepExpandEmpty,
     dump,
     dbSelection,
+    grid,
   ])
 
   /**
@@ -523,8 +749,42 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
    *
    * 去抖 400ms：筛选条件 / 字段别名是文本框，逐字符触发会把 Univer 反复拆了重建。
    */
+  /**
+   * 自由模板：Univer 里装的是**模板本身**（不是展开结果）。
+   *
+   * 与预览共用一个容器，两种模式互斥——同页面起两个 Univer 实例会互相抢全局，
+   * 所以这里在 free 模式下把预览那条路让出去。
+   */
+  useEffect(() => {
+    if (!open || mode !== 'free') return
+    let disposed = false
+    const timer = setTimeout(() => {
+      if (disposed || !containerRef.current) return
+      try {
+        univerRef.current?.dispose()
+        univerRef.current = null
+        const { univerAPI } = createUniver({
+          locale: LocaleType.ZH_CN,
+          locales: { [LocaleType.ZH_CN]: mergeLocales(UniverPresetSheetsCoreZhCN) },
+          presets: [UniverSheetsCorePreset({ container: containerRef.current })],
+        })
+        ;(univerAPI as any).createWorkbook(
+          gridToWorkbookData(grid, { selected: selectedPos }),
+        )
+        univerRef.current = univerAPI as unknown as { dispose: () => void }
+      } catch (e) {
+        if (!disposed) setError(`Univer 初始化失败：${e instanceof Error ? e.message : String(e)}`)
+      }
+    }, 200)
+    return () => {
+      disposed = true
+      clearTimeout(timer)
+    }
+  }, [open, mode, grid, selectedPos])
+
   useEffect(() => {
     if (!open) return
+    if (mode === 'free') return // 自由模板由上面的 effect 接管容器
     let disposed = false
     const timer = setTimeout(() => {
       void (async () => {
@@ -554,7 +814,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       disposed = true
       clearTimeout(timer)
     }
-  }, [open, doRender])
+  }, [open, mode, doRender])
 
   /** 关闭时才销毁实例（弹窗 destroyOnHidden，容器随之卸载） */
   useEffect(() => {
@@ -600,6 +860,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
             { label: '分组汇总', value: 'group' },
             { label: '交叉表', value: 'cross' },
             { label: '画布表格', value: 'canvas' },
+            { label: '自由模板', value: 'free' },
           ]}
         />
 
@@ -784,6 +1045,86 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           </>
         )}
 
+        {mode === 'free' && (
+          <>
+            <Space wrap size="small">
+              <Space size={4}>
+                <Typography.Text style={{ fontSize: 12 }}>当前格</Typography.Text>
+                <InputNumber
+                  size="small"
+                  style={{ width: 64 }}
+                  min={1}
+                  max={grid.length}
+                  value={selRow}
+                  onChange={(v: number | null) => setSelRow(v ?? 1)}
+                  data-testid="free-sel-row"
+                />
+                <InputNumber
+                  size="small"
+                  style={{ width: 64 }}
+                  min={1}
+                  max={grid[0]?.length ?? 1}
+                  value={selCol}
+                  onChange={(v: number | null) => setSelCol(v ?? 1)}
+                  data-testid="free-sel-col"
+                />
+              </Space>
+              <Button size="small" onClick={() => setGrid(insertGridRow(grid, selRow - 1))}>
+                插入行
+              </Button>
+              <Button size="small" onClick={() => setGrid(deleteGridRow(grid, selRow - 1))}>
+                删除行
+              </Button>
+              <Button size="small" onClick={() => setGrid(insertGridCol(grid, selCol - 1))}>
+                插入列
+              </Button>
+              <Button size="small" onClick={() => setGrid(deleteGridCol(grid, selCol - 1))}>
+                删除列
+              </Button>
+              <Button
+                size="small"
+                onClick={() => {
+                  try {
+                    const tpl: ReportTemplate = { sheets: [gridToSheet(grid, '自由模板')] }
+                    navigator.clipboard?.writeText(JSON.stringify(tpl, null, 2))
+                  } catch {
+                    /* 剪贴板不可用时静默 */
+                  }
+                }}
+              >
+                复制模板 JSON
+              </Button>
+            </Space>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              格内容写字面量或 <code>{'{{ds1.city}}'}</code>；插删行列会自动平移主格与表达式里的位置引用。
+              黄底 = 扩展格，蓝字 = 绑定格。
+            </Typography.Text>
+            {selCell && (
+              <CellModelEditor
+                pos={selectedPos}
+                cell={selCell}
+                columns={columnNames}
+                onChange={(next) => setGrid(setGridCell(grid, selRow - 1, selCol - 1, next))}
+              />
+            )}
+            {tplWarnings.length > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                title="模板体检"
+                description={
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {tplWarnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                }
+                data-testid="free-warnings"
+              />
+            )}
+          </>
+        )}
+
         {showQuery && (
           <>
             <Space wrap size="small">
@@ -854,39 +1195,47 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
                 />
                 <Typography.Text style={{ fontSize: 12 }}>导出公式</Typography.Text>
               </Space>
-              <Space size={4}>
-                <Typography.Text style={{ fontSize: 12 }}>最少行数</Typography.Text>
-                <InputNumber
-                  size="small"
-                  style={{ width: 64 }}
-                  min={0}
-                  max={999}
-                  value={expandMin}
-                  onChange={(v: number | null) => setExpandMin(v ?? 0)}
-                  data-testid="grid-report-expand-min"
-                />
-              </Space>
-              <Space size={4}>
-                <Typography.Text style={{ fontSize: 12 }}>最多条数</Typography.Text>
-                <InputNumber
-                  size="small"
-                  style={{ width: 64 }}
-                  min={0}
-                  max={9999}
-                  value={expandMax}
-                  onChange={(v: number | null) => setExpandMax(v ?? 0)}
-                  data-testid="grid-report-expand-max"
-                />
-              </Space>
-              <Space size={4}>
-                <Switch
-                  size="small"
-                  checked={keepExpandEmpty}
-                  onChange={(v: boolean) => setKeepExpandEmpty(v)}
-                  data-testid="grid-report-keep-empty"
-                />
-                <Typography.Text style={{ fontSize: 12 }}>空数据保留</Typography.Text>
-              </Space>
+              {/*
+                自由模板不显示这三个：它们靠「猜最内/最外层」打在不同层级上，
+                而自由模板的层级是用户一格一格定的，让它再猜一遍会覆盖用户意图。
+              */}
+              {mode !== 'free' && (
+                <>
+                  <Space size={4}>
+                    <Typography.Text style={{ fontSize: 12 }}>最少行数</Typography.Text>
+                    <InputNumber
+                      size="small"
+                      style={{ width: 64 }}
+                      min={0}
+                      max={999}
+                      value={expandMin}
+                      onChange={(v: number | null) => setExpandMin(v ?? 0)}
+                      data-testid="grid-report-expand-min"
+                    />
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text style={{ fontSize: 12 }}>最多条数</Typography.Text>
+                    <InputNumber
+                      size="small"
+                      style={{ width: 64 }}
+                      min={0}
+                      max={9999}
+                      value={expandMax}
+                      onChange={(v: number | null) => setExpandMax(v ?? 0)}
+                      data-testid="grid-report-expand-max"
+                    />
+                  </Space>
+                  <Space size={4}>
+                    <Switch
+                      size="small"
+                      checked={keepExpandEmpty}
+                      onChange={(v: boolean) => setKeepExpandEmpty(v)}
+                      data-testid="grid-report-keep-empty"
+                    />
+                    <Typography.Text style={{ fontSize: 12 }}>空数据保留</Typography.Text>
+                  </Space>
+                </>
+              )}
             </Space>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               分页按「数据行」计数，不含每页重复的表头/表尾。预览区始终展示未分页的完整表；

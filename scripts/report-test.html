@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>报表引擎 · 浏览器测试台</title>
+<style>
+  :root{
+    --bg:#F5F7FA; --surface:#FFF; --border:#E5E7EB; --border-strong:#D7DBE0;
+    --text:#1F2329; --muted:#86909C; --primary:#1677FF; --primary-h:#4096FF;
+    --ok:#00B42A; --ok-bg:#E8FFEA; --warn:#FF7D00; --warn-bg:#FFF7E8; --danger:#F53F3F; --danger-bg:#FFECE8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  header{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;
+         display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:10}
+  header h1{margin:0;font-size:16px;font-weight:600}
+  .spacer{flex:1}
+  .pill{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:99px;
+        background:#FAFBFC;border:1px solid var(--border);font-size:12.5px;color:var(--muted)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+  .dot.on{background:var(--ok)} .dot.off{background:var(--danger)}
+  main{max-width:1200px;margin:0 auto;padding:18px 24px 60px}
+  section{background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:14px;overflow:hidden}
+  .sec-head{padding:12px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .sec-head h2{margin:0;font-size:14px;font-weight:600}
+  .sec-head .desc{color:var(--muted);font-size:12.5px}
+  .sec-body{padding:14px 18px}
+  .row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{font-size:12.5px;color:var(--muted)}
+  button{font:inherit;cursor:pointer;border:1px solid var(--border-strong);background:#fff;color:var(--text);
+         height:32px;padding:0 13px;border-radius:8px;white-space:nowrap}
+  button:hover{border-color:var(--primary);color:var(--primary)}
+  button.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  button.primary:hover{background:var(--primary-h);border-color:var(--primary-h);color:#fff}
+  button.sel{background:#E8F3FF;border-color:var(--primary);color:var(--primary)}
+  input,select{font:inherit;height:32px;padding:0 9px;border:1px solid var(--border-strong);border-radius:8px;
+               background:#fff;color:var(--text);outline:none}
+  input:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(22,119,255,.12)}
+  input[type=number]{width:78px}
+  input.url{width:230px}
+  .switch{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text);cursor:pointer;user-select:none}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;white-space:nowrap}
+  th{background:#FAFBFC;font-weight:600}
+  tbody tr:nth-child(even) td{background:#FCFDFE}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  .msg{padding:10px 12px;border-radius:8px;font-size:13px;margin-bottom:8px}
+  .msg.warn{background:var(--warn-bg);border:1px solid #FFD08A;color:#8A4B00}
+  .msg.err{background:var(--danger-bg);border:1px solid #FFC6C4;color:#8C1B18}
+  .msg.ok{background:var(--ok-bg);border:1px solid #AFF0B5;color:#0B6B22}
+  pre.dump{margin:0;background:#0F1420;color:#D7DEEA;padding:12px 14px;border-radius:8px;overflow:auto;
+           font:12px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;max-height:340px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .muted{color:var(--muted);font-size:12.5px}
+  code{background:#F2F4F7;padding:1px 5px;border-radius:4px;font-size:12.5px}
+</style>
+</head>
+<body>
+<header>
+  <h1>报表引擎 · 浏览器测试台</h1>
+  <span class="pill"><span class="dot" id="dot"></span><span id="status">检查中…</span></span>
+  <div class="spacer"></div>
+  <input class="url" id="base" value="http://127.0.0.1:18888" />
+  <button onclick="checkHealth()">重连</button>
+</header>
+
+<main>
+  <section>
+    <div class="sec-head"><h2>模板</h2><span class="desc">点一个载入；「缺省父格·跟随」是手写模板，专门验刚补的跟随规则</span></div>
+    <div class="sec-body">
+      <div class="tabs" id="tplTabs"></div>
+      <div id="tplInfo" class="muted">—</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>选项</h2><span class="desc">展开控制按层级作用：最少行数→最内层明细，最多条数→最外层分组</span></div>
+    <div class="sec-body">
+      <div class="row">
+        <div class="field"><label>最少行数 (min)</label><input type="number" id="minCount" value="0" min="0" /></div>
+        <div class="field"><label>最多条数 (max)</label><input type="number" id="maxCount" value="0" min="0" /></div>
+        <div class="field"><label>每页数据行</label><input type="number" id="rowsPerPage" value="0" min="0" /></div>
+        <div class="field"><label>重复表头行</label><input type="number" id="repeatHeader" value="1" min="0" /></div>
+        <div class="field"><label>重复表尾行</label><input type="number" id="repeatFooter" value="0" min="0" /></div>
+        <label class="switch"><input type="checkbox" id="keepEmpty" /> 空数据保留</label>
+        <label class="switch"><input type="checkbox" id="exportFormula" /> 导出公式</label>
+        <label class="switch"><input type="checkbox" id="dump" /> 调试 dump</label>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" onclick="render()">渲染</button>
+        <button onclick="downloadXlsx()">导出 xlsx</button>
+        <span class="muted" id="timing"></span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>结果</h2><span class="desc" id="resultMeta"></span></div>
+    <div class="sec-body">
+      <div id="msgs"></div>
+      <div class="tabs" id="pageTabs"></div>
+      <div style="overflow:auto"><table id="grid"></table></div>
+      <div id="dumpWrap" style="display:none;margin-top:14px">
+        <div class="muted" style="margin-bottom:6px">dump：<code>seq | pos | 文本 &lt;- 层次坐标 | 行父 | 列父</code></div>
+        <pre class="dump" id="dumpText"></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+// ───────── 与 openprint/src/report/grid-report.ts 同款的两个后处理 ─────────
+function colName(n){ let s=''; while(true){ s=String.fromCharCode(65+(n%26))+s; if(n<26) break; n=Math.floor(n/26)-1 } return s }
+function cellPos(r,c){ return colName(c)+(r+1) }
+
+function withExportFormula(tpl,on){
+  if(!on) return tpl
+  return {
+    ...tpl,
+    sheets: tpl.sheets.map(s=>({
+      ...s,
+      rows: s.rows.map(r=>({
+        cells: r.cells.map(c=>{
+          const m = c.model
+          if(!m || !m.value_expr) return c
+          return { ...c, model: { ...m, export_formula: true } }
+        })
+      }))
+    }))
+  }
+}
+
+function withExpandControl(tpl,ctl){
+  const min  = ctl.minCount  > 0 ? ctl.minCount  : undefined
+  const max  = ctl.maxCount  > 0 ? ctl.maxCount  : undefined
+  const keep = ctl.keepEmpty ? true : undefined
+  if(min===undefined && max===undefined && keep===undefined) return tpl
+
+  const sheets = []
+  for(const sheet of tpl.sheets){
+    // 先扫一遍：收集行展开格的位置，以及「谁被别的行展开格认作父格」
+    const expandPos = new Set()
+    const childOf   = new Set()
+    sheet.rows.forEach(function(row, ri){
+      row.cells.forEach(function(c, ci){
+        if(!c.model || c.model.expand_type !== 'r') return
+        expandPos.add(cellPos(ri, ci))
+        if(c.model.row_parent) childOf.add(c.model.row_parent)
+      })
+    })
+
+    const rows = []
+    sheet.rows.forEach(function(row, ri){
+      const cells = row.cells.map(function(c, ci){
+        const m = c.model
+        if(!m || m.expand_type !== 'r') return c
+        const pos = cellPos(ri, ci)
+        const outermost = !m.row_parent || !expandPos.has(m.row_parent)
+        const innermost = !childOf.has(pos)
+        const nm = Object.assign({}, m)
+        nm.expand_min_count = innermost ? min : undefined
+        nm.expand_max_count = outermost ? max : undefined
+        nm.keep_expand_empty = keep
+        return Object.assign({}, c, { model: nm })
+      })
+      rows.push(Object.assign({}, row, { cells: cells }))
+    })
+    sheets.push(Object.assign({}, sheet, { rows: rows }))
+  }
+  return Object.assign({}, tpl, { sheets: sheets })
+}
+
+// ───────── 内置模板清单 ─────────
+// 端点名照抄 main.rs 的路由（这几个都是「样例模板」handler，直接返回 ReportTemplate）
+const TPLS = [
+  {id:'sample-template',                 name:'分组汇总',       ep:'/api/report/sample-template'},
+  {id:'cross-tab-template',              name:'交叉表',         ep:'/api/report/cross-tab-template'},
+  {id:'cross-tab-totals-template',       name:'交叉表(含合计)', ep:'/api/report/cross-tab-totals-template'},
+  {id:'cross-tab-two-metrics',           name:'双指标',         ep:'/api/report/cross-tab-two-metrics'},
+  {id:'cross-tab-two-metrics-totals',    name:'双指标(含合计)', ep:'/api/report/cross-tab-two-metrics-totals'},
+  {id:'cross-tab-multi-level',           name:'多级表头',       ep:'/api/report/cross-tab-multi-level'},
+  {id:'parent-follow',                   name:'缺省父格·跟随',  ep:null},
+]
+
+// 手写模板：B2 不声明父格，只能靠「跟随左邻 A2 的父格」挂到 A1。
+// 少了这条规则 B2 会挂根，吐一个 116,400 的总计而不是三个地区小计。
+const SAMPLE_ROWS = [
+  ['华东','上海','张三',12000],['华东','上海','李四',8600],['华东','杭州','王五',9900],
+  ['华东','南京','赵六',7400],['华南','广州','孙七',15300],['华南','广州','周八',6200],
+  ['华南','深圳','吴九',18700],['华北','北京','郑十',21400],['华北','北京','冯一',9800],
+  ['华北','天津','陈二',7100],
+]
+function parentFollowTpl(){
+  const cell=(m)=>({pos:null,value:null,model:m,merge_across:0,merge_down:0,merge_to_end:false})
+  const mdl=(field,expand,rowParent)=>({ds:'ds1',field,agg:expand?null:'sum',expand_type:expand?'r':null,
+    row_parent:rowParent||null,col_parent:null,col_after:null,value_expr:null,expand_expr:null,
+    expand_min_count:null,expand_max_count:null,keep_expand_empty:null,format:null,format_expr:null,
+    dict:null,row_test_expr:null,col_test_expr:null,export_formula:null})
+  return {sheets:[{name:'缺省父格·跟随',page:null,rows:[
+    {cells:[cell(mdl('region',true,null))]},
+    {cells:[cell(null),cell(mdl('amount',false,'A1')),cell(mdl('amount',false,null))]},
+  ]}], datasets:{ds1: SAMPLE_ROWS.map(([region,city,salesman,amount])=>({region,city,salesman,amount}))}}
+}
+
+let curTpl = null, curId = null, lastPages = null, curPage = 0
+
+const $ = (id)=>document.getElementById(id)
+const base = ()=>$('base').value.replace(/\/+$/,'')
+
+async function checkHealth(){
+  const dot=$('dot'), st=$('status')
+  try{
+    const r = await fetch(base()+'/health', {cache:'no-store'})
+    const d = await r.json()
+    dot.className='dot on'; st.textContent=`服务端在线 · 打印机 ${d.printers}`
+  }catch(e){
+    dot.className='dot off'; st.textContent='连不上：'+e.message
+  }
+}
+
+function buildTabs(){
+  $('tplTabs').innerHTML = TPLS.map(t=>`<button data-id="${t.id}" onclick="loadTpl('${t.id}')">${t.name}</button>`).join('')
+}
+
+async function loadTpl(id){
+  curId = id
+  document.querySelectorAll('#tplTabs button').forEach(b=>b.classList.toggle('sel', b.dataset.id===id))
+  const t = TPLS.find(x=>x.id===id)
+  try{
+    if(t.ep){
+      const r = await fetch(base()+t.ep, {cache:'no-store'})
+      if(!r.ok) throw new Error(t.ep+' → '+r.status)
+      curTpl = await r.json()
+      $('tplInfo').textContent = `已载入 ${t.name}（${t.ep}）：${curTpl.sheets.length} 个 sheet`
+    }else{
+      curTpl = parentFollowTpl()
+      $('tplInfo').textContent = '手写模板：A1 按地区展开；B 列靠「跟随左邻 A2 的父格」挂到 A1。'+
+        '若出现 116,400 说明跟随规则没生效（B2 挂根了）。'
+    }
+    await render()
+  }catch(e){ msg('err','载入模板失败：'+e.message) }
+}
+
+function applyOptions(tpl){
+  let t = JSON.parse(JSON.stringify(tpl))
+  t = withExpandControl(t, {minCount:+$('minCount').value, maxCount:+$('maxCount').value, keepEmpty:$('keepEmpty').checked})
+  t = withExportFormula(t, $('exportFormula').checked)
+  const rpp = +$('rowsPerPage').value
+  if(rpp>0){
+    t.sheets = t.sheets.map(s=>({...s, page:{rows_per_page:rpp,
+      repeat_header_rows:+$('repeatHeader').value, repeat_footer_rows:+$('repeatFooter').value}}))
+  }else{
+    t.sheets = t.sheets.map(s=>({...s, page:null}))
+  }
+  return t
+}
+
+function msg(kind, text){ $('msgs').innerHTML += `<div class="msg ${kind}">${escapeHtml(text)}</div>` }
+function escapeHtml(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) }
+
+function drawSheet(rows){
+  const tbl=$('grid')
+  if(!rows.length){ tbl.innerHTML=''; return }
+  tbl.innerHTML = '<tbody>'+rows.map((r,i)=>'<tr>'+r.map(c=>{
+    const num = c.raw_number!==null && c.raw_number!==undefined
+    return `<td class="${num?'num':''}" title="${escapeHtml(c.pos||'')}">${escapeHtml(c.text||'')}</td>`
+  }).join('')+'</tr>').join('')+'</tbody>'
+}
+
+async function render(){
+  $('msgs').innerHTML=''; lastPages=null; curPage=0
+  $('dumpWrap').style.display='none'; $('dumpText').textContent=''
+  if(!curTpl){ msg('err','先选一个模板'); return }
+  const t0=performance.now()
+  try{
+    const tpl = applyOptions(curTpl)
+    const r = await fetch(base()+'/api/report/render', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({template:tpl, datasets:null, dump:$('dump').checked, sources:null})
+    })
+    const d = await r.json()
+    if(!r.ok) throw new Error(d.error || ('HTTP '+r.status))
+    window._lastResp = d
+    const ms = Math.round(performance.now()-t0)
+    $('timing').textContent = `耗时 ${ms} ms`
+
+    lastPages = d.pages || null
+    $('pageTabs').innerHTML = lastPages
+      ? lastPages.map((p,i)=>`<button data-i="${i}" onclick="showPage(${i})">第 ${i+1} 页</button>`).join('')
+      : ''
+    showPage(0)
+
+    const warnings = d.warnings || []
+    if(warnings.length) warnings.forEach(w=>msg('warn','⚠ '+w))
+    else msg('ok','无告警')
+
+    $('resultMeta').textContent = lastPages
+      ? `${lastPages.length} 页`
+      : `${d.sheets[0].rows.length} 行 × ${(d.sheets[0].rows[0]||[]).length} 列`
+
+    if(d.dump){ $('dumpWrap').style.display=''; $('dumpText').textContent=d.dump }
+  }catch(e){ msg('err','渲染失败：'+e.message) }
+}
+
+function showPage(i){
+  curPage=i
+  document.querySelectorAll('#pageTabs button').forEach(b=>b.classList.toggle('sel', +b.dataset.i===i))
+  if(lastPages && lastPages[i]){ drawSheet(lastPages[i].rows); return }
+  // 未分页：只有 sheets（注意分页时 sheets 是整表、pages 是逐页）
+  if(window._lastResp && window._lastResp.sheets[0]) drawSheet(window._lastResp.sheets[0].rows)
+}
+
+async function downloadXlsx(){
+  $('msgs').innerHTML=''
+  if(!curTpl){ msg('err','先选一个模板'); return }
+  try{
+    const tpl = applyOptions(curTpl)
+    const r = await fetch(base()+'/api/report/xlsx', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({template:tpl, datasets:null, dump:null, sources:null})
+    })
+    if(!r.ok) throw new Error('HTTP '+r.status)
+    const blob = await r.blob()
+    const a=document.createElement('a')
+    a.href=URL.createObjectURL(blob); a.download='report.xlsx'; a.click()
+    URL.revokeObjectURL(a.href)
+    msg('ok',`已导出 ${(blob.size/1024).toFixed(1)} KB`)
+  }catch(e){ msg('err','导出失败：'+e.message) }
+}
+
+buildTabs(); checkHealth(); loadTpl('sample-template')
+</script>
+</body>
+</html>
