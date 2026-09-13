@@ -10,6 +10,7 @@ use crate::report::expr::{self, BinOp, CmpOp, Coord, Expr, Prop};
 use crate::report::model::*;
 use serde_json::Value as JsonValue;
 use std::cell::{Ref, RefCell};
+use std::rc::Rc;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// 布局递归深度上限（防御异常模板导致的深递归）
@@ -415,10 +416,17 @@ enum Val {
     Null,
     /// 层次坐标定位到的一组实例。
     ///
-    /// `anchor` 是其中「对当前格可见」的那一个（同一主格下的兄弟格，或主格链上的祖格）。
-    /// 折叠成标量时优先取它——这是 NopReport `getNamedCells` 的可见性语义：
+    /// `cells` 用引用计数而不是 `Vec`：结果集常常是**整列**，而每条明细行都要解析一次，
+    /// 逐行克隆一份 `Vec<usize>` 就是 O(n²)（实测 `B2 * 2` 在 16k 行上 226 ms，
+    /// 且规模翻倍耗时翻四倍）。无层次坐标时结果集与当前格无关，共享同一份即可。
+    /// `cells` 恒为**升序**（`by_pos` 与 `descendants` 都是按创建顺序 push 的），
+    /// 所以成员判断用二分而不是线性扫。
+    ///
+    /// `pick` 是其中「对当前格可见」的那一个（同一主格下的兄弟格，或主格链上的祖格），
+    /// 折叠成标量时取它的值——这是 NopReport `getNamedCells` 的可见性语义：
     /// 写 `B2 / B2[A2:-1]` 时，裸 `B2` 必须是**当前行**的 B2，而不是全局第一个 B2。
-    Set { cells: Vec<usize>, anchor: Option<usize> },
+    /// 在构造处就算好：留到 `scalar` 里再判成员，等于每行多扫一遍整列。
+    Set { cells: Rc<[usize]>, pick: Option<usize> },
 }
 
 impl Val {
@@ -435,13 +443,10 @@ impl Val {
     /// （对齐 NopReport 的 ExpandedCellSet.getValue）
     fn scalar(self, e: &Engine) -> Val {
         match self {
-            Val::Set { cells, anchor } => {
-                let pick = anchor.filter(|a| cells.contains(a)).or_else(|| cells.first().copied());
-                match pick {
-                    Some(i) => Val::from_json(e.insts[i].value.clone()),
-                    None => Val::Null,
-                }
-            }
+            Val::Set { pick, .. } => match pick {
+                Some(i) => Val::from_json(e.insts[i].value.clone()),
+                None => Val::Null,
+            },
             other => other,
         }
     }
@@ -500,7 +505,8 @@ impl Val {
 struct PosIndex {
     /// 去掉被删格后的结果集（升序），等价于 `resolve(target, None, cur)`。
     /// 源是 `by_pos[target]` 原样（升序、含被删格），建完 `by_parent` 就不需要留了。
-    cells: Vec<usize>,
+    /// 用 `Rc` 是为了让 `resolve` 能直接共享它（见 `Val::Set` 的注释）。
+    cells: Rc<[usize]>,
     /// `prefix[k] = cells[..k]` 的数字和。按需向后生长，整轮摊还 O(n)。
     prefix: Vec<f64>,
     /// 主格下标 → 该主格下第一个 target 实例（`anchor_instance` 的兄弟查找）。
@@ -939,7 +945,7 @@ impl Engine {
             Expr::Str(s) => format!("\"{}\"", s.replace('"', "\"\"")),
             Expr::Cell { target, coord, prop } => {
                 let cells = self.resolve(target, coord.as_ref(), cur);
-                if cells.is_empty() || cells.contains(&cur) {
+                if cells.is_empty() || cells.binary_search(&cur).is_ok() {
                     return None; // 解析不到引用目标 / 自引用 → 不翻
                 }
                 let refs = self.excel_refs(&cells)?;
@@ -1389,7 +1395,9 @@ impl Engine {
 
     fn collect_deps(&self, e: &Expr, cur: usize, out: &mut Vec<usize>) {
         match e {
-            Expr::Cell { target, coord, .. } => out.extend(self.resolve(target, coord.as_ref(), cur)),
+            Expr::Cell { target, coord, .. } => {
+                out.extend(self.resolve(target, coord.as_ref(), cur).iter().copied())
+            }
             Expr::Call { args, .. } => {
                 for a in args {
                     self.collect_deps(a, cur, out);
@@ -1484,8 +1492,9 @@ impl Engine {
             all.windows(2).all(|w| w[0] < w[1]),
             "by_pos[{target}] 必须严格升序，否则下面的二分 / 前缀和口径都不成立"
         );
-        let cells: Vec<usize> =
-            all.iter().copied().filter(|&i| !self.insts[i].hidden).collect();
+        let cells: Rc<[usize]> = Rc::from(
+            all.iter().copied().filter(|&i| !self.insts[i].hidden).collect::<Vec<usize>>(),
+        );
         let mut by_parent: HashMap<Option<usize>, usize> = HashMap::new();
         for &i in &all {
             by_parent.entry(self.insts[i].parent).or_insert(i);
@@ -1504,6 +1513,10 @@ impl Engine {
         let Expr::Cell { target, coord: None, .. } = &args[0] else {
             return None;
         };
+        self.cached_numbers_of(target)
+    }
+
+    fn cached_numbers_of(&self, target: &str) -> Option<Ref<'_, Numbers>> {
         self.ensure_pos_index(target);
         if self.pos_index.borrow()[target].nums.is_none() {
             let built = self.build_numbers(target);
@@ -1516,6 +1529,24 @@ impl Engine {
             return None;
         }
         Some(Ref::map(idx, |i| i.nums.as_ref().unwrap()))
+    }
+
+    /// 无层次坐标时的整列聚合，直接读缓存的聚合值（O(1)）。
+    ///
+    /// `B2.sum()` 这种**属性写法**和 `SUM(B2)` 走的是两条路（前者在 `eval_ast` 里
+    /// 落到 `aggregate_cells`），所以得各自接一次缓存，否则仍是每行扫整列。
+    fn cached_col_agg(&self, target: &str, coord: Option<&Coord>, func: &str) -> Option<f64> {
+        if coord.is_some() {
+            return None;
+        }
+        let n = self.cached_numbers_of(target)?;
+        Some(match func {
+            "count" => n.count as f64,
+            "avg" if n.count > 0 => n.sum / n.count as f64,
+            "min" => n.min,
+            "max" => n.max,
+            _ => n.sum,
+        })
     }
 
     /// 算结果集的数字列聚合。
@@ -1535,7 +1566,7 @@ impl Engine {
         );
         let mut sorted = Vec::with_capacity(idx.cells.len());
         let mut sum = 0.0;
-        for &i in &idx.cells {
+        for &i in idx.cells.iter() {
             if let Some(n) = as_number(self.insts[i].value.clone()) {
                 sorted.push(n);
                 sum += n;
@@ -1635,7 +1666,14 @@ impl Engine {
             Expr::Cell { target, coord, prop } => {
                 let cells = self.resolve(target, coord.as_ref(), cur);
                 match prop {
-                    Some(Prop::Aggregate(f)) => Val::Num(self.aggregate_cells(&cells, f)),
+                    // `B2.sum()`：无层次坐标时结果集是整列且与 cur 无关，
+                    // 读缓存的聚合值即可，不必每行再扫一遍
+                    Some(Prop::Aggregate(f)) => {
+                        match self.cached_col_agg(target, coord.as_ref(), f) {
+                            Some(v) => Val::Num(v),
+                            None => Val::Num(self.aggregate_cells(&cells, f)),
+                        }
+                    }
                     // `B4.expandIndex`：等价润乾的 `&B4`
                     Some(Prop::ExpandIndex) => match self.anchor_instance(target, cur) {
                         Some(a) => Val::Num(self.insts[a].expand_index as f64),
@@ -1644,7 +1682,14 @@ impl Engine {
                     // 无后缀：返回格集本身，由使用场景决定取可见值（anchor）还是遍历全部
                     None => {
                         let anchor = self.anchor_instance(target, cur);
-                        Val::Set { cells, anchor }
+                        // 成员判断在**这里**做一次（二分）：放到 `scalar` 里做就是
+                        // 每个明细行扫一遍整列。anchor 不在结果集里时退回首格，
+                        // 与原来 `anchor.filter(contains).or(first)` 的口径一致。
+                        let pick = match anchor {
+                            Some(a) if cells.binary_search(&a).is_ok() => Some(a),
+                            _ => cells.first().copied(),
+                        };
+                        Val::Set { cells, pick }
                     }
                 }
             }
@@ -1664,10 +1709,12 @@ impl Engine {
                     other => return other,
                 };
                 let kept: Vec<usize> = cells
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .filter(|&cand| self.eval_ast(cond, cand, cur).truthy())
                     .collect();
-                Val::Set { cells: kept.clone(), anchor: kept.first().copied() }
+                let pick = kept.first().copied();
+                Val::Set { cells: Rc::from(kept), pick }
             }
             Expr::Dollar(inner) => self.eval_ast(inner, outer, outer),
         }
@@ -1861,7 +1908,7 @@ impl Engine {
                         } else {
                             let cells = self.resolve(target, coord.as_ref(), cur);
                             let picked = anchor
-                                .filter(|a| cells.contains(a))
+                                .filter(|a| cells.binary_search(a).is_ok())
                                 .or_else(|| cells.first().copied());
                             let n = picked.and_then(|i| as_number(self.insts[i].value.clone()));
                             (n, self.aggregate_cells(&cells, "sum"))
@@ -1917,14 +1964,28 @@ impl Engine {
         }
     }
 
-    /// 层次坐标 → 实例下标集合。
+    /// 层次坐标 → 实例下标集合（升序）。
     ///
     /// 被测试表达式删掉的格不出现在结果里：它们既不出表，也不该进合计。
-    fn resolve(&self, target: &str, coord: Option<&Coord>, cur: usize) -> Vec<usize> {
-        self.resolve_raw(target, coord, cur)
-            .into_iter()
-            .filter(|&i| !self.insts[i].hidden)
-            .collect()
+    ///
+    /// 返回 `Rc` 而不是 `Vec`：无层次坐标时结果集就是 `PosIndex::cells`，
+    /// 共享一份即可。明细行上的每个表达式都会走这里，逐行克隆整列是 O(n²)。
+    fn resolve(&self, target: &str, coord: Option<&Coord>, cur: usize) -> Rc<[usize]> {
+        match coord {
+            None => self.pos_index(target).cells.clone(),
+            Some(cd) => {
+                let v: Vec<usize> = self
+                    .resolve_raw(target, Some(cd), cur)
+                    .into_iter()
+                    .filter(|&i| !self.insts[i].hidden)
+                    .collect();
+                debug_assert!(
+                    v.windows(2).all(|w| w[0] < w[1]),
+                    "带层次坐标的结果集也必须升序，否则二分成员判断会出错"
+                );
+                Rc::from(v)
+            }
+        }
     }
 
     fn resolve_raw(&self, target: &str, coord: Option<&Coord>, cur: usize) -> Vec<usize> {
@@ -2705,6 +2766,49 @@ mod scale {
         println!();
     }
 
+    /// 明细行上**引用兄弟格**的规模曲线。
+    ///
+    /// 为什么单独量：上一轮的「表达式密集」基准用的是 `B2[A2:+0].sum()`，
+    /// 带层次坐标 → 每次只解析出**当前组**那一行，解析结果恒为 1 格。
+    /// 也就是说那个基准从来没覆盖过「不带坐标地引用另一个格」—— 而这才是
+    /// 明细行表达式最常见的写法（`B2 * 2`、`IF(B2>100, B2, 0)`）。
+    /// 不带坐标时 `resolve` 返回的是**整列**，每行克隆一遍 + 线性 `contains`
+    /// 找自己，是 O(n²) 的形状。量了才知道是不是真烫。
+    #[test]
+    #[ignore = "性能基准，手动跑：见本模块头部注释"]
+    fn bench_sibling_ref() {
+        const KINDS: &[(&str, &str)] = &[
+            ("B2 * 2", "兄弟格算术"),
+            ("B2 + B2", "引用两遍"),
+            ("IF(B2 > 100, B2, 0)", "条件取兄弟格"),
+            ("B2.sum()", "整列聚合(无坐标)"),
+        ];
+        let base = per_row_agg_sheet(None);
+        let mut head = String::from("  明细行数");
+        for (_, label) in KINDS {
+            head.push_str(&format!("  {label:>16}"));
+        }
+        println!("\n{head}");
+        for n in [4000usize, 8000, 16000] {
+            let ds = scaled_data(n, 1);
+            let mut a = f64::MAX;
+            for _ in 0..3 {
+                a = a.min(time_sheet(&base, ds.clone()).2);
+            }
+            let mut line = format!("  {n:>8}");
+            for (expr, _) in KINDS {
+                let sheet = per_row_agg_sheet(Some(expr));
+                let mut b = f64::MAX;
+                for _ in 0..3 {
+                    b = b.min(time_sheet(&sheet, ds.clone()).2);
+                }
+                line.push_str(&format!("  {:>15.1}ms", (b - a).max(0.0)));
+            }
+            println!("{line}");
+        }
+        println!();
+    }
+
     /// 大数据量下的正确性：40×20 交叉表，800 个数值格。
     ///
     /// 小数据集掩盖得了的错位（行/列下标串了、合计少算一个格），
@@ -2805,6 +2909,12 @@ mod scale {
             // 降序名次：值 k+1 在 1..=N 里排第 N-k（12 排第 1，1 排第 12）
             ("RANK(B2)", Box::new(|k| (N - k) as f64)),
             ("PROPORTION(B2)", Box::new(|k| (k + 1) as f64 / total)),
+            // 下面两条是「引用兄弟格」：裸 `B2` 必须是**当前行**的 B2，
+            // 不能串成全局第一行的 B2（NopReport 的可见性语义）
+            ("B2 * 2", Box::new(|k| (k + 1) as f64 * 2.0)),
+            // 属性写法的整列聚合，和 `SUM(B2)` 是两条代码路径
+            ("B2.sum()", Box::new(|_| total)),
+            ("B2.count()", Box::new(|_| N as f64)),
         ];
 
         for (expr, want) in &cases {
