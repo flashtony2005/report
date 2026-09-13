@@ -428,13 +428,117 @@ pub async fn reports_xlsx_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
+/// 命令行 `--params` 的 JSON 解析。
+///
+/// 宽松一点，两种写法都收：
+///   `{"ds1":["华东"]}`  —— 标准写法，值就是参数列表
+///   `{"ds1":"华东"}`    —— 单个参数时不必套一层数组
+pub fn parse_cli_params(json: &str) -> Result<BTreeMap<String, Vec<JsonValue>>, String> {
+    let v: JsonValue =
+        serde_json::from_str(json).map_err(|e| format!("--params 不是合法 JSON：{e}"))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| "--params 必须是 JSON 对象，形如 {\"ds1\":[\"华东\"]}".to_string())?;
+    let mut out = BTreeMap::new();
+    for (k, val) in obj.iter() {
+        let list = match val {
+            JsonValue::Array(a) => a.clone(),
+            other => vec![other.clone()],
+        };
+        out.insert(k.clone(), list);
+    }
+    Ok(out)
+}
+
+/// 命令行 `--param k=v` 的增量写入：v 先按 JSON 解，解不动就当字符串。
+pub fn merge_cli_param(
+    map: &mut BTreeMap<String, Vec<JsonValue>>,
+    key: &str,
+    raw: &str,
+) -> Result<(), String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("--param 的键不能为空，写法是 --param ds1=华东".to_string());
+    }
+    let val = serde_json::from_str::<JsonValue>(raw).unwrap_or_else(|_| JsonValue::from(raw));
+    let list = match val {
+        JsonValue::Array(a) => a,
+        other => vec![other],
+    };
+    map.insert(key.to_string(), list);
+    Ok(())
+}
+
+/**
+ * 命令行执行一个已保存的报表：`print-server --run-report <id>`
+ *
+ * 存在的理由：报表文件不该只有「在设计器里点」这一种用法。
+ * 存下来的定义是纯 JSON，可以被 cron / 脚本直接跑，不必起前端。
+ */
+pub async fn run_report_cli(
+    state: &AppState,
+    id: &str,
+    params: Option<BTreeMap<String, Vec<JsonValue>>>,
+    out: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let dir = store::reports_dir(state.config_path.as_ref());
+    let def = store::load(&dir, id)?;
+    let title = if def.name.trim().is_empty() {
+        def.id.clone()
+    } else {
+        def.name.clone()
+    };
+    let resp = run_def(
+        state,
+        def,
+        RunRequest {
+            params,
+            dump: None,
+        },
+    )
+    .await?;
+
+    if let Some(path) = out {
+        let sheets = resp.pages.as_ref().unwrap_or(&resp.sheets);
+        let buf = xlsx::to_xlsx(sheets)?;
+        std::fs::write(path, buf).map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
+        return Ok(format!(
+            "已导出 {} → {}（{} 字节）",
+            title,
+            path.display(),
+            std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+        ));
+    }
+
+    // 没给 --out 就打印成文本表格，方便终端里直接看
+    let mut s = String::new();
+    if let Some(w) = &resp.warnings {
+        if !w.is_empty() {
+            s.push_str(&format!("告警：{}\n\n", w.join("；")));
+        }
+    }
+    for sheet in resp.sheets.iter() {
+        s.push_str(&format!("[{}]\n", sheet.name));
+        for row in sheet.rows.iter() {
+            s.push_str(
+                &row.iter()
+                    .map(|c| c.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            );
+            s.push('\n')
+        }
+    }
+    Ok(s)
+}
+
 /// 执行一个报表定义：应用 options → 合并运行时参数 → 渲染
-async fn run_def(
+pub async fn run_def(
     state: &AppState,
     def: store::ReportDef,
     run: RunRequest,
 ) -> Result<RenderResponse, String> {
-    let mut template = store::apply_options(def.template, &def.options);
+    let template = store::apply_options(def.template, &def.options);
 
     // 运行时参数覆盖。key 是数据集名，值直接替换该数据源的 params。
     let mut sources = def.sources;
@@ -2881,6 +2985,50 @@ mod tests {
         assert!(plain.pages.is_none());
         let sheets = plain.pages.as_ref().unwrap_or(&plain.sheets);
         assert_eq!(sheets.len(), plain.sheets.len());
+    }
+
+    #[test]
+    fn cli_params_收标准写法与裸值写法() {
+        // 标准写法：值就是参数列表
+        let m = parse_cli_params(r#"{"ds1":["华东","华南"]}"#).unwrap();
+        assert_eq!(m["ds1"], vec![JsonValue::from("华东"), JsonValue::from("华南")]);
+
+        // 裸值写法：单个参数不必套数组，自动包一层
+        let m = parse_cli_params(r#"{"ds1":"华东"}"#).unwrap();
+        assert_eq!(m["ds1"], vec![JsonValue::from("华东")]);
+
+        // 数字 / null 这类 JSON 值要按原类型传下去，不能被当成字符串
+        let m = parse_cli_params(r#"{"ds1":[2026,null]}"#).unwrap();
+        assert_eq!(m["ds1"], vec![JsonValue::from(2026), JsonValue::Null]);
+    }
+
+    #[test]
+    fn cli_params_非法输入给得出人话() {
+        let e = parse_cli_params("{不是 json").unwrap_err();
+        assert!(e.contains("不是合法 JSON"), "实际：{e}");
+
+        // 数组 / 标量顶层不是对象，要明确说清楚要对象
+        let e = parse_cli_params(r#"["华东"]"#).unwrap_err();
+        assert!(e.contains("必须是 JSON 对象"), "实际：{e}");
+    }
+
+    #[test]
+    fn cli_param_增量合并_能覆盖也能解析类型() {
+        let mut m = BTreeMap::new();
+        merge_cli_param(&mut m, "ds1", "华东").unwrap();
+        assert_eq!(m["ds1"], vec![JsonValue::from("华东")]);
+
+        // 纯数字要变成数字，不是字符串 "2026"
+        merge_cli_param(&mut m, "ds2", "2026").unwrap();
+        assert_eq!(m["ds2"], vec![JsonValue::from(2026)]);
+
+        // 后写的覆盖先写的（命令行从左到右）
+        merge_cli_param(&mut m, "ds1", "华南").unwrap();
+        assert_eq!(m["ds1"], vec![JsonValue::from("华南")]);
+
+        // 空键要拦住，不然会生成一个没名字的数据源参数
+        let e = merge_cli_param(&mut m, "  ", "x").unwrap_err();
+        assert!(e.contains("键不能为空"), "实际：{e}");
     }
 }
 
