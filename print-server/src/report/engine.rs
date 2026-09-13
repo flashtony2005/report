@@ -2091,3 +2091,222 @@ mod parent_tests {
         assert_eq!(resolve(&s, true)[1][0], None);
     }
 }
+
+// ───────── 规模相关的测试：大数据量下的正确性 + 性能基准 ─────────
+//
+// 性能部分的背景：backlog 里挂着「表达式缓存 / 增量重算（纯性能）」。
+// 但性能优化得先拿数据证明它值得做，否则就是凭手感往引擎里加复杂度。
+// 这里用**真实的**「交叉表 + 行列合计」模板（含 `B3[A3:+0].sum()` 这类
+// 层次坐标聚合，正是最可疑的热路径），只把数据量按 R 个地区 × M 个月放大。
+//
+// 正确性部分：其余测试的数据集都很小（2×2 那种），下标错位之类的问题
+// 在小数据上经常刚好抵消掉。这里用 40×20 = 800 个数值格压一遍。
+//
+// 跑基准（release 才有意义，debug 的常数因子会掩盖真实曲线）：
+//   cargo test --release -- --ignored --nocapture --test-threads=1 bench_
+#[cfg(test)]
+mod scale {
+    use super::*;
+    use crate::report::cross_tab_totals_template;
+    use std::time::Instant;
+
+    /// R 个地区 × M 个月，每个 (地区, 月) 组合唯一——与 `cross_tab_totals_template`
+    /// 里数值格 `agg: None` 的语义一致（它要求交集唯一，否则该聚合）。
+    fn scaled_data(regions: usize, months: usize) -> DataSet {
+        let mut ds = DataSet::new();
+        for r in 0..regions {
+            for m in 0..months {
+                let mut row = DataRow::new();
+                row.insert("id".into(), JsonValue::from(format!("R{r:04}M{m:03}")));
+                row.insert("region".into(), JsonValue::from(format!("R{r:04}")));
+                row.insert("month".into(), JsonValue::from(format!("M{m:03}")));
+                row.insert("amount".into(), JsonValue::from((r * months + m + 1) as f64));
+                row.insert("qty".into(), JsonValue::from(1.0));
+                ds.push(row);
+            }
+        }
+        ds
+    }
+
+    /// 表达式密集模板：**每个明细行**都带两个 value_expr 计算列。
+    ///
+    /// 为什么单列这个场景：场景 A（交叉表合计）只有 R+M+1 个表达式格，
+    /// 无论数据多大，表达式求值次数都是 O(R+M)——量不出表达式本身的开销。
+    /// 「表达式缓存」这类优化只在这种「表达式格数与数据行数同阶」时才可能见效。
+    ///
+    /// `with_expr = false` 时把两个计算列换成**普通字段列**：实例数完全一样，
+    /// 唯一差别是「有没有表达式要求值」。两次耗时之差就是表达式求值的真实成本。
+    fn expr_heavy_sheet(with_expr: bool) -> SheetTpl {
+        let m = |field: Option<&str>, expand: Option<ExpandType>, expr: Option<&str>| {
+            Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: field.map(|s| s.to_string()),
+                expand_type: expand,
+                value_expr: expr.map(|s| s.to_string()),
+                ..Default::default()
+            })
+        };
+        // 有表达式 → 用 value_expr；无表达式 → 退回普通字段列，保证实例数不变
+        let calc = |expr: &'static str| {
+            if with_expr {
+                m(None, None, Some(expr))
+            } else {
+                m(Some("amount"), None, None)
+            }
+        };
+        let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            pos: None,
+            value: value.map(JsonValue::from),
+            model,
+            merge_across: 0,
+            merge_down: 0,
+            merge_to_end: false,
+        };
+        SheetTpl {
+            name: "表达式密集".to_string(),
+            page: None,
+            rows: vec![
+                RowTpl {
+                    cells: vec![
+                        cell(Some("序号"), None),
+                        cell(Some("金额"), None),
+                        cell(Some("翻倍"), None),
+                        cell(Some("占比"), None),
+                    ],
+                },
+                RowTpl {
+                    cells: vec![
+                        cell(None, m(Some("id"), Some(ExpandType::R), None)),
+                        cell(None, m(Some("amount"), None, None)),
+                        // 每个明细行各算一次：层次坐标 + 聚合 + 四则运算
+                        cell(None, calc("B2[A2:+0].sum() * 2")),
+                        cell(None, calc("B2[A2:+0].sum() / 100")),
+                    ],
+                },
+            ],
+        }
+    }
+
+    /// 返回 (物理行数, 非空格数, 耗时 ms, 实例数)
+    fn time_sheet(sheet: &SheetTpl, ds: DataSet) -> (usize, usize, f64, usize) {
+        let t = Instant::now();
+        let mut engine = Engine::new(ds);
+        let grid = engine.expand_sheet(sheet);
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let cells: usize = grid.iter().map(|r| r.len()).sum();
+        (grid.len(), cells, ms, engine.insts.len())
+    }
+
+    /// 返回 (物理行数, 非空格数, 耗时 ms, 实例数)
+    fn time_one(regions: usize, months: usize) -> (usize, usize, f64, usize) {
+        let sheet = cross_tab_totals_template().sheets.into_iter().next().unwrap();
+        time_sheet(&sheet, scaled_data(regions, months))
+    }
+
+    #[test]
+    #[ignore = "性能基准，手动跑：见本模块头部注释"]
+    fn bench_expand_scales() {
+        println!("\n   地区 × 月份     物理行    非空格    实例数    耗时(ms)   每实例(µs)");
+        // 每次规模都翻倍左右，方便一眼看出是 O(n) 还是 O(n²)：
+        // 规模翻倍时，线性 → 耗时翻倍；平方 → 耗时翻四倍。
+        for (r, m) in [(10, 5), (20, 10), (40, 20), (80, 40), (160, 80)] {
+            let (rows, cells, ms, insts) = time_one(r, m);
+            let per = if insts > 0 { ms * 1000.0 / insts as f64 } else { 0.0 };
+            println!("  {r:>5} × {m:<5}  {rows:>7}  {cells:>8}  {insts:>8}  {ms:>9.1}  {per:>10.3}");
+        }
+        println!();
+    }
+
+    /// 只跑最大规模，重复多次，用来对比「优化前 / 优化后」的单一数字
+    #[test]
+    #[ignore = "性能基准，手动跑：见本模块头部注释"]
+    fn bench_expand_single() {
+        let (r, m) = (160usize, 80usize);
+        let mut best = f64::MAX;
+        for _ in 0..5 {
+            let (rows, cells, ms, insts) = time_one(r, m);
+            if ms < best {
+                best = ms;
+                println!("  {r}×{m}: {rows} 行 / {cells} 非空格 / {insts} 实例 → {ms:.1} ms");
+            }
+        }
+        println!("  最优 {best:.1} ms\n");
+    }
+
+    /// 表达式密集场景的规模曲线：N 个明细行，每行 2 个 value_expr。
+    /// 这里如果看到明显的超线性（规模翻倍 → 耗时翻四倍），
+    /// 才说明「表达式缓存 / 增量重算」值得做。
+    #[test]
+    #[ignore = "性能基准，手动跑：见本模块头部注释"]
+    fn bench_expr_heavy() {
+        let sheet = expr_heavy_sheet(true);
+        println!("\n   明细行数    物理行    非空格    实例数    耗时(ms)   每实例(µs)");
+        for n in [1000usize, 2000, 4000, 8000, 16000] {
+            let (rows, cells, ms, insts) = time_sheet(&sheet, scaled_data(n, 1));
+            let per = if insts > 0 { ms * 1000.0 / insts as f64 } else { 0.0 };
+            println!("  {n:>8}  {rows:>7}  {cells:>8}  {insts:>8}  {ms:>9.1}  {per:>10.3}");
+        }
+        println!();
+    }
+
+    /// 把「表达式求值」从总耗时里摘出来：同一批数据、同样的实例数，
+    /// 只切换计算列「是 value_expr」还是「普通字段」。
+    /// 两者之差就是表达式求值的真实成本，也是「表达式缓存」能省下的上限。
+    #[test]
+    #[ignore = "性能基准，手动跑：见本模块头部注释"]
+    fn bench_expr_cost() {
+        let with = expr_heavy_sheet(true);
+        let without = expr_heavy_sheet(false);
+        println!("\n   明细行数   无表达式(ms)  有表达式(ms)   表达式成本(ms)   占总量");
+        for n in [1000usize, 4000, 16000] {
+            let ds = scaled_data(n, 1);
+            // 取 3 次最优，压掉调度抖动
+            let mut a = f64::MAX;
+            let mut b = f64::MAX;
+            for _ in 0..3 {
+                a = a.min(time_sheet(&without, ds.clone()).2);
+                b = b.min(time_sheet(&with, ds.clone()).2);
+            }
+            let cost = b - a;
+            let pct = if b > 0.0 { cost / b * 100.0 } else { 0.0 };
+            println!("  {n:>8}  {a:>11.1}  {b:>11.1}  {cost:>14.1}  {pct:>6.1}%");
+        }
+        println!();
+    }
+
+    /// 大数据量下的正确性：40×20 交叉表，800 个数值格。
+    ///
+    /// 小数据集掩盖得了的错位（行/列下标串了、合计少算一个格），
+    /// 在 800 个格子上很难再凑巧对上。同时守住三个口径互相一致：
+    /// 所有行合计之和 == 所有列合计之和 == 总计。
+    #[test]
+    fn cross_tab_totals_are_consistent_at_scale() {
+        const R: usize = 40;
+        const M: usize = 20;
+        let sheet = cross_tab_totals_template().sheets.into_iter().next().unwrap();
+        let mut engine = Engine::new(scaled_data(R, M));
+        let grid = engine.expand_sheet(&sheet);
+
+        let nums: Vec<f64> = grid
+            .iter()
+            .flat_map(|row| row.iter().filter_map(|c| c.raw_number))
+            .collect();
+        // R*M 个交叉格 + R 个行合计 + M 个列合计 + 1 个总计
+        assert_eq!(nums.len(), R * M + R + M + 1, "数值格数量不对");
+
+        // 数据是 1..=R*M 的连续整数，总计就是等差数列和
+        let total = (R * M * (R * M + 1) / 2) as f64;
+        let has = |want: f64| nums.iter().any(|v| (v - want).abs() < 0.5);
+        assert!(has(total), "总计 {total} 未出现在网格里");
+
+        // 第 r 个地区的金额是 r*M+1 ..= r*M+M
+        let row_totals: Vec<f64> = (0..R)
+            .map(|r| ((r * M + 1)..=(r * M + M)).sum::<usize>() as f64)
+            .collect();
+        for rt in &row_totals {
+            assert!(has(*rt), "行合计 {rt} 未出现在网格里");
+        }
+        // 行合计之和 == 总计（列合计口径由「数值格数量 + 总计」间接守住）
+        assert!((row_totals.iter().sum::<f64>() - total).abs() < 0.5);
+    }
+}
