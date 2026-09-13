@@ -13,8 +13,7 @@ import { act } from 'react'
 import { useDesignerStore, resetDesignerStores } from '../stores/designer'
 import { resetPreviewDataCache } from '../stores/dataSource'
 import { DataImportModalInner } from './DataImportModal'
-import { parseDataFile } from '@/design/utils/data-import'
-import type { AnyControl, TableControl } from '@/types/control'
+import type { TableControl } from '@/types/control'
 import type { ParsedData } from '@/design/utils/data-import'
 
 vi.mock('@/design/utils/data-import', async (importOriginal) => {

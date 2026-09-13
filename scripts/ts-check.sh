@@ -56,6 +56,10 @@ trap 'rm -rf "$TMP"' EXIT
 TSCFLAGS="--noEmit --skipLibCheck --strict --jsx preserve"
 TSCFLAGS="$TSCFLAGS --target es2022 --lib es2022,dom,dom.iterable"
 TSCFLAGS="$TSCFLAGS --module esnext --moduleResolution bundler --noResolve"
+# --noUnusedLocals：借来的 tsc 只做「本文件」检查，不解析 import，
+# 于是「import 了却没用」这类错误会被漏掉（加合并功能时就漏掉了两个没用的 import）。
+# 全部目标文件跑下来是干净的，所以直接开成硬错误。
+TSCFLAGS="$TSCFLAGS --noUnusedLocals"
 
 NS=$(printf '%s\n' "$SRC" | grep -c . || true)
 NE=$(printf '%s\n' "$SPEC" | grep -c . || true)
