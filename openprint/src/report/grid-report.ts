@@ -610,7 +610,7 @@ export const PARENT_HIGHLIGHT = '#FFE8D6'
  * 设计态语义样式 —— 把非线性语义编码进格子外观。
  *
  * **为什么只能走样式、不能往文本里加标记**：格子里显示的文本就是**回写载体**
- * （`formatCellText` 输出 `{{...}}`，`SheetValueChanged` 再 `parseCellText`
+ * （`formatCellText` 输出 `=...`，`SheetValueChanged` 再 `parseCellText`
  * 还原成 model）。往文本里塞 `↓` 这类标记，用户一编辑就会把整格的 model
  * 冲成字面量 —— 静默丢数据，比不标还糟。
  *
@@ -619,7 +619,7 @@ export const PARENT_HIGHLIGHT = '#FFE8D6'
  * - **底色 = 这一格会不会"长"出来**（扩展方向）
  *   纵向 `r` 往下长行、横向 `c` 往右长列。这是决定报表形状的属性，最该被看见。
  * - **字色 = 内容从哪儿来**（字段绑定 / 表达式 / 静态文本）
- *   `{{ds1.city}}` 和字面量「城市」在格子里长得几乎一样，不标分不清。
+ *   `=ds1.city` 和字面量「城市」在格子里长得几乎一样，不标分不清。
  *
  * **为什么只有两个维度、没有第三个**：试过用 `bd`（底边框）或 `ul`（下划线）
  * 标「挂了 row/col_test_expr，整行可能消失」—— 实测**都画不出来**，
@@ -917,14 +917,26 @@ export function suggestReportId(name: string): string {
  * ------------------------------------------------------------------ */
 
 /**
- * 模板格里「绑定」的写法：`{{ds1.city}}` / `{{ds1.amount.sum()}}` / `{{D3[B3:+0].sum()}}`。
+ * 模板格里「绑定」的写法，两种都收：
  *
- * **为什么不是 `=ds1.city`（润乾/类 Excel 的惯例）**：Univer 的 core preset 自带
- * 公式引擎，任何 `=` 开头的输入都会被当 Excel 公式解析，而我们这套
- * `D3[A3:+0].sum()` 层次坐标 DSL 在 Excel 里没有对应物，会直接显示 `#NAME?`。
- * 用 `{{}}` 保证：Univer 永远当纯文本，回读时不丢原样。
+ * - `=ds1.city` / `=ds1.amount.sum()` / `=D3[B3:+0].sum()` —— **NopReport /
+ *   润乾的惯例，也是现在写出去的规范形式**（`formatCellText` 只产这一种）。
+ * - `{{ds1.city}}` —— 历史写法，仍然认，但不再产出。
+ *
+ * 早年只敢用 `{{}}`，因为 Univer 的 core preset 自带公式引擎，任何 `=` 开头
+ * 的输入都会被当 Excel 公式解析，而我们这套 `D3[B3:+0].sum()` 层次坐标 DSL
+ * 在 Excel 里没有对应物，会显示 `#NAME?`。
+ *
+ * 现在公式引擎已经剥掉了（`designer-react/src/report/univerFormulaFree.ts`），
+ * 于是切回 `=`。**注意「剥引擎」本身不足以让 `=` 进单元格**：`sheets-ui` 的
+ * `getCellDataByInput` 仍然把 `isFormulaString(text)` 硬编码成 `{f, v: null}`，
+ * 那一段在 sheets-ui 里、跟引擎无关。所以还需要两处配合：
+ *   1. 画布回写时带 `t: 4`（`CellValueType.FORCE_STRING`），见本文件
+ *      `gridToWorkbookData`；
+ *   2. 键入路径靠 mutation 拦截器把 `{f, v:null}` 掰回 `{v, f:null, t:4}`。
  */
-const BIND_RE = /^\{\{([\s\S]+)\}\}$/
+/** 捕获组 1 = `{{...}}` 的内容，捕获组 2 = `=...` 的内容，两者同时只有一个有值 */
+const BIND_RE = /^(?:\{\{([\s\S]+)\}\}|=([\s\S]+))$/
 /** `ds1.city` */
 const FIELD_RE = /^([A-Za-z_]\w*)\.([A-Za-z_][\w.]*)$/
 /** `ds1.amount.sum()` */
@@ -936,12 +948,14 @@ export type CellText =
   | { kind: 'field'; ds: string; field: string; agg?: AggType }
   | { kind: 'expr'; expr: string }
 
-/** 模板格文本 → 语义。`{{...}}` 之外一律当字面量。 */
+/** 模板格文本 → 语义。`=...` / `{{...}}` 之外一律当字面量。 */
 export function parseCellText(raw: string): CellText {
   const t = (raw ?? '').trim()
   const m = BIND_RE.exec(t)
-  if (!m) return { kind: 'literal', text: raw ?? '' }
-  const inner = m[1].trim()
+  // `=` 或 `{{}}` 后面必须有内容，空的不算绑定（`=` 单独一个字符是字面量，
+  // 跟 Univer `isFormulaString` 的 length > 1 判定保持一致）
+  const inner = (m?.[1] ?? m?.[2] ?? '').trim()
+  if (!m || !inner) return { kind: 'literal', text: raw ?? '' }
   const agg = AGG_RE.exec(inner)
   if (agg) {
     return { kind: 'field', ds: agg[1], field: agg[2], agg: agg[3] as AggType }
@@ -952,14 +966,19 @@ export function parseCellText(raw: string): CellText {
   return { kind: 'expr', expr: inner }
 }
 
-/** 单元格 → 模板格文本（parseCellText 的逆）。空串表示这一格没内容。 */
+/**
+ * 单元格 → 模板格文本（parseCellText 的逆）。空串表示这一格没内容。
+ *
+ * 产出 NopReport 的 `=` 方言。`{{}}` 只在**输入**时兼容，不再写出——
+ * 两种写法只留一种，省得同一份模板里混着两套记号。
+ */
 export function formatCellText(cell: CellTpl): string {
   const m = cell.model
-  if (m?.value_expr) return `{{${m.value_expr}}}`
+  if (m?.value_expr) return `=${m.value_expr}`
   if (m?.field) {
     const ds = m.ds || 'ds1'
     const agg = m.agg ? `.${m.agg}()` : ''
-    return `{{${ds}.${m.field}${agg}}}`
+    return `=${ds}.${m.field}${agg}`
   }
   if (cell.value === undefined || cell.value === null) return ''
   return String(cell.value)
@@ -1409,12 +1428,12 @@ export function validateTemplate(tpl: ReportTemplate): string[] {
  * 模板网格 → Univer 工作簿数据（**设计态**，与展开结果的 toWorkbookData 区分开）。
  *
  * 这里只是「把每格的模板文本摆进格子」，不做任何展开。扩展格用底色标出来，
- * 因为 `{{ds1.city}}` 和字面量「城市」在格子里长得几乎一样，不标根本分不清。
+ * 因为 `=ds1.city` 和字面量「城市」在格子里长得几乎一样，不标根本分不清。
  */
 /** 主格树的一个节点。 */
 export interface TplNode {
   pos: string
-  /** 格子里显示的文本（`formatCellText` 的结果，可能是 `{{ds1.city}}`） */
+  /** 格子里显示的文本（`formatCellText` 的结果，可能是 `=ds1.city`） */
   text: string
   expand: 'r' | 'c' | ''
   /** 主格指向的格没有 model —— 关系悬空（模板体检会另行报警） */
@@ -1500,8 +1519,11 @@ export function parentTreeOf(grid: TemplateGrid): TplNode[] {
   ]
 }
 
+/** Univer 单元格数据。`t` 是 `CellValueType`，模板里只会用到 4（FORCE_STRING）。 */
+type UniverCell = { v: string; s?: string; t?: number }
+
 export function gridToWorkbookData(grid: TemplateGrid, opts: { selected?: string }= {}) {
-  const cellData: Record<number, Record<number, { v: string; s?: string }>> = {}
+  const cellData: Record<number, Record<number, UniverCell>> = {}
   const mergeData: Array<{
     startRow: number
     endRow: number

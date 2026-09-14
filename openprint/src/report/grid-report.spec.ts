@@ -682,6 +682,55 @@ describe('自由模板：格文本 ↔ 语义', () => {
     })
   })
 
+  // `=` 是 NopReport / 润乾的惯例，也是 formatCellText 现在写出去的形式。
+  // `{{}}` 仍然认（历史写法），但不再产出——两种写法只留一种。
+  it('=ds1.city → 字段绑定', () => {
+    expect(parseCellText('=ds1.city')).toEqual({ kind: 'field', ds: 'ds1', field: 'city' })
+  })
+
+  it('=ds1.amount.sum() → 字段 + 聚合', () => {
+    expect(parseCellText('=ds1.amount.sum()')).toEqual({
+      kind: 'field',
+      ds: 'ds1',
+      field: 'amount',
+      agg: 'sum',
+    })
+  })
+
+  it('=D3[B3:+0].sum() → 表达式（不是字段）', () => {
+    expect(parseCellText('=D3[B3:+0].sum()')).toEqual({
+      kind: 'expr',
+      expr: 'D3[B3:+0].sum()',
+    })
+  })
+
+  it('`=` 单独一个字符是字面量，不是空绑定', () => {
+    // 跟 Univer `isFormulaString` 的 length > 1 判定对齐：
+    // `=` 本身不是公式，也不该被我们当绑定吃掉
+    expect(parseCellText('=')).toEqual({ kind: 'literal', text: '=' })
+    expect(parseCellText('{{}}')).toEqual({ kind: 'literal', text: '{{}}' })
+    expect(parseCellText('= ')).toEqual({ kind: 'literal', text: '= ' })
+  })
+
+  it('formatCellText 写出 `=` 方言，不再写 `{{}}`', () => {
+    expect(formatCellText({ value: null, model: { ds: 'ds1', field: 'city' } })).toBe('=ds1.city')
+    expect(formatCellText({ value: null, model: { ds: 'ds1', field: 'amount', agg: 'sum' } })).toBe(
+      '=ds1.amount.sum()',
+    )
+    expect(formatCellText({ value: null, model: { ds: 'ds1', value_expr: 'D3[B3:+0].sum()' } })).toBe(
+      '=D3[B3:+0].sum()',
+    )
+    // 字面量不加前缀，原样出去
+    expect(formatCellText({ value: '地区', model: undefined })).toBe('地区')
+  })
+
+  it('两种写法解析结果一致（= 与 {{}} 等价）', () => {
+    const pairs = ['ds1.city', 'ds1.amount.sum()', 'D3[B3:+0].sum()']
+    for (const inner of pairs) {
+      expect(parseCellText(`=${inner}`)).toEqual(parseCellText(`{{${inner}}}`))
+    }
+  })
+
   it('formatCellText 与 parseCellText 可往返', () => {
     const cases: CellTpl[] = [
       { value: '地区', model: undefined },
