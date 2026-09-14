@@ -76,3 +76,15 @@ cd designer-react && NODE_OPTIONS="--require /Users/lushaohui/project/report/scr
   都会随 shell 一起死。
 - 日志写 `scripts/.vite-dev.log`，别写 `/tmp`（会被清）。
 - curl 要加 `--noproxy '*'`（环境里有 HTTP_PROXY 拦截）。
+
+## 写断言的规矩：位置相关的断言，断言整条序列
+
+探针实测出来的反面教材（`col_after_places_row_total_after_month_columns`）：
+
+只断言 `grid[1].last() == "行合计"`，注入 bug 后列布局变成
+`["地区","1月","行合计"]`（「2月」被挤掉），`last()` **依然成立，测试照样绿**。
+改成 `assert_eq!(cols, vec!["地区","1月","2月","行合计"])` 才如期变红。
+
+→ **"目标元素还在" 抓不住 "旁边元素被挤掉/吞掉"**。
+凡是涉及位置/顺序的断言（列布局、行序、展开顺序），断言完整序列，
+不要只断言端点或存在性。
