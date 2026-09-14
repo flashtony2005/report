@@ -1531,7 +1531,11 @@ export function gridToWorkbookData(grid: TemplateGrid, opts: { selected?: string
           semStyles[sem.id] = sem.style
         }
       }
-      cellData[r][c] = { v: text, ...(s ? { s } : {}) }
+      cellData[r][c] = { v: text, t: text ? 4 : undefined, ...(s ? { s } : {}) }
+      // `t: 4` 是 Univer `CellValueType.FORCE_STRING`：强制把单元格当字符串，
+      // 阻止 Univer 看到 `v` 以 `=` 开头就把它挪到 `f` 字段当公式处理。
+      // 我们用 `=ds1.city` / `=D3[B3:+0].sum()` 当 NopReport DSL 模板语法，
+      // 公式引擎没装，被当公式后会变成 `{f:'=...', v:null}` → 单元格静默空白。
 
       const span = mergeSpanOf(cell)
       const cols = span.toEnd ? Math.max(1, row.length - c) : span.cols

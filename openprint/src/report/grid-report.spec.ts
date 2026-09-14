@@ -1079,6 +1079,28 @@ describe('自由模板：合并单元格', () => {
       { startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
     ])
   })
+
+  // 见 `gridToWorkbookData` 注释：`4` = Univer `CellValueType.FORCE_STRING`，
+  // 强制把单元格当字符串，阻止 Univer 看到 `v` 以 `=` 开头就把它挪到 `f` 当公式。
+  it('非空单元格一律带 t: 4（Univer FORCE_STRING），保住 `=` / `{{...}}` 字面量', () => {
+    const grid = emptyGrid(4, 2)
+    grid[0][0] = { value: '=ds1.city', model: undefined }
+    grid[1][0] = { value: '=D3[B3:+0].sum()', model: undefined }
+    grid[2][0] = { value: '{{ds1.city}}', model: undefined }
+    grid[3][0] = { value: 'hello literal', model: undefined }
+    // B1 空 + 无 model：验证空单元格确实不进 cellData
+    const data = gridToWorkbookData(grid) as {
+      sheets: Record<string, {
+        cellData: Record<string, Record<string, { v: unknown; t?: number }>>
+      }>
+    }
+    const cd = data.sheets.sheet1.cellData
+    expect(cd[0][0]).toEqual({ v: '=ds1.city', t: 4 })
+    expect(cd[1][0]).toEqual({ v: '=D3[B3:+0].sum()', t: 4 })
+    expect(cd[2][0]).toEqual({ v: '{{ds1.city}}', t: 4 })
+    expect(cd[3][0]).toEqual({ v: 'hello literal', t: 4 })
+    expect(cd[0][1]).toBeUndefined()
+  })
 })
 
 /* ------------------------------------------------------------------ *

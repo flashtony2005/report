@@ -33,10 +33,10 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
-import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets'
-import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
-import UniverPresetSheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
-import '@univerjs/preset-sheets-core/lib/index.css'
+import { createFormulaFreeUniver } from '../report/univerFormulaFree'
+// 注意：故意**不**用 @univerjs/preset-sheets-core —— 它把 formula 作为硬依赖，
+// 我们的 `{{...}}` 模板语法在里面会被当成 Excel 公式解析（详见 univerFormulaFree.ts）。
+// 相应的 CSS 也不再需要（preset-sheets-core 自带的 chrome 样式都给关了）。
 
 import {
   buildCrossTemplate,
@@ -1352,11 +1352,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       try {
         univerRef.current?.dispose()
         univerRef.current = null
-        const { univerAPI } = createUniver({
-          locale: LocaleType.ZH_CN,
-          locales: { [LocaleType.ZH_CN]: mergeLocales(UniverPresetSheetsCoreZhCN) },
-          presets: [UniverSheetsCorePreset({ container: containerRef.current! })],
-        })
+        const { univerAPI } = createFormulaFreeUniver(containerRef.current!)
         ;(univerAPI as any).createWorkbook(toWorkbookData(data.sheets[0], { headerRows: rows }))
         univerRef.current = univerAPI as unknown as { dispose: () => void }
       } catch (e) {
@@ -1474,11 +1470,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       try {
         univerRef.current?.dispose()
         univerRef.current = null
-        const { univerAPI } = createUniver({
-          locale: LocaleType.ZH_CN,
-          locales: { [LocaleType.ZH_CN]: mergeLocales(UniverPresetSheetsCoreZhCN) },
-          presets: [UniverSheetsCorePreset({ container: containerRef.current })],
-        })
+        const { univerAPI } = createFormulaFreeUniver(containerRef.current)
         // 选中格不自绘高亮：Univer 自己会画选区光框，再叠一层反而打架
         ;(univerAPI as any).createWorkbook(gridToWorkbookData(gridRef.current))
         univerRef.current = univerAPI as unknown as { dispose: () => void }
@@ -1605,11 +1597,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           // 重建前先销毁上一个实例，否则多份 Univer 会叠在同一容器里
           univerRef.current?.dispose()
           univerRef.current = null
-          const { univerAPI } = createUniver({
-            locale: LocaleType.ZH_CN,
-            locales: { [LocaleType.ZH_CN]: mergeLocales(UniverPresetSheetsCoreZhCN) },
-            presets: [UniverSheetsCorePreset({ container: containerRef.current })],
-          })
+          const { univerAPI } = createFormulaFreeUniver(containerRef.current)
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           ;(univerAPI as any).createWorkbook(toWorkbookData(data.sheets[0], { headerRows }))
           univerRef.current = univerAPI as unknown as { dispose: () => void }
