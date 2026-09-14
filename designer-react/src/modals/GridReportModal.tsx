@@ -973,6 +973,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const [reportId, setReportId] = useState('')
   const [reportName, setReportName] = useState('')
   const [savedReports, setSavedReports] = useState<ReportSummary[]>([])
+  /** 服务端上报的报表目录；读不到就是 null（不猜） */
+  const [reportsDir, setReportsDir] = useState<string | null>(null)
   const [fileBusy, setFileBusy] = useState(false)
   /** 调试：让服务端回传展开中间结果（层次坐标 / 父格）与模板告警 */
   const [dump, setDump] = useState(false)
@@ -1202,6 +1204,12 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       const res = await fetch(`${REPORT_SERVER}/api/reports`)
       if (!res.ok) throw new Error(`服务端返回 ${res.status}`)
       setSavedReports((await res.json()) as ReportSummary[])
+      // 服务端把「它到底在哪个目录找的」放在 x-reports-dir 响应头里。
+      // 目录是从服务端的配置文件位置推出来的，而那个路径默认是相对路径，
+      // 所以换个目录启动服务端就会看到另一个列表 —— 空列表时得能解释原因。
+      // 跨域下这个头要服务端 expose 出来才读得到；读不到就不显示，不编一个糊弄用户。
+      const dir = res.headers.get('x-reports-dir')
+      setReportsDir(dir ? decodeURIComponent(dir) : null)
     } catch {
       /* 列表拉不到不影响设计器本身，静默 */
     }
@@ -1704,7 +1712,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           <Select
             size="small"
             style={{ minWidth: 210 }}
-            placeholder="打开已保存的报表"
+            placeholder={savedReports.length === 0 ? '暂无已保存的报表' : '打开已保存的报表'}
             value={undefined}
             options={savedReports.map((r) => ({
               label: r.sourceCount ? `${r.name}（${r.sourceCount} 个数据源）` : `${r.name}（无数据源）`,
@@ -1723,6 +1731,19 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
             执行
           </Button>
         </Space>
+        {savedReports.length === 0 && (
+          // 空列表必须能自我解释：报表目录由**服务端配置文件的位置**决定，
+          // 而那个路径默认是相对的，所以换个目录启动服务端就会看到另一个列表。
+          // 以前这里只有一个空下拉框，用户没法知道服务端到底去哪儿找了。
+          <Typography.Text
+            type="warning"
+            style={{ fontSize: 12, display: 'block', marginTop: 6 }}
+            data-testid="report-file-empty-hint"
+          >
+            服务端没找到已保存的报表——它在 <code>{reportsDir ?? '（未上报目录）'}</code> 下找过。
+            报表目录跟着服务端的配置文件走，换个目录启动服务端就会看到另一个列表。
+          </Typography.Text>
+        )}
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           保存的是「模板 + 数据源声明 + 渲染选项」，不是数据快照——打开时按声明现查。
           打开后一律进<b>自由模板</b>（它能表达任何模板，进去还能逐格改）。

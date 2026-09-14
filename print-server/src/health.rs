@@ -17,5 +17,10 @@ pub async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
         "time": chrono::Local::now().to_rfc3339(),
         "uptimeSec": state.started.elapsed().as_secs(),
         "version": env!("CARGO_PKG_VERSION"),
+        // 报表目录是从配置路径推出来的、且默认配置路径是相对路径，
+        // 所以「从哪个目录启动」会悄悄改变它。暴露出来，便于排「列表怎么是空的」。
+        "reportsDir": crate::config::ServerConfig::abs_display(
+            &crate::report::store::reports_dir(state.config_path.as_ref()),
+        ),
     }))
 }

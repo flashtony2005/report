@@ -15,6 +15,7 @@ pub mod xlsx;
 use axum::extract::{Json, Path, State};
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{Response as HttpResponse, StatusCode};
+use axum::response::IntoResponse;
 use model::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -332,13 +333,29 @@ fn reports_dir_of(state: &AppState) -> std::path::PathBuf {
 }
 
 /// `GET /api/reports` —— 报表列表（只回元信息）
+///
+/// 顺带回一个 `x-reports-dir` 响应头：目录是从**配置路径**推出来的，而配置路径
+/// 默认是相对路径，所以「从哪个目录启动」会悄悄改变它。列表为空时前端能靠这个
+/// 头告诉用户「服务端在哪儿找过」，而不是干瞪眼一个空下拉框。
+/// 用 header 而不是塞进 body：body 的形状（`ReportSummary[]`）已经有人在用了。
 pub async fn reports_list_handler(
     State(state): State<AppState>,
-) -> Result<Json<Vec<store::ReportSummary>>, (StatusCode, String)> {
+) -> Result<HttpResponse<axum::body::Body>, (StatusCode, String)> {
     let dir = reports_dir_of(&state);
-    store::list(&dir)
-        .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+    let list = store::list(&dir).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let mut resp = Json(list).into_response();
+    match axum::http::HeaderValue::from_str(&store::header_safe(
+        &crate::config::ServerConfig::abs_display(&dir),
+    )) {
+        Ok(v) => {
+            resp.headers_mut().insert("x-reports-dir", v);
+        }
+        Err(e) => {
+            // 编过了还是进不去，说明 header_safe 漏了字节 —— 说出来，别装没事
+            eprintln!("[warn] x-reports-dir 无法编码为响应头（{}）：{e}", dir.display());
+        }
+    }
+    Ok(resp)
 }
 
 /// `GET /api/reports/:id` —— 读取完整定义

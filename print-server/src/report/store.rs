@@ -110,6 +110,25 @@ pub fn is_valid_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// 把路径编成 HTTP header 值。
+///
+/// `HeaderValue` 只接受可见 ASCII，中文路径会被拒。直接 `from_str().ok()` 一丢了之
+/// 就又是**静默失败**——而回这个 header 的全部意义就是排「列表怎么是空的」，
+/// 恰好在中文路径下失效最讽刺。所以这里只把非可见 ASCII 的字节 percent 编码，
+/// `/Users/.../reports` 在 curl 里照样可读；客户端 `decodeURIComponent` 还原。
+pub fn header_safe(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        // `%` 自己也编码，否则「原文里就有 %20」会和「编码出来的 %20」混淆
+        if (0x20..0x7f).contains(&b) && b != b'%' {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 fn path_of(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.json"))
 }
@@ -414,6 +433,61 @@ mod tests {
         assert_eq!(loaded.name, "报表 t1");
         let _ = delete(&dir, "t1").unwrap();
         assert!(load(&dir, "t1").is_err());
+    }
+
+    /// `reports_dir` 的推导规则必须被钉住——它是**静默失败**的来源。
+    ///
+    /// 默认配置路径是相对路径 `print-server.json`（见 main.rs），于是「从哪个
+    /// 目录启动进程」就决定了「看见哪个 reports/」。从仓库根启动时列表是空的，
+    /// 但没有任何报错，只有启动横幅里的路径能看出来（横幅现在也打这一行了）。
+    #[test]
+    fn 报表目录紧挨配置文件() {
+        assert_eq!(
+            reports_dir(Path::new("/srv/openprint/print-server.json")),
+            PathBuf::from("/srv/openprint/reports")
+        );
+        // 裸文件名（无父目录）→ 退回相对路径，跟着进程工作目录走
+        assert_eq!(
+            reports_dir(Path::new("print-server.json")),
+            PathBuf::from("reports")
+        );
+        // `.` 也算父目录，不能把它当成「没有父目录」而漏掉一层
+        assert_eq!(
+            reports_dir(Path::new("./print-server.json")),
+            PathBuf::from("./reports")
+        );
+    }
+
+    /// 端到端：拿「配置路径」推出目录 → 存 → 列出来 → 文件确实躺在配置旁边。
+    /// 这是「换个目录启动就丢报表」那条链路上唯一没被测过的一环。
+    #[test]
+    fn 由配置路径推出的目录能存能列() {
+        let cfg_dir = tempdir();
+        let cfg_path = cfg_dir.join("print-server.json");
+        let dir = reports_dir(&cfg_path);
+        save(&dir, def("r1")).unwrap();
+
+        let listed = list(&dir).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "r1");
+
+        assert!(
+            cfg_dir.join("reports").join("r1.json").exists(),
+            "报表文件应当落在配置文件同级的 reports/ 下，实际目录：{cfg_dir:?}"
+        );
+    }
+
+    /// header 值必须是可见 ASCII，但目录名可以是中文 —— 不能因为编不了就丢掉。
+    #[test]
+    fn header_safe_保住中文路径() {
+        // 纯 ASCII 路径原样通过，curl 里可读
+        assert_eq!(header_safe("/srv/openprint/reports"), "/srv/openprint/reports");
+        // 中文按 UTF-8 字节 percent 编码；客户端 decodeURIComponent 还原
+        let enc = header_safe("/srv/报表/reports");
+        assert_eq!(enc, "/srv/%E6%8A%A5%E8%A1%A8/reports");
+        assert!(!enc.contains('报'), "header 值里不能留非 ASCII");
+        // `%` 自己也要编码，否则和编码结果撞车
+        assert_eq!(header_safe("/a%b"), "/a%25b");
     }
 
     #[test]

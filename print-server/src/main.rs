@@ -170,6 +170,12 @@ async fn main() {
         .display()
         .to_string();
     let cfg_path_display = state.config_path.display().to_string();
+    // 报表目录是从**配置路径**推出来的（见 report::store::reports_dir），而配置路径
+    // 默认是相对路径 `print-server.json` —— 也就是「从哪个目录启动」决定了看见哪个
+    // `reports/`。从错的目录启动时列表会是空的、且没有任何报错，所以必须打出来。
+    let reports_display = ServerConfig::abs_display(&report::store::reports_dir(
+        state.config_path.as_ref(),
+    ));
 
     let app = Router::new()
         .route("/", get(admin::index))
@@ -230,6 +236,7 @@ async fn main() {
     println!("  设计器「设置 → 本地打印」填: http://127.0.0.1:{port}");
     println!("  数据库连接配置: {}", cfg_path_display);
     println!("  打印落盘目录: {}", spool_display);
+    println!("  报表目录: {}", reports_display);
     println!("==============================================");
 
     if let Err(e) = axum::serve(listener, app).await {
