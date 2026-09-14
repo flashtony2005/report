@@ -88,3 +88,33 @@ cd designer-react && NODE_OPTIONS="--require /Users/lushaohui/project/report/scr
 → **"目标元素还在" 抓不住 "旁边元素被挤掉/吞掉"**。
 凡是涉及位置/顺序的断言（列布局、行序、展开顺序），断言完整序列，
 不要只断言端点或存在性。
+
+## 报表文件是怎么「可视化定义」的（架构速查）
+
+**报表文件 = ReportDef**，存 `print-server/reports/<id>.json`（配置文件同级）。
+顶层：`format` `version` `id` `name` `description` `updatedAt` `template` `sources` `options`。
+**存的是「模板 + 数据源声明 + 渲染选项」，不是数据快照** —— 打开/执行时按 sources 现查。
+
+**五种定义入口**（`GridReportModal` 的 Segmented）：
+内置样例 / 分组汇总 / 交叉表 / 画布表格 / 自由模板。
+前四种是**生成器**（选字段 → `buildGroupTemplate` 等构造模板）；自由模板是**通用表达**。
+→ 单向漏斗：`openReport` **一律 setMode('free')**，因为自由模板能表达任何模板，
+反过来向导填不出手写的模板。
+
+**一格 = CellTpl 两层**
+- 自身：`value`（静态文本，也是模板兜底值）+ 合并（across/down/to_end）
+- `model?: CellModel` 二十余字段，分四组：数据绑定(ds/field/agg)、
+  展开(expand_type/expr/min/max/keep)、主格关系(row_parent/col_parent/col_after)、
+  表达式(value_expr/format_expr/dict/row|col_test_expr)
+- 主格关系**不画进格子**，网格旁常显主格树（`parentTreeOf`），选中点亮整条链（`parentChainOf`）
+
+**存/开/跑**：PUT `/api/reports/save` · GET `/api/reports/:id` → `templateToGrid` 落回自由模板
+· POST `/api/reports/:id/run`。
+模板**存原样**，`options` 单独存；`withExportFormula`/`withExpandControl` 渲染前才套，
+且自由模板**刻意不套** withExpandControl（它按最内/最外层猜层级，会覆盖手工主格）。
+
+`id` 白名单 `[A-Za-z0-9_-]` ≤80 是安全边界（id 直接拼文件名）。
+
+现成样例：`print-server/reports/sales-by-region.json`
+（A3 region → B3 city(row_parent A3) → C3 salesman(row_parent B3)；
+小计 `D3[B3:+0].sum()`、合计 `D3.sum()`）。
