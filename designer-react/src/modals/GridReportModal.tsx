@@ -401,13 +401,41 @@ function CellModelEditor({
   const m = cell.model
   const [spanRows, setSpanRows] = useState(1)
   const [spanCols, setSpanCols] = useState(1)
+  // 字典是 JSON：半截输入 parse 不出来，不能边打边提交。
+  // 留一份草稿文本，只有真正解析成对象才落进 model —— 否则用户打第一个 `{`
+  // 就被判成「清掉了字典」，那是静默毁数据。
+  const [dictDraft, setDictDraft] = useState<string | null>(null)
   // 换格就把跨度归位：否则输入框里还留着上一格的「3 行 × 2 列」，
   // 看着像当前格已经是那个跨度。（不用 key 重挂：--noResolve 下 JSX 的 key
   // 会因为解析不到 React 类型被误报成类型错误。）
   useEffect(() => {
     setSpanRows(1)
     setSpanCols(1)
+    setDictDraft(null)
   }, [pos])
+  const commitDict = (text: string): void => {
+    const t = text.trim()
+    if (!t) {
+      setDictDraft(null)
+      patch({ dict: undefined })
+      return
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(t)
+    } catch {
+      setDictDraft(t) // 半截 JSON：留着，等用户打完再判定
+      return
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      setDictDraft(t) // 不是对象：同样留着，别把用户输的吞掉
+      return
+    }
+    const rec: Record<string, string> = {}
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) rec[k] = String(v)
+    setDictDraft(null)
+    patch({ dict: rec })
+  }
   const patch = (p: Partial<CellModel>): void => {
     const next: CellModel = { ...(m ?? {}), ...p }
     // 全空就没必要留个空 model
@@ -548,6 +576,91 @@ function CellModelEditor({
       </Space>
 
       {/*
+        展示表达式 / 字典：引擎早就支持的「第三值阶段」——
+        取值 → 套 format_expr → 查 dict → 才是屏幕上那串字。
+        两者都只改展示文本、不动 value：导出 xlsx 时数字格仍写原值，
+        所以「金额显示为『大额』」和「导出后还能求和」不冲突。
+        设计器一直没入口，只能手写 JSON。
+      */}
+      <Space wrap size="small">
+        <Tooltip title="展示期表达式，可用 value 指代本格的值，如 IF(value >= 1000, &quot;大额&quot;, &quot;小额&quot;)；只影响展示文本，不影响导出值">
+          <Space size={4}>
+            <Typography.Text style={{ fontSize: 12 }}>展示表达式</Typography.Text>
+            <Input
+              size="small"
+              style={{ width: 240 }}
+              placeholder='如 IF(value >= 1000, "大额", "小额")'
+              value={m?.format_expr ?? ''}
+              onChange={(e) => patch({ format_expr: e.target.value || undefined })}
+              data-testid="free-cell-format-expr"
+            />
+          </Space>
+        </Tooltip>
+        <Tooltip title="字典翻译：原始值文本 → 展示文本，JSON 对象。键取未套数字格式的原始文本；命中不了回落数字格式">
+          <Space size={4}>
+            <Typography.Text style={{ fontSize: 12 }}>字典</Typography.Text>
+            <Input
+              size="small"
+              style={{ width: 190 }}
+              placeholder='{"1":"是","0":"否"}'
+              value={dictDraft ?? (m?.dict ? JSON.stringify(m.dict) : '')}
+              onChange={(e) => setDictDraft(e.target.value)}
+              onBlur={(e) => commitDict(e.target.value)}
+              onPressEnter={(e) => commitDict((e.target as HTMLInputElement).value)}
+              data-testid="free-cell-dict"
+            />
+          </Space>
+        </Tooltip>
+      </Space>
+
+      {/* 数字格式：不配就走服务端全局兜底（整数带千分位、非整数两位小数） */}
+      <Space wrap size="small">
+        <Space size={4}>
+          <Typography.Text style={{ fontSize: 12 }}>数字格式</Typography.Text>
+          <Select
+            size="small"
+            style={{ width: 96 }}
+            placeholder="跟随全局"
+            value={m?.format?.kind ?? ''}
+            options={[
+              { label: '跟随全局', value: '' },
+              { label: '文本', value: 'text' },
+              { label: '整数', value: 'int' },
+              { label: '小数', value: 'decimal' },
+              { label: '金额', value: 'currency' },
+              { label: '百分比', value: 'percent' },
+            ]}
+            onChange={(v: string) =>
+              patch({
+                format: v
+                  ? { ...(m?.format ?? {}), kind: v as CellFormatSpec['kind'] }
+                  : undefined,
+              })
+            }
+            data-testid="free-cell-format-kind"
+          />
+        </Space>
+        {m?.format?.kind && (
+          <Space size={4}>
+            <Typography.Text style={{ fontSize: 12 }}>小数位</Typography.Text>
+            <InputNumber
+              size="small"
+              style={{ width: 62 }}
+              min={0}
+              max={10}
+              value={m?.format?.digits ?? 2}
+              onChange={(v: number | null) =>
+                patch({
+                  format: { ...(m?.format ?? { kind: 'decimal' }), digits: v ?? undefined },
+                })
+              }
+              data-testid="free-cell-format-digits"
+            />
+          </Space>
+        )}
+      </Space>
+
+      {/*
         行 / 列测试：引擎早就支持（返回 false 就整行 / 整列删掉），但设计器一直没入口，
         只能手写 JSON。补上之后，格子的橙色底边框才真正「用户可设」——
         否则图例里那条「有条测试」是个够不着的开关。
@@ -603,6 +716,33 @@ function CellModelEditor({
                 onChange={(v: number | null) => patch({ expand_min_count: v && v > 0 ? v : undefined })}
                 data-testid="free-cell-expand-min-count"
               />
+            </Space>
+          </Tooltip>
+          <Tooltip title="展开结果超过 N 条时丢弃后面的（只显示前 N 条）；0 = 不限制">
+            <Space size={4}>
+              <Typography.Text style={{ fontSize: 12 }}>
+                最多{m?.expand_type === 'c' ? '列' : '条'}
+              </Typography.Text>
+              <InputNumber
+                size="small"
+                style={{ width: 68 }}
+                min={0}
+                max={9999}
+                value={m?.expand_max_count ?? 0}
+                onChange={(v: number | null) => patch({ expand_max_count: v && v > 0 ? v : undefined })}
+                data-testid="free-cell-expand-max-count"
+              />
+            </Space>
+          </Tooltip>
+          <Tooltip title="展开集为空时保留该格（值为 null）；不勾则整格连同子格一起消失">
+            <Space size={4}>
+              <Switch
+                size="small"
+                checked={!!m?.keep_expand_empty}
+                onChange={(v: boolean) => patch({ keep_expand_empty: v || undefined })}
+                data-testid="free-cell-keep-empty"
+              />
+              <Typography.Text style={{ fontSize: 12 }}>空集保留</Typography.Text>
             </Space>
           </Tooltip>
         </Space>

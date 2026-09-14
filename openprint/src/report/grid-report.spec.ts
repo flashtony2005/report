@@ -550,7 +550,7 @@ describe('展开控制：min / max / keepEmpty 打在不同层级', () => {
   })
 })
 
-describe('自由模板：最少行数按格直设', () => {
+describe('自由模板：per-cell 属性按格直设', () => {
   /**
    * 自由模板的提交链路是：网格 → `gridToSheet` → `withExportFormula`。
    * 任何一关重建了 model，设计器里设的 `expand_min_count` 就会被静默抹掉——
@@ -585,6 +585,34 @@ describe('自由模板：最少行数按格直设', () => {
     // 先确认确实走了「重建 model」那条分支，否则下面那条断言是空转
     expect(m?.export_formula).toBe(true)
     expect(m?.expand_min_count).toBe(4)
+  })
+
+  it('展示表达式 / 字典 / 数字格式 / 最多条数 / 空集保留 都活着走完提交', () => {
+    const grid = emptyGrid(3, 2)
+    grid[1][0] = {
+      value: null,
+      model: {
+        ds: 'ds1',
+        field: 'amount',
+        expand_type: 'r',
+        // 带 value_expr 才能逼 withExportFormula 走「重建 model」分支，
+        // 否则这条测试测的是原样透传，什么都没守住
+        value_expr: 'B2[A2:+0].sum()',
+        format_expr: 'IF(value >= 1000, "大额", "小额")',
+        dict: { '1': '是', '0': '否' },
+        format: { kind: 'currency', digits: 1 },
+        expand_max_count: 9,
+        keep_expand_empty: true,
+      },
+    }
+    const m = submit(grid)
+    expect(m?.export_formula).toBe(true)
+    expect(m?.format_expr).toBe('IF(value >= 1000, "大额", "小额")')
+    expect(m?.dict).toEqual({ '1': '是', '0': '否' })
+    // 嵌套对象也要整只活着，不能只剩 kind
+    expect(m?.format).toEqual({ kind: 'currency', digits: 1 })
+    expect(m?.expand_max_count).toBe(9)
+    expect(m?.keep_expand_empty).toBe(true)
   })
 })
 
