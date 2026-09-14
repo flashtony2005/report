@@ -2027,7 +2027,9 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
               {it.label}
             </span>
           ))}
-          <span style={{ color: '#888' }}>· 选中一格会点亮它的主格（橙底）</span>
+          <span style={{ color: '#888' }}>
+            · 选中一格会点亮它的<b>整条主格链</b>（橙底）；层次看上方主格树
+          </span>
         </div>
       )}
 

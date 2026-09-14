@@ -1181,6 +1181,26 @@ describe('自由模板：非线性语义画进网格', () => {
     expect(a2?.cl).toEqual({ rgb: '#1668DC' })
   })
 
+  it('合并锚点保留语义底色 —— 合并不会把样式吃掉', () => {
+    const base = setGridCell(emptyGrid(3, 3), 0, 0, {
+      value: null,
+      model: { ds: 'ds1', field: 'region', expand_type: 'r' },
+    })
+    const r = setGridMerge(base, 0, 0, 1, 2)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    const wb = gridToWorkbookData(r.grid) as unknown as Wb
+    // 锚点仍然是黄色扩展格（Univer 会把底色铺满整个合并块，浏览器实测过）
+    expect(styleAt(wb, 0, 0)?.bg).toEqual({ rgb: '#FFF1B8' })
+    // 被覆盖的格已被清空，不该有内容也不该有样式
+    expect(wb.sheets.sheet1.cellData[0]?.[1]).toBeUndefined()
+    // 合并块本身要交给 Univer
+    expect(
+      (gridToWorkbookData(r.grid) as unknown as { sheets: Record<string, { mergeData: unknown[] }> })
+        .sheets.sheet1.mergeData,
+    ).toEqual([{ startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }])
+  })
+
   it('语义样式按需注册：没用到的组合不进 styles', () => {
     const wb = build()
     expect(Object.keys(wb.styles).sort()).toEqual(
