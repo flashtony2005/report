@@ -35,7 +35,12 @@
  *      纯逻辑在 `rescueFormulaString.ts`，可单测。
  */
 import { createUniver } from '@univerjs/presets'
-import { ICommandService } from '@univerjs/core'
+import { ICommandService, LocaleType, mergeLocales } from '@univerjs/core'
+import UniverDesignZhCN from '@univerjs/design/locale/zh-CN'
+import UniverUiZhCN from '@univerjs/ui/locale/zh-CN'
+import UniverDocsUiZhCN from '@univerjs/docs-ui/locale/zh-CN'
+import UniverSheetsZhCN from '@univerjs/sheets/locale/zh-CN'
+import UniverSheetsUiZhCN from '@univerjs/sheets-ui/locale/zh-CN'
 import { UniverNetworkPlugin } from '@univerjs/network'
 import { UniverDocsPlugin } from '@univerjs/docs'
 import { UniverRenderEnginePlugin } from '@univerjs/engine-render'
@@ -88,6 +93,21 @@ export function createFormulaFreeUniver(container: HTMLElement): FormulaFreeUniv
   const { univer, univerAPI } = createUniver({
     // 一个 preset 都不用，全手工注册（presets 在类型上是必填，传空数组）
     presets: [],
+    // 语言包**必须自己带**：preset 会捎带一张合并好的表，自己拼插件就没人管了。
+    // 少了它不会报错、界面也照画，但 `LocaleService` 没初始化 ——
+    // 于是任何走 `syncExecuteCommand` 的命令都会在
+    // `SheetPermissionCheckController._getPermissionCheck` 里抛
+    // `[LocaleService]: Locale not initialized`（setValue 就是一个）。
+    // 表现是「画布看着好好的，一改格子就静默失败」。
+    locales: {
+      [LocaleType.ZH_CN]: mergeLocales(
+        UniverDesignZhCN,
+        UniverUiZhCN,
+        UniverDocsUiZhCN,
+        UniverSheetsZhCN,
+        UniverSheetsUiZhCN,
+      ),
+    },
     plugins: [
       UniverNetworkPlugin,
       // docs / docs-ui **不能省**：sheets-ui 的单元格编辑器依赖

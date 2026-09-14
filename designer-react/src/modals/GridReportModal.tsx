@@ -1474,6 +1474,12 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         // 选中格不自绘高亮：Univer 自己会画选区光框，再叠一层反而打架
         ;(univerAPI as any).createWorkbook(gridToWorkbookData(gridRef.current))
         univerRef.current = univerAPI as unknown as { dispose: () => void }
+        // 调试钩子（仅 dev）：Univer 画在 canvas 上，DOM 里读不到东西，
+        // 也没有别的入口拿到实例。脚本要靠它在浏览器里驱动 Univer 验证。
+        // 注意 HMR 不会让这个 effect 重跑，改完必须触发 canvasKey 或整页 reload。
+        if (import.meta.env.DEV) {
+          ;(window as unknown as { __univer?: unknown }).__univer = univerAPI
+        }
 
         /**
          * 事件接线。API 名称已对着 @univerjs/*@0.25.1 的 .d.ts 核过：
