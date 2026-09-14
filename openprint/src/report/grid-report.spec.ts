@@ -39,6 +39,7 @@ import {
   toWorkbookData,
   validateTemplate,
   withExpandControl,
+  withExportFormula,
   type CellTpl,
   type ReportTemplate,
   type TplNode,
@@ -546,6 +547,44 @@ describe('展开控制：min / max / keepEmpty 打在不同层级', () => {
     // 列展开格一个都没被带上
     expect(colExp.every((m) => m.keep_expand_empty === undefined)).toBe(true)
     expect(colExp.every((m) => m.expand_min_count === undefined)).toBe(true)
+  })
+})
+
+describe('自由模板：最少行数按格直设', () => {
+  /**
+   * 自由模板的提交链路是：网格 → `gridToSheet` → `withExportFormula`。
+   * 任何一关重建了 model，设计器里设的 `expand_min_count` 就会被静默抹掉——
+   * UI 上完全看不出来，渲染结果只是「没补空行」，用户会以为功能没做。
+   *
+   * 这一组就是守住这条链路：值设下去，就得活着发出去。
+   */
+  const submit = (grid: ReturnType<typeof emptyGrid>) => {
+    const tpl = withExportFormula({ sheets: [gridToSheet(grid, '自由模板')] }, true)
+    return tpl.sheets[0]!.rows[1]!.cells[0]!.model
+  }
+
+  it('设了就能活到提交', () => {
+    const grid = emptyGrid(3, 2)
+    grid[1][0] = { value: null, model: { ds: 'ds1', field: 'city', expand_type: 'r', expand_min_count: 5 } }
+    expect(submit(grid)?.expand_min_count).toBe(5)
+  })
+
+  it('格上同时有 value_expr 时也要留住 —— withExportFormula 会重建 model', () => {
+    const grid = emptyGrid(3, 2)
+    grid[1][0] = {
+      value: null,
+      model: {
+        ds: 'ds1',
+        field: 'city',
+        expand_type: 'r',
+        expand_min_count: 4,
+        value_expr: 'C2[A2:+0].sum()',
+      },
+    }
+    const m = submit(grid)
+    // 先确认确实走了「重建 model」那条分支，否则下面那条断言是空转
+    expect(m?.export_formula).toBe(true)
+    expect(m?.expand_min_count).toBe(4)
   })
 })
 

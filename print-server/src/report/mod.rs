@@ -2099,6 +2099,120 @@ mod tests {
         assert_eq!(text.len(), 5, "{text:#?}");
     }
 
+    /// 【`expandInplaceCount` 的等价性实验】
+    ///
+    /// NopReport 的 `expandInplaceCount=N`（官方 FAQ「如何支持默认多个空行」）：
+    /// 模板里先预留 N 行，展开结果不足 N 条时**复用预留行、不新增行**。
+    ///
+    /// 本项目没有「预留行」概念——一个模板行就是一行逻辑行，展开靠复制。
+    /// 所以不靠读代码下结论：这里把两种写法都渲染一遍，用输出形状做对比。
+    /// 三个事实合起来才说明 `expand_min_count` 能不能顶替 `expandInplaceCount`。
+    ///
+    /// - `min`：明细行上的 `expand_min_count`
+    /// - `reserved`：模板里手工多写的「预留行」条数
+    /// - `n_data`：数据集条数
+    fn bill_template(min: Option<usize>, reserved: usize, n_data: usize) -> RenderResponse {
+        let data: Vec<BTreeMap<String, JsonValue>> = (0..n_data)
+            .map(|i| {
+                let mut m = BTreeMap::new();
+                m.insert("name".into(), JsonValue::from(format!("商品{}", i + 1)));
+                m.insert("qty".into(), JsonValue::from((i as i64 + 1) * 10));
+                m
+            })
+            .collect();
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), data);
+
+        let txt = |v: &str| CellTpl { pos: None, value: Some(JsonValue::from(v)), model: None, ..Default::default() };
+        // 明细行：A 列展开。模板兜底值写成 "—"，用来观察「补出来的行」
+        // 到底是**空行**还是**模板行的副本**——这是等价性的关键判据。
+        let detail = CellTpl {
+            pos: None,
+            value: Some(JsonValue::from("—")),
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some("name".into()),
+                expand_type: Some(ExpandType::R),
+                expand_min_count: min,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let qty = CellTpl {
+            pos: None,
+            value: None,
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some("qty".into()),
+                row_parent: Some("A2".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let mut rows = vec![RowTpl { cells: vec![txt("品名"), txt("数量")] }];
+        rows.push(RowTpl { cells: vec![detail, qty] });
+        for i in 0..reserved {
+            rows.push(RowTpl { cells: vec![txt(&format!("(预留{})", i + 1)), txt("")] });
+        }
+        render(RenderRequest {
+            template: ReportTemplate { sheets: vec![SheetTpl { name: "t".into(), page: None, rows }], datasets },
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap()
+    }
+
+    /// 事实 1：`expand_min_count` 补出来的是**模板行的副本**，不是空行。
+    ///
+    /// 明细行的模板兜底值是 "—"，补足的两行应该显示 "—" 而不是空白。
+    /// 这正是 NopReport「复用预留行」的输出形状：预留行保留模板内容。
+    #[test]
+    fn min_count_pads_with_template_row_not_blank_row() {
+        let text = lines(&bill_template(Some(4), 0, 2).sheets[0].rows);
+
+        // 表头 1 行 + 明细 4 行（2 条数据 + 2 行补足）
+        assert_eq!(text.len(), 5, "{text:#?}");
+        assert_eq!(text[1], "商品1 | 10");
+        assert_eq!(text[2], "商品2 | 20");
+        // 补出来的行：品名回落到模板兜底值，数量没有数据
+        assert_eq!(text[3], "— | ", "{text:#?}");
+        assert_eq!(text[4], "— | ", "{text:#?}");
+    }
+
+    /// 事实 2：`expand_min_count` 是**下限不是上限**——只补不截。
+    ///
+    /// NopReport 的语义是「不足 N 条才复用预留行，超出就正常新增」，
+    /// 所以数据比 N 多时行数必须跟着涨。
+    #[test]
+    fn min_count_is_a_floor_not_a_cap() {
+        // 5 条数据、下限 3 → 5 行明细，一行都不能少
+        assert_eq!(lines(&bill_template(Some(3), 0, 5).sheets[0].rows).len(), 6);
+        // 2 条数据、下限 3 → 补到 3 行
+        assert_eq!(lines(&bill_template(Some(3), 0, 2).sheets[0].rows).len(), 4);
+    }
+
+    /// 事实 3：模板里手工写的「预留行」**不是**下限——它不随数据伸缩。
+    ///
+    /// 静态行没有主格，是根格，永远只渲染一次、且排在展开之后。
+    /// 所以「手写预留行」给不出「至少 N 行」：数据多了它不减，数据少了它不增。
+    /// 这一条把两种写法区分开，说明它们不可互相替代。
+    #[test]
+    fn hand_written_reserved_rows_are_not_a_floor() {
+        // 2 条数据 + 2 行预留 → 1 + 2 + 2 = 5
+        let few = lines(&bill_template(None, 2, 2).sheets[0].rows);
+        assert_eq!(few.len(), 5, "{few:#?}");
+        assert_eq!(few[3], "(预留1) | ");
+        assert_eq!(few[4], "(预留2) | ");
+
+        // 5 条数据 + 2 行预留 → 1 + 5 + 2 = 8：预留行**不会**被数据吃掉
+        let many = lines(&bill_template(None, 2, 5).sheets[0].rows);
+        assert_eq!(many.len(), 8, "{many:#?}");
+        assert_eq!(many[6], "(预留1) | ");
+        assert_eq!(many[7], "(预留2) | ");
+    }
+
     /// 展开集为空时 keep_expand_empty 保留单元格（缺省会整格消失）
     #[test]
     fn keep_expand_empty_keeps_cell() {

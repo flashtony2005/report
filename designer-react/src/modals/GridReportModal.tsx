@@ -581,6 +581,33 @@ function CellModelEditor({
         </Tooltip>
       </Space>
 
+      {/*
+        最少行数：展开结果不足 N 条时补到 N 条（「默认留 N 个空行」）。
+        引擎早就有（expand_min_count），但原先只在分组 / 交叉表模式下由一个报表级开关套用——
+        那个开关靠「猜最内层」决定打在哪一格上，而自由模板的层级是用户一格一格定的，
+        让它再猜一遍会覆盖用户意图。所以自由模板里改成 per-cell 直设：打在哪一格由点选决定。
+      */}
+      {m?.expand_type && (
+        <Space wrap size="small">
+          <Tooltip title="展开结果不足 N 条时补足到 N 条（默认留 N 个空行）；数据多于 N 条时按实际条数输出，不截断">
+            <Space size={4}>
+              <Typography.Text style={{ fontSize: 12 }}>
+                最少{m?.expand_type === 'c' ? '列' : '行'}数
+              </Typography.Text>
+              <InputNumber
+                size="small"
+                style={{ width: 68 }}
+                min={0}
+                max={999}
+                value={m?.expand_min_count ?? 0}
+                onChange={(v: number | null) => patch({ expand_min_count: v && v > 0 ? v : undefined })}
+                data-testid="free-cell-expand-min-count"
+              />
+            </Space>
+          </Tooltip>
+        </Space>
+      )}
+
       <Space wrap size="small">
         <Typography.Text style={{ fontSize: 12 }}>合并</Typography.Text>
         {merge ? (
