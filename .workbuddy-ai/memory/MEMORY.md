@@ -39,8 +39,11 @@
 字色 = 内容来源（字段蓝 / 表达式紫斜）。属性面板也已补上
 `row_test_expr` / `col_test_expr` 输入框。
 
-**仍未表达的**：`dict` / `format_expr` / `export_formula` / `agg` /
-`expand_min_max_count`。
+**仍未表达的**：`dict` / `format_expr` / `export_formula` / `agg`。
+**已表达的（2026-09-14 补）**：`expand_min_count` / `expand_max_count` 在自由模板下
+也有了 per-cell 直设入口（`GridReportModal` 的「最少行数 / 最少列数」输入），
+绕开 `withExpandControl` 的层级猜测；等价于 NopReport 的 `expandInplaceCount`
+（实验 + 故障注入证明，论证见 `引擎差距分析-对照PDF资料.md`）。
 → 别把"能在 Univer 里打字"当成"非线性语义已经迁过去了"。
 
 **主格关系**（`row_parent`）不画在格子里，而是网格旁**常显一棵主格树**
