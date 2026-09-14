@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import {
   buildCrossTemplate,
   buildDetailTemplate,
@@ -747,6 +749,47 @@ describe('自由模板：格文本 ↔ 语义', () => {
         expect(back).toMatchObject({ kind: 'field', ds: 'ds1', field: c.model.field })
       } else expect(back).toEqual({ kind: 'literal', text: '地区' })
     }
+  })
+
+  it('真实存盘报表的每一格经 `=` 方言往返都不丢语义', () => {
+    // 合成用例再全也盖不住真实模板的形状（有主格、有小计、有纯占位格），
+    // 所以直接拿存盘那份报表当样本，逐格 format → parse 往回认。
+    // 注意：沙箱的 fs / url shim 不收 URL 对象（"The URL must be of scheme file"），
+    // 连 fileURLToPath 也会被拦，所以用 import.meta.dirname 拼普通路径字符串
+    const raw = readFileSync(
+      resolve(import.meta.dirname, '../../../print-server/reports/sales-by-region.json'),
+      'utf8',
+    )
+    const def = JSON.parse(raw) as { template: { sheets: unknown[] } }
+    const grid = templateToGrid(def.template.sheets[0] as never)
+
+    let bound = 0
+    for (const row of grid) {
+      for (const cell of row) {
+        const text = formatCellText(cell)
+        if (cell.model?.value_expr || cell.model?.field) {
+          // 绑定格必须写成 NopReport 的 `=` 方言，不许再冒出 `{{}}`
+          expect(text.startsWith('=')).toBe(true)
+          expect(text).not.toContain('{{')
+          bound += 1
+        }
+        const back = parseCellText(text)
+        if (cell.model?.value_expr) {
+          expect(back).toEqual({ kind: 'expr', expr: cell.model.value_expr })
+        } else if (cell.model?.field) {
+          expect(back).toEqual({
+            kind: 'field',
+            ds: cell.model.ds || 'ds1',
+            field: cell.model.field,
+            ...(cell.model.agg ? { agg: cell.model.agg } : {}),
+          })
+        } else {
+          expect(back).toEqual({ kind: 'literal', text: cell.value ?? '' })
+        }
+      }
+    }
+    // 样本里必须真有绑定格，否则上面整段是空转的
+    expect(bound).toBeGreaterThan(3)
   })
 })
 
