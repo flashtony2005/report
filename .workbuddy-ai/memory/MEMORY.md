@@ -174,5 +174,19 @@ CDP `Input.dispatchKeyEvent` / `Input.insertText` 在本环境对多字符字符
 应对：把关键逻辑抽成纯函数 + 单测 + 探针，harness 坏了也能继续验证。
 这次 mutation 拦截逻辑放纯函数 `rescueFormulaString.ts`（30 行），链路
 parseCellText `=` → mutation 改写 → SheetValueChanged → setGrid → formatCellText
-每段都有单测。画布交互那一步靠「univer canvas 1104×328 + 选中蓝框可见 +
-placeholder 文本正确」间接验证。
+每段都有单测。**真正画到用户脸上的那一步走右侧面板**：`agent-browser fill`
+在 antd `Input` 上能用（不像 canvas 击键），并且能同时读多个相关字段的当前值
+确认模型。验证 UI 改动时直接走 fill + eval 读字段，不去碰画布击键。
+四件事各自独立可验：
+
+| 验证什么 | 怎么验 |
+| --- | --- |
+| 解析对不对 | 单测 |
+| 逻辑对不对 | 单测 + 探针 |
+| 拦截器/钩子装上没 | 浏览器 console.error 钩子（errs=[] 即装上了） |
+| 端到端走通没 | 右栏 `fill` + 多字段 eval 读 |
+
+实操例：NopReport 方言切换验证。网格报表 → 自由模板 → 画布点 A1 → 右栏
+fill `=ds1.city` → eval 读「数据集」=`ds1`、`「字段」`非空即字段绑定触发；
+切 `=D3[B3:+0].sum()` → eval 读「展示表达式」=`D3[B3:+0].sum()`、数据集默认 `ds1`。
+截图：`.workbuddy-ai/screenshots/nopreport-dialect-e2e.png`。
