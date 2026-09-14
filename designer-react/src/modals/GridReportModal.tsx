@@ -457,7 +457,7 @@ function CellModelEditor({
         <Input
           size="small"
           style={{ width: 260 }}
-          placeholder="格内容：字面量，或 {{ds1.city}} / {{D3[B3:+0].sum()}}"
+          placeholder="格内容：字面量，或 =ds1.city / =D3[B3:+0].sum()"
           value={text}
           onChange={(e) => {
             const parsed = parseCellText(e.target.value)
@@ -1524,6 +1524,10 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
               const c = range.getColumn()
               const raw = range.getValue()
               const text = raw === null || raw === undefined ? '' : String(raw)
+              // `=` 开头的表达式不再需要在这里捞：sheets-ui 会把它们塞进 `f`
+              // 字段，但 mutation 拦截器已经在落地前改回 `{v, f:null, t:4}` 了
+              // （`report/rescueFormulaString.ts`）。这里就当普通文本走。
+
               // 注意这里**故意**用 setGrid 而不是 applyGrid：改动就来自画布，
               // 内容已经在画布上了，再 bump 一次 canvasKey 只会把整张表拆了重建。
               setGrid((g) => {
@@ -1970,7 +1974,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
               </Button>
             </Space>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              格内容写字面量或 <code>{'{{ds1.city}}'}</code>；插删行列会自动平移主格与表达式里的位置引用。
+              格内容写字面量或 <code>{'=ds1.city'}</code>；插删行列会自动平移主格与表达式里的位置引用。
               格子的底色 / 字色就是它的语义，对照下方图例看。
             </Typography.Text>
             {parentTree.length > 0 && (
