@@ -142,3 +142,37 @@ cd designer-react && NODE_OPTIONS="--require /Users/lushaohui/project/report/scr
 `vue-tsc` / `tsc` 报错时不要靠肉眼判断归属。`git stash push -- <那个文件>` →
 重跑 → `git stash pop`，对比错误集合与行号偏移。本次实测：报错完全一致、
 只是行号被自己新增的行推移，**确认既有**，于是敢提交。
+
+## 剥 Univer 公式引擎要连带改三件事（漏一个就静默坏）
+
+1. **docs + docs-ui 插件不能省**——sheets-ui 的单元编辑器依赖
+   `univer.editor.service`（定义在 docs-ui）。少了异步抛 `[redi] Expect 1
+   dependency item(s) for id "univer.editor.service" but get 0`，**异步抛的错
+   try/catch 接不到**，容器空、控制台之外毫无提示。
+2. **CSS 不能省**——Univer 布局全靠 `univer-h-full` / `univer-flex` 这类原子类，
+   没 CSS 根塌成 22px（sheet 标签条）、canvas 0 高，同样没报错。
+   按依赖顺序 import：design → ui → docs-ui → sheets-ui。
+3. `createUniver` 类型上 `presets` 必填，不传要 `presets: []` 占位。
+
+配方：把 preset-sheets-core 的插件表照抄，只扣掉 rpc / engine-formula /
+sheets-formula(-ui) / sheets-numfmt(-ui)。详见 `univerFormulaFree.ts` 顶部注释。
+
+## `FWorksheet` 没有 `getCell` —— optional chaining 调新方法必核签名
+
+`sheet?.getCell?.(r, c)` 可选链 + 不存在的方法 = `undefined`，TS 不报（过类型
+检查），运行期不报。整段就是死代码。**任何「靠可选链调新方法」的写法先核
+facade `.d.ts`**，或者用 `FUniver.getCommandService()` / `getCellData()` 这种
+确认存在的访问器。
+
+## 浏览器 harness 在沙箱里有时跑不动 E2E —— 接受它，把链路拆开单测
+
+CDP `Input.dispatchKeyEvent` / `Input.insertText` 在本环境对多字符字符串报
+`Invalid 'text' parameter`（单字符 OK）。`agent-browser type` / `keyboard type`
+/ `keyboard inserttext` 全字符字符串都失败，`hello` 控制实验也走不通——确认
+是 harness 问题，与代码无关。
+
+应对：把关键逻辑抽成纯函数 + 单测 + 探针，harness 坏了也能继续验证。
+这次 mutation 拦截逻辑放纯函数 `rescueFormulaString.ts`（30 行），链路
+parseCellText `=` → mutation 改写 → SheetValueChanged → setGrid → formatCellText
+每段都有单测。画布交互那一步靠「univer canvas 1104×328 + 选中蓝框可见 +
+placeholder 文本正确」间接验证。
