@@ -265,7 +265,12 @@ Pass 3  原来的实例创建循环，读前两遍的结果
 ## 代码里已经做对的（别动）
 
 - **`col_after`**（`model.rs:70-74`）：列数随数据变化时「行合计」不写死列号，延后到布局第二遍定位（`engine.rs:364-366`）。这个坑处理得很到位。
+  - 直测 `col_after_places_row_total_after_month_columns`：断言**整条列布局** `["地区","1月","2月","行合计"]`。
+  - 探针（第二遍 `col_start + col_span` → 只 `col_start`）→ 变 `["地区","1月","行合计"]`，**「2月」被挤掉**。
+  - 值得记一笔：只看 `last()` 的旧断言**抓不住**这个错——被挤掉时 `last()` 仍等于「行合计」。所以必须断言整条列布局。
 - **`merge_to_end`**（`model.rs:110`）：标题/表头横向铺到行尾，解决列数不定的合并宽度。
+  - 直测 `merge_to_end_spans_entire_row_width`：`grid[0][0].colspan == grid[0].len()`（=4）。
+  - 探针（`if inst.merge_to_end` → `if false`）→ `left: 1, right: 4` 红。
 - **双向祖格注册**（`engine.rs:246-257`）：值格同时向行祖格链和列祖格链注册，这是交叉表 `B3[B2:+0].sum()` 能取到整列的前提，设计正确。
 - **多源**：见第 5 条。
 - **前端/后端模型同源**：`openprint/src/report/grid-report.ts` 是 Rust 模型的 TS 镜像，注释明确「真正的展开/分组/汇总算法在 print-server，前端只做描述与展示」（`grid-report.ts:8`）。这次把 `grid-report.ts` 从 `designer-react` 迁到 `openprint/src/report/` 是对的，别再搬回去。

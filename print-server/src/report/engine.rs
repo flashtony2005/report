@@ -2607,6 +2607,7 @@ mod parent_tests {
 #[cfg(test)]
 mod scale {
     use super::*;
+    use crate::report::cross_tab_data;
     use crate::report::cross_tab_totals_template;
     use std::time::Instant;
 
@@ -2995,6 +2996,38 @@ mod scale {
         }
         // 行合计之和 == 总计（列合计口径由「数值格数量 + 总计」间接守住）
         assert!((row_totals.iter().sum::<f64>() - total).abs() < 0.5);
+    }
+
+    /// `merge_to_end`：标题格横向铺到行尾。列数随数据变化时，标题不能写死合并宽度。
+    ///
+    /// 模板第 1 行是 merge_to_end=true 的标题。第 2 行的月份列会展开成 N 列。
+    /// 断言标题格的 colspan = 整个网格宽度（不是 1，也不是写死的某个值）。
+    #[test]
+    fn merge_to_end_spans_entire_row_width() {
+        let sheet = cross_tab_totals_template().sheets.into_iter().next().unwrap();
+        let grid = Engine::new(cross_tab_data()).expand_sheet(&sheet);
+        let total_cols = grid[0].len();
+        let title = &grid[0][0];
+        assert_eq!(title.colspan, total_cols, "merge_to_end 必须铺满 {total_cols} 列");
+    }
+
+    /// `col_after`：行合计列不能写死模板列号（月份列数随数据变）。
+    /// 必须落在**所有月份列之后**，而不是落在自己那个模板列（C 列）上。
+    ///
+    /// 数据是 2 个月份，正确列布局 = [地区, 1月, 2月, 行合计]。
+    /// 若 col_after 失效，行合计会落回模板列 C（下标 2），把「2月」挤掉 ——
+    /// 所以这里断言**整条列布局**，而不是只看最后一列是不是「行合计」。
+    ///
+    /// 探针（把第二遍的 `col_start + col_span` 改成只有 `col_start`）实测：
+    /// 列布局变成 ["地区", "1月", "行合计"] —— 确实把「2月」挤掉了，
+    /// 而此时 last() 仍等于「行合计」。也就是说只看最后一列的断言**抓不住**这个错，
+    /// 必须断言整条列布局。
+    #[test]
+    fn col_after_places_row_total_after_month_columns() {
+        let sheet = cross_tab_totals_template().sheets.into_iter().next().unwrap();
+        let grid = Engine::new(cross_tab_data()).expand_sheet(&sheet);
+        let cols: Vec<&str> = grid[1].iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(cols, vec!["地区", "1月", "2月", "行合计"], "{cols:#?}");
     }
 
     /// `ACCSUM` 的累计值必须是「从第 1 行加到当前行」。
