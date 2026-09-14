@@ -39,11 +39,15 @@
 字色 = 内容来源（字段蓝 / 表达式紫斜）。属性面板也已补上
 `row_test_expr` / `col_test_expr` 输入框。
 
-**仍未表达的**：`dict` / `format_expr` / `export_formula` / `agg`。
-**已表达的（2026-09-14 补）**：`expand_min_count` / `expand_max_count` 在自由模板下
-也有了 per-cell 直设入口（`GridReportModal` 的「最少行数 / 最少列数」输入），
-绕开 `withExpandControl` 的层级猜测；等价于 NopReport 的 `expandInplaceCount`
-（实验 + 故障注入证明，论证见 `引擎差距分析-对照PDF资料.md`）。
+**仍未表达的**：`export_formula`（per-cell 与全局开关会冲突，故只保留全局）。
+**已表达的（2026-09-14 补）**：`expand_min_count` / `expand_max_count` /
+`keep_expand_empty` / `format_expr` / `dict` / `format`（kind+digits）
+在自由模板下都有了 per-cell 直设入口（`GridReportModal` 的相应 testid），
+绕开 `withExpandControl` / `withExportFormula` 的层级猜测；等价于
+NopReport 的 `expandInplaceCount`（实验 + 故障注入证明，论证见
+`引擎差距分析-对照PDF资料.md`）。`dict` 是 JSON 输入，留了 `dictDraft`
+草稿态：半截 JSON parse 失败不提交，避免用户打第一个 `{` 就把字典
+静默清掉。
 → 别把"能在 Univer 里打字"当成"非线性语义已经迁过去了"。
 
 **主格关系**（`row_parent`）不画在格子里，而是网格旁**常显一棵主格树**
