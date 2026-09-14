@@ -1154,6 +1154,9 @@ impl Engine {
         self.insts[idx].dropped = false;
         self.insts[idx].row_start = offset;
         let children = self.insts[idx].children.clone();
+        // merge_down **不参与布局推进**：它是显示属性（纵跨多级表头里已经存在的
+        // 那几行），而那些行本来就是独立模板行，布局已经分开算过了。
+        // 在这里再 .max(merge_down+1) 会给多级表头凭空多出一行。
         // 深度上限是纯防御：主格树按下标严格递减、结构上无环，
         // 但异常模板仍可能堆出很深的父子链，别把调用栈打爆。
         if children.is_empty() || self.layout_depth >= MAX_LAYOUT_DEPTH {

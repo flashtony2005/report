@@ -1825,6 +1825,93 @@ mod tests {
         assert!(!text.iter().any(|l| l.contains("15,300")), "{text:#?}");
     }
 
+    /// 【布局步长】一个展开组的子树实际跨 N 行时，布局推进必须走 N。
+    ///
+    /// 设计要点：每个城市的子格分布在两个模板行（备注在 row 2、数量在 row 3），
+    /// 所以每个城市跨 2 行：华东 2 城市 → 4 行，华南 1 城市 → 2 行。
+    /// 期望总行数 1（标题）+ 4 + 2 = 7。
+    ///
+    /// 反例：固定 +1 会把华东压成 2 行、华南压成 1 行 → 总 4 行。
+    /// （探针验证过：把 `inner += n` 改成 `inner += 1` → 4 != 7 立刻红。）
+    ///
+    /// 这是润乾/NopReport 的 ExtendedArea（to−from+1）：展开步长随子树行数变，
+    /// 不是固定 +1。本测试守住这条不变式。
+    #[test]
+    fn layout_step_is_subtree_size_not_fixed_one() {
+        let mut datasets = BTreeMap::new();
+        datasets.insert(
+            "ds1".to_string(),
+            vec![
+                serde_json::json!({"region":"华东","city":"上海","note":"西溪","qty":100}),
+                serde_json::json!({"region":"华东","city":"杭州","note":"西湖","qty":200}),
+                serde_json::json!({"region":"华南","city":"广州","note":"珠江","qty":300}),
+            ]
+            .into_iter()
+            .map(|v| {
+                v.as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, x)| (k.clone(), x.clone()))
+                    .collect::<BTreeMap<String, JsonValue>>()
+            })
+            .collect::<Vec<BTreeMap<String, JsonValue>>>(),
+        );
+        let txt = |v: &str| CellTpl {
+            pos: None,
+            value: Some(JsonValue::from(v)),
+            model: None,
+            ..Default::default()
+        };
+        let blank = || CellTpl::default();
+        let bind = |field: &str, expand: bool, row_parent: Option<&str>| CellTpl {
+            pos: None,
+            value: None,
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some(field.into()),
+                agg: None,
+                expand_type: if expand { Some(ExpandType::R) } else { None },
+                row_parent: row_parent.map(|s| s.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let tpl = ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "t".into(),
+                page: None,
+                rows: vec![
+                    RowTpl {
+                        cells: vec![txt("区域"), txt("城市"), txt("备注"), txt("数量")],
+                    },
+                    RowTpl {
+                        cells: vec![
+                            bind("region", true, None),
+                            bind("city", true, Some("A2")),
+                            bind("note", false, Some("B2")), // 城市自己的备注，row 2
+                            txt(""), // D2 在 row 2 留空
+                        ],
+                    },
+                    RowTpl {
+                        cells: vec![
+                            blank(),
+                            blank(),
+                            blank(),
+                            bind("qty", false, Some("B2")), // 数量在 row 3
+                        ],
+                    },
+                ],
+            }],
+            datasets,
+        };
+        let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None })
+            .unwrap();
+        let rows = resp.sheets[0].rows.len();
+        // 1 标题 + 华东 4 行（上海 2 + 杭州 2）+ 华南 2 行 = 7
+        assert_eq!(rows, 7, "{:#?}", lines(&resp.sheets[0].rows));
+    }
+
     /// 规则 3 的验模板：B2 向下合并一格把 A2 的展开范围撑到第 3 行，
     /// 第 3 行只留 C 列一个无父格格子（`c3_row_parent` 可指定它的 `row_parent`）。
     fn render_rule3_template(c3_row_parent: Option<&str>) -> RenderResponse {
