@@ -1618,7 +1618,14 @@ mod tests {
                     },
                     RowTpl {
                         cells: vec![
-                            cell(None, m(Some("month"), true, None)),
+                            cell(None, {
+                                // A2 自己是展开格：helper 里的 row_parent 硬编码成 A2，
+                                // 就成了「自己声明自己当主格」。原先靠「父格查不到 →
+                                // 退回挂根」侥幸跑通，这里显式改成无主格。
+                                let mut mm = m(Some("month"), true, None).expect("model");
+                                mm.row_parent = None;
+                                Some(mm)
+                            }),
                             cell(None, m(Some("amount"), false, None)),
                             // 第 1 个月没有上月，给 '--'
                             cell(None, m(None, false, Some("IF(A2.expandIndex > 0, B2 / B2[A2:-1], '--')"))),
@@ -2412,7 +2419,12 @@ mod tests {
                 page: None,
                 rows: vec![RowTpl {
                     cells: vec![
-                        CellTpl { pos: None, value: None, model: m(Some("month"), true, None), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { pos: None, value: None, model: {
+                            // 同上：A1 自己是展开格，不能把自己声明成主格
+                            let mut mm = m(Some("month"), true, None).expect("model");
+                            mm.row_parent = None;
+                            Some(mm)
+                        }, merge_across: 0, merge_down: 0, merge_to_end: false },
                         CellTpl { pos: None, value: None, model: m(Some("amount"), false, None), merge_across: 0, merge_down: 0, merge_to_end: false },
                         CellTpl { pos: None, value: None, model: m(None, false, Some("PRODUCT(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
                         CellTpl { pos: None, value: None, model: m(None, false, Some("COUNTA(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
@@ -3454,6 +3466,192 @@ mod tests {
     }
 
 
+
+
+    /// 展开集为空时，子格**不能**退回挂根拿全量数据算合计。
+    ///
+    /// 以前的坑：父格实例数为 0 → `by_pos` 里查不到 → 与「父格声明写错了」混为一谈
+    /// → 退回挂根 → 子格拿到全量数据，算出一张「什么都没筛」的假合计（实测 700）。
+    /// 这个数字看着像真的，比直接报错难查得多。
+    ///
+    /// 触发方式不止一种：`expand_max_count: 0`、数据被筛空、写坏的 `expand_expr`
+    /// 都会走到这条路上，所以这里用一个与 `expand_expr` 无关的触发器。
+    #[test]
+    fn 展开集为空时子格不算全量合计() {
+        let mk = |field: Option<&str>,
+                  expand: Option<ExpandType>,
+                  row_parent: Option<&str>,
+                  max: Option<usize>,
+                  agg: Option<AggType>| {
+            Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: field.map(|s| s.to_string()),
+                agg,
+                expand_type: expand,
+                row_parent: row_parent.map(|s| s.to_string()),
+                col_parent: None,
+                col_after: None,
+                value_expr: None,
+                expand_expr: None,
+                expand_min_count: None,
+                expand_max_count: max,
+                keep_expand_empty: None,
+                format: None,
+                format_expr: None,
+                dict: None,
+                row_test_expr: None,
+                col_test_expr: None,
+                export_formula: None,
+            })
+        };
+        let run = |max: Option<usize>| {
+            let mut datasets = BTreeMap::new();
+            datasets.insert("ds1".to_string(), cross_tab_data());
+            let sheet = SheetTpl {
+                name: "t".into(),
+                page: None,
+                rows: vec![RowTpl {
+                    cells: vec![
+                        CellTpl {
+                            pos: None,
+                            value: None,
+                            model: mk(Some("month"), Some(ExpandType::R), None, max, None),
+                            merge_across: 0,
+                            merge_down: 0,
+                            merge_to_end: false,
+                        },
+                        CellTpl {
+                            pos: None,
+                            value: None,
+                            model: mk(Some("amount"), None, Some("A1"), None, Some(AggType::Sum)),
+                            merge_across: 0,
+                            merge_down: 0,
+                            merge_to_end: false,
+                        },
+                    ],
+                }],
+            };
+            let resp = render(RenderRequest {
+                template: ReportTemplate { sheets: vec![sheet], datasets },
+                datasets: None,
+                sources: None,
+                dump: None,
+            })
+            .unwrap();
+            resp.sheets[0]
+                .rows
+                .iter()
+                .map(|r| r.iter().map(|c| c.text.clone()).collect::<Vec<_>>().join(" | "))
+                .collect::<Vec<_>>()
+        };
+        // 先确认这个模板本身是好的，否则下面那条断言是空转
+        assert_eq!(run(None), vec!["1月 | 250", "2月 | 450"]);
+        // 展开成 0 条：只剩引擎给空表保底的那一行（`total_rows.max(1)`）。
+        // 关键是**不能**出现全量合计 —— 那才是这个坑真正的危害。
+        assert_eq!(run(Some(0)), vec![""], "子格退回挂根会算出全量合计（700）");
+    }
+
+
+    /// 列轴的同一个坑：列主格展开成 0 条时，数值格不能退回挂根算出「整行合计」。
+    ///
+    /// 复用现成的交叉表模板，只把月份列展开格（B2）的条数上限改成 0。
+    /// 修好之前，数值格 B3 会挂根拿到华东的全量 300（100+200）；
+    /// 修好之后它应该没有列可落，留空。
+    #[test]
+    fn 列主格展开为空时数值格不算整行合计() {
+        let mut tpl = cross_tab_totals_template();
+        // B2 = 行 2 的月份列展开格
+        let b2 = tpl.sheets[0].rows[1].cells[1].model.as_mut().expect("B2 应有 model");
+        b2.expand_max_count = Some(0);
+        let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None }).unwrap();
+        let got: Vec<String> = resp.sheets[0]
+            .rows
+            .iter()
+            .map(|r| r.iter().map(|c| c.text.clone()).collect::<Vec<_>>().join(" | "))
+            .collect();
+        //
+        // 探针实测出的回归形态：不是「整行合计 300」，而是数值格挂根后
+        // 凭空多出一列 100（华东 1 月的值被当成整行的值）。所以断言整行。
+        let huadong_row = got.iter().find(|l| l.starts_with("华东")).expect("应有华东行：{got:?}");
+        assert_eq!(huadong_row, "华东 |  | 0", "数值格退回挂根会凭空造出月份列：{got:#?}");
+    }
+
+
+    /// 自己声明自己当主格（自引用）时，仍按「父格查不到」退回挂根，
+    /// **不能**走「主格展开成 0 条」那条 —— 后者会让整张表悄悄渲染成空的。
+    ///
+    /// 现成模板里真有这种写法（测试 helper 把 `row_parent` 硬编码成 A1，
+    /// 而 A1 自己就是那个展开格），它原先就是靠「父格查不到 → 退回挂根」跑通的。
+    /// 所以引擎里必须显式放过 `p == pos`，这条测试就是守住那个分支。
+    #[test]
+    fn 自引用主格退回挂根而不是整表变空() {
+        let mk = |month: i64, amount: f64| {
+            let mut r = DataRow::new();
+            r.insert("month".into(), JsonValue::from(month));
+            r.insert("amount".into(), JsonValue::from(amount));
+            r
+        };
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), vec![mk(1, 100.0), mk(2, 200.0), mk(3, 400.0)]);
+        let m = |field: Option<&str>, expand: bool, agg: Option<AggType>| {
+            Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: field.map(|s| s.to_string()),
+                agg,
+                expand_type: if expand { Some(ExpandType::R) } else { None },
+                row_parent: Some("A1".to_string()), // 自引用：A1 把自己当主格
+                col_parent: None,
+                col_after: None,
+                value_expr: None,
+                expand_expr: None,
+                expand_min_count: None,
+                expand_max_count: None,
+                keep_expand_empty: None,
+                format: None,
+                format_expr: None,
+                dict: None,
+                row_test_expr: None,
+                col_test_expr: None,
+                export_formula: None,
+            })
+        };
+        let sheet = SheetTpl {
+            name: "t".into(),
+            page: None,
+            rows: vec![RowTpl {
+                cells: vec![
+                    CellTpl {
+                        pos: None,
+                        value: None,
+                        model: m(Some("month"), true, None),
+                        merge_across: 0,
+                        merge_down: 0,
+                        merge_to_end: false,
+                    },
+                    CellTpl {
+                        pos: None,
+                        value: None,
+                        model: m(Some("amount"), false, Some(AggType::Sum)),
+                        merge_across: 0,
+                        merge_down: 0,
+                        merge_to_end: false,
+                    },
+                ],
+            }],
+        };
+        let resp = render(RenderRequest {
+            template: ReportTemplate { sheets: vec![sheet], datasets },
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        let text = lines(&resp.sheets[0].rows);
+        assert_eq!(text, vec!["1 | 100", "2 | 200", "3 | 400"], "{text:#?}");
+        // 走的是「父格查不到」那条路，所以必须有告警 —— 自引用是模板问题，不能静默
+        let w = resp.warnings.unwrap_or_default().join("\n");
+        assert!(w.contains("row_parent"), "自引用应当告警，实际：{w:?}");
+    }
 
 }
 

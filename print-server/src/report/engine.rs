@@ -626,16 +626,31 @@ impl Engine {
                     _ => None,
                 };
 
+                // 先把本格的 pos 登记进 `by_pos`（可能是空表），**早于**下面的父格循环。
+                //
+                // 目的：让「这个格存在、只是展开成 0 条」能在下面和「这个格压根不存在」
+                // 区分开。不登记的话，一个展开成 0 条的格在 `by_pos` 里等同于没写过，
+                // 它的子格就会被当成「父格声明错了」而退回挂根。
+                self.by_pos.entry(pos.clone()).or_default();
+
                 // 行主格实例列表
                 //
-                // 注意：`by_pos` 只含**已创建**的实例，所以父格下标必然小于子格——
-                // 主格树是按下标严格递减的 DAG，结构上不可能成环，无需环检测。
-                // 声明了父格却查不到：一定是模板写错了（父格必须写在子格之前），
-                // 退回挂根能保住数据不消失，但展开结果会静默变少，必须告警。
+                // 注意：`by_pos` 的父格下标必然小于子格——主格树是按下标严格递减的
+                // DAG，结构上不可能成环，无需环检测。
+                //
+                // 查不到父格分两种，处理方式**必须不同**：
+                // - 空表：父格存在但展开成 0 条 → 子格一条都不出（润乾语义：主格没
+                //   数据，跟随它的子格一并消失）。
+                // - 键不存在：父格压根没建过，一定是模板写错（父格必须先于子格）→
+                //   退回挂根保住数据不消失，但展开结果会变少，必须告警。
                 let row_parents: Vec<Option<usize>> = match &row_ref {
                     Some(p) => match self.by_pos.get(p).cloned() {
-                        Some(list) => list.iter().map(|i| Some(*i)).collect(),
-                        None => {
+                        Some(list) if !list.is_empty() => list.iter().map(|i| Some(*i)).collect(),
+                        // 父格存在但展开成 0 条 → 子格一条都不出
+                        Some(_) if *p != pos => Vec::new(),
+                        // 自己声明自己当主格：和「父格不存在」同样处理。
+                        // 不能走上面那条 —— 那会让整张表悄悄渲染成空的。
+                        None | Some(_) => {
                             self.warnings.push(format!(
                                 "{pos} 声明的 row_parent \"{p}\" 不存在——父格必须先于子格创建，已退回挂根（该格不会跟随主格展开）"
                             ));
@@ -647,8 +662,11 @@ impl Engine {
                 // 列主格实例列表：与行主格做笛卡尔积，取数视图取两者交集（交叉表的本质）
                 let col_parents: Vec<Option<usize>> = match &col_ref {
                     Some(p) => match self.by_pos.get(p).cloned() {
-                        Some(list) => list.iter().map(|i| Some(*i)).collect(),
-                        None => {
+                        Some(list) if !list.is_empty() => list.iter().map(|i| Some(*i)).collect(),
+                        // 同上行主格：列主格展开成 0 条时子格不出，而不是挂根拿全量
+                        // 同上：列主格展开成 0 条时子格不出，但自引用仍退回挂根
+                        Some(_) if *p != pos => Vec::new(),
+                        None | Some(_) => {
                             self.warnings.push(format!(
                                 "{pos} 声明的 col_parent \"{p}\" 不存在——父格必须先于子格创建，已退回挂根"
                             ));
