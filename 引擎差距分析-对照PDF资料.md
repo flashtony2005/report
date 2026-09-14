@@ -262,6 +262,62 @@ Pass 3  原来的实例创建循环，读前两遍的结果
 **仍未做**：表达式缓存与增量重算（`resolve` 每次重新收集后代）。
 （`PRODUCT` / `COUNTA` / `RANK` 已补齐，官方 11 个函数全部实现。）
 
+## `expand_expr`：从死字段变成「固定列表展开」（已实现）
+
+原先 `CellModel.expand_expr` 是**纯死字段**：全仓 21 处出现全是 `None` 初始化，
+引擎没有任何一处读它。但它不是"没人用"那么无害——`grid-report.ts` 的
+`validateTemplate` 在**主动替它做担保**：
+
+```ts
+if (m.expand_type && !m.ds && !m.expand_expr)          // 没数据集？写 expand_expr 就行
+if (m.expand_type && !m.field && !m.expand_expr && ...) // 没字段？写 expand_expr 就行
+```
+
+用户照着提示写完 → Rust 引擎看都不看 → 报表静默少行。**空头支票比没有这个字段更糟。**
+
+### 量过了才动手：P1 范围里有一半根本不可能实现
+
+`model.rs` 原注释写的是「P1 支持：数据集名 / 数组字面量」。实测：
+
+| 口径 | 结论 |
+|---|---|
+| **数据集名** | **不可能实现，也没意义** —— `Engine::new(ds: DataSet)` 引擎只有一个 DataSet（全仓无 `datasets` 复数），没有第二个源可选 |
+| **数组字面量** | 可实现，且覆盖真实需求（固定顺序 / 月份补全） |
+
+所以只实现了后者，并把「数据集名」那一半从注释里删掉——留着注释就是留着一个
+永远不会兑现的承诺。
+
+### 实现（`expand_expr` = 常量数组字面量）
+
+- `expr.rs`：`Expr::Array`。`[` 在 **primary 位置**上只可能是数组字面量——层次坐标的
+  `[` 永远紧跟格名、由 `parse_ident` 消费，走不到这里，所以不冲突。
+- `engine.rs`：`value_key` 从 `group_by_field` 抽出复用；新增
+  `const_value` / `parse_expand_list` / `group_by_list`。
+  `make_insts` 里 `expand_expr` **优先于** `field`。
+
+`group_by_list` 与 `group_by_field` 的两处差异，就是它的全部价值：
+
+1. 顺序按字面量走，不按数据出现顺序；
+2. 数据里没有的项**照样保留**（`rows` 为空 → 值格走 Null / 模板兜底）。
+
+### 探针
+
+| 探针 | 结果 |
+|---|---|
+| `match &model.expand_expr` → `&None::<String>`（退回死字段状态） | 两个新测**同时红**；`left` 正是 `["月份 \| 金额","1月 \| 250","2月 \| 450"]` —— 数据顺序、无 3月 |
+| `group_by_list` 的 `list.iter()` → `.rev()` | 红，`left = [..., "3月 \| ", "1月 \| 250", "2月 \| 450"]` |
+| `validateTemplate` 去掉 `!m.expand_expr` 口子 | TS 新测红，报出 `A2：设了扩展方向却没有数据集（也没写 expand_expr）` |
+
+### 顺带查清的一个既有坑（不是本次引入）
+
+`expand_expr` 解析失败时我一度看到 `" \| 700"` 这种「全量合计」的假行。查下来是
+**既有行为**：展开格实例数为 0 时，子格 `by_pos` 查不到父格 → `vec![None]` 退回挂根
+→ 拿全量数据算合计（`engine.rs:638-643`）。
+
+用**完全无关**的触发方式复现确认过：`expand_max_count: 0` 会得到
+一模一样的 `" \| 700"` 和同一条「退回挂根」告警。所以这个坑与 `expand_expr` 正交，
+本次不动，单独记在这里：*展开集为空 → 子格静默变成全量合计*，值得另开一条修。
+
 ## 代码里已经做对的（别动）
 
 - **`col_after`**（`model.rs:70-74`）：列数随数据变化时「行合计」不写死列号，延后到布局第二遍定位（`engine.rs:364-366`）。这个坑处理得很到位。

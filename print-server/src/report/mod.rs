@@ -3331,5 +3331,129 @@ mod tests {
         let e = merge_cli_param(&mut m, "  ", "x").unwrap_err();
         assert!(e.contains("键不能为空"), "实际：{e}");
     }
+
+    /// `expand_expr`：按**固定字面量列表**展开，而不是按现有数据分组。
+    ///
+    /// 两件事是 `group_by_field` 做不到的，`expand_expr` 的全部价值就在这：
+    /// 1. 顺序由字面量决定 —— 这里故意写成 2月,1月，与数据里的出现顺序**相反**，
+    ///    所以如果顺序其实还是跟着数据走，这个断言会立刻红；
+    /// 2. 数据里没有的项照样展开出来（3月），值格留空而不是整行消失。
+    #[test]
+    fn expand_expr_按字面量顺序展开且保留数据里没有的项() {
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), cross_tab_data());
+
+        let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            pos: None,
+            value: value.map(|v| JsonValue::from(v)),
+            model,
+            merge_across: 0,
+            merge_down: 0,
+            merge_to_end: false,
+        };
+        let mk = |field: Option<&str>,
+                  expand: Option<ExpandType>,
+                  row_parent: Option<&str>,
+                  expand_expr: Option<&str>,
+                  agg: Option<AggType>| {
+            Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: field.map(|s| s.to_string()),
+                agg,
+                expand_type: expand,
+                row_parent: row_parent.map(|s| s.to_string()),
+                col_parent: None,
+                col_after: None,
+                value_expr: None,
+                expand_expr: expand_expr.map(|s| s.to_string()),
+                expand_min_count: None,
+                expand_max_count: None,
+                keep_expand_empty: None,
+                format: None,
+                format_expr: None,
+                dict: None,
+                row_test_expr: None,
+                col_test_expr: None,
+                export_formula: None,
+            })
+        };
+
+        let sheet = SheetTpl {
+            name: "月份补全".into(),
+            page: None,
+            rows: vec![
+                RowTpl { cells: vec![cell(Some("月份"), None), cell(Some("金额"), None)] },
+                RowTpl {
+                    cells: vec![
+                        // 字面量顺序 = 2月,1月,3月；数据里只有 1月、2月
+                        cell(None, mk(Some("month"), Some(ExpandType::R), None, Some(r#"["2月","1月","3月"]"#), None)),
+                        cell(None, mk(Some("amount"), None, Some("A2"), None, Some(AggType::Sum))),
+                    ],
+                },
+            ],
+        };
+        let tpl = ReportTemplate { sheets: vec![sheet], datasets };
+        let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None }).unwrap();
+        let rows = resp.sheets.into_iter().next().unwrap().rows;
+        let got: Vec<String> = rows
+            .iter()
+            .map(|r| r.iter().map(|c| c.text.clone()).collect::<Vec<_>>().join(" | "))
+            .collect();
+        assert_eq!(got, vec!["月份 | 金额", "2月 | 450", "1月 | 250", "3月 | "], "{got:#?}");
+    }
+
+    /// `expand_expr` 写坏了要**报错**，不能静默当空数组。
+    ///
+    /// 静默的后果是作者以为自己写的东西生效了（报表少了几行却没有任何提示），
+    /// 这比直接报错难查得多。
+    #[test]
+    fn expand_expr_写错时告警而不是静默() {
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), cross_tab_data());
+
+        let mk = |expand_expr: Option<&str>| {
+            Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: Some("month".to_string()),
+                agg: None,
+                expand_type: Some(ExpandType::R),
+                row_parent: None,
+                col_parent: None,
+                col_after: None,
+                value_expr: None,
+                expand_expr: expand_expr.map(|s| s.to_string()),
+                expand_min_count: None,
+                expand_max_count: None,
+                keep_expand_empty: None,
+                format: None,
+                format_expr: None,
+                dict: None,
+                row_test_expr: None,
+                col_test_expr: None,
+                export_formula: None,
+            })
+        };
+        let sheet = SheetTpl {
+            name: "t".into(),
+            page: None,
+            rows: vec![RowTpl {
+                cells: vec![CellTpl {
+                    pos: None,
+                    value: None,
+                    model: mk(Some("B9")), // 不是数组字面量：格引用在展开期无意义
+                    merge_across: 0,
+                    merge_down: 0,
+                    merge_to_end: false,
+                }],
+            }],
+        };
+        let tpl = ReportTemplate { sheets: vec![sheet], datasets };
+        let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None }).unwrap();
+        let w = resp.warnings.unwrap_or_default().join("\n");
+        assert!(w.contains("expand_expr"), "应当告警 expand_expr，实际告警：{w:?}");
+    }
+
+
+
 }
 

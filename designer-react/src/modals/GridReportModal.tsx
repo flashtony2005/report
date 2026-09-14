@@ -717,6 +717,32 @@ function CellModelEditor({
         那个开关靠「猜最内层」决定打在哪一格上，而自由模板的层级是用户一格一格定的，
         让它再猜一遍会覆盖用户意图。所以自由模板里改成 per-cell 直设：打在哪一格由点选决定。
       */}
+      {/*
+        固定列表展开：展开集由字面量写死，不再由数据分组决定。
+
+        两件事是「按字段分组」做不到的，也是这个入口存在的理由：
+        1. 顺序按字面量走，不按数据出现顺序（科目顺序既不是字母序也不是数据序）；
+        2. 数据里没有的项照样展开出来，值格留空 —— 也就是「月份补全」。
+
+        引擎侧展开期才求值，层次坐标尚未建立，所以只接受常量数组；
+        写坏了会进告警而不是静默当空。
+      */}
+      {m?.expand_type && (
+        <Tooltip title='按固定列表展开，顺序与成员都由字面量决定；数据里没有的项也会展开出来（值格留空）。只支持常量，如 ["1月","2月","3月"]'>
+          <Space size={4}>
+            <Typography.Text style={{ fontSize: 12 }}>固定列表</Typography.Text>
+            <Input
+              size="small"
+              style={{ width: 188 }}
+              placeholder='如 ["1月","2月","3月"]'
+              value={m?.expand_expr ?? ''}
+              onChange={(e) => patch({ expand_expr: e.target.value || undefined })}
+              data-testid="free-cell-expand-expr"
+            />
+          </Space>
+        </Tooltip>
+      )}
+
       {m?.expand_type && (
         <Space wrap size="small">
           <Tooltip title="展开结果不足 N 条时补足到 N 条（默认留 N 个空行）；数据多于 N 条时按实际条数输出，不截断">

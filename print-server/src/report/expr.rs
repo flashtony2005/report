@@ -96,6 +96,11 @@ pub enum Expr {
     /// `$POS`：条件表达式里取**当前格**的主格（裸 `POS` 取的是候选格的主格）。
     /// 润乾经典写法 `C2 - C2[A2:-1]{$B2==B2}` 就靠它区分两个上下文。
     Dollar(Box<Expr>),
+    /// 数组字面量 `["1月","2月"]`，供 `expand_expr` 声明固定展开集。
+    ///
+    /// 只在**展开期**求值，此时层次坐标尚未建立，所以元素只允许是常量
+    /// （`Num` / `Str`）。出现格引用或函数调用一律报错，不静默当空数组。
+    Array(Vec<Expr>),
 }
 
 #[derive(Debug, Clone)]
@@ -267,6 +272,30 @@ impl<'a> Parser<'a> {
         }
         if c.is_ascii_alphabetic() || c == b'_' {
             return self.parse_ident();
+        }
+        // `[` 在**primary 位置**上只可能是数组字面量：层次坐标的 `[` 永远紧跟
+        // 在格名之后（`B2[A2:-1]`），由 `parse_ident` 消费，走不到这里。
+        if self.eat(b'[') {
+            let mut items = Vec::new();
+            loop {
+                self.ws();
+                if self.eat(b']') {
+                    break;
+                }
+                if self.at_end() {
+                    return self.err("数组字面量缺少 ]");
+                }
+                items.push(self.parse_cmp()?);
+                self.ws();
+                if self.eat(b',') {
+                    continue;
+                }
+                if self.eat(b']') {
+                    break;
+                }
+                return self.err("数组字面量的元素之间缺少 ,");
+            }
+            return Ok(Expr::Array(items));
         }
         // `$POS`：只在条件表达式里有意义（取当前格的主格），别处等价于裸 POS
         if self.eat(b'$') {

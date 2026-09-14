@@ -569,6 +569,29 @@ describe('自由模板：per-cell 属性按格直设', () => {
     expect(submit(grid)?.expand_min_count).toBe(5)
   })
 
+  it('固定列表展开（expand_expr）活着走完提交', () => {
+    const grid = emptyGrid(3, 2)
+    grid[1][0] = {
+      value: null,
+      model: { ds: 'ds1', field: 'month', expand_type: 'r', expand_expr: '["1月","2月","3月"]' },
+    }
+    expect(submit(grid)?.expand_expr).toBe('["1月","2月","3月"]')
+  })
+
+  /**
+   * `validateTemplate` 里两条「没有数据集 / 没有字段就报警」的规则都给
+   * `expand_expr` 留了口子（写了它就不再要求 ds / field）。这个口子以前是**空头支票**——
+   * 引擎根本不读 `expand_expr`，用户照着提示写完只会拿到一张静默出错的报表。
+   * 现在引擎实现了，这条就是守住「提示别再骗人」。
+   */
+  it('写了 expand_expr 就不再催数据集 —— 引擎确实认它', () => {
+    const grid = emptyGrid(3, 2)
+    grid[1][0] = { value: null, model: { expand_type: 'r', expand_expr: '["1月","2月"]' } }
+    const tpl = { sheets: [gridToSheet(grid, '自由模板')] }
+    const warns = validateTemplate(tpl)
+    expect(warns.filter((w) => w.includes('A2'))).toEqual([])
+  })
+
   it('格上同时有 value_expr 时也要留住 —— withExportFormula 会重建 model', () => {
     const grid = emptyGrid(3, 2)
     grid[1][0] = {

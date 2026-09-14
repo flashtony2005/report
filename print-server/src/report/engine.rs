@@ -844,9 +844,20 @@ impl Engine {
 
         // 行展开与列展开都是「按字段分组去重」，区别只在布局方向
         if model.is_row_expand() || model.is_col_expand() {
-            let mut groups: Vec<(JsonValue, Vec<usize>)> = match &model.field {
-                Some(f) => group_by_field(&self.ds, view, f),
-                None => view.iter().map(|r| (JsonValue::Null, vec![*r])).collect(),
+            // `expand_expr` 优先于 `field`：写了它就是「按固定列表展开」，
+            // 数据分组不再决定展开集（顺序和成员都由字面量说了算）。
+            let mut groups: Vec<(JsonValue, Vec<usize>)> = match &model.expand_expr {
+                Some(src) => match parse_expand_list(src) {
+                    Ok(list) => group_by_list(&self.ds, view, model.field.as_deref(), &list),
+                    Err(msg) => {
+                        self.warnings.push(format!("{pos} 的 expand_expr 无效：{msg}"));
+                        Vec::new()
+                    }
+                },
+                None => match &model.field {
+                    Some(f) => group_by_field(&self.ds, view, f),
+                    None => view.iter().map(|r| (JsonValue::Null, vec![*r])).collect(),
+                },
             };
             // 上限：只显示前 N 条
             if let Some(max) = model.expand_max_count {
@@ -1042,7 +1053,7 @@ impl Engine {
                 let parts = parts?;
                 format!("IF({},{},{})", parts[0], parts[1], parts[2])
             }
-            Expr::SelfValue | Expr::Filter { .. } | Expr::Dollar(_) => return None,
+            Expr::SelfValue | Expr::Filter { .. } | Expr::Dollar(_) | Expr::Array(_) => return None,
         })
     }
 
@@ -1464,6 +1475,11 @@ impl Engine {
                 self.collect_deps(cond, cur, out);
             }
             Expr::Dollar(inner) => self.collect_deps(inner, cur, out),
+            Expr::Array(items) => {
+                for it in items {
+                    self.collect_deps(it, cur, out);
+                }
+            }
         }
     }
 
@@ -1792,6 +1808,10 @@ impl Engine {
                 Val::Set { cells: Rc::from(kept), pick }
             }
             Expr::Dollar(inner) => self.eval_ast(inner, outer, outer),
+            // 数组字面量只在展开期有意义（`expand_expr`），那里走专门的常量求值器，
+            // 不经过这里。出现在值/格式表达式里说明作者写错了，折叠成 Null 而不是
+            // 悄悄当第一个元素。
+            Expr::Array(_) => Val::Null,
         }
     }
 
@@ -2200,16 +2220,77 @@ impl Engine {
 /// 那是「行数 × 组数」的平方级开销——16000 个唯一值时要跑约 1.3e8 次字符串比较，
 /// 而这段又在每个展开格的展开路径上。换成索引后是 O(行数)。
 /// 分组顺序不受影响（仍是首次出现顺序），只是查表不再线性扫。
+/// 分组键。`Null` 必须能和字符串 "null" 区分开，所以加了类型前缀。
+fn value_key(v: &JsonValue) -> String {
+    match v {
+        JsonValue::Null => "\u{0}null".to_string(),
+        JsonValue::String(s) => format!("s:{s}"),
+        other => format!("v:{other}"),
+    }
+}
+
+/// 展开期常量：只认数字和字符串。
+///
+/// `expand_expr` 在层次坐标建立**之前**求值，所以格引用、函数调用在这里都没有
+/// 意义。宁可报错也不要静默当空——静默会让作者以为自己写的表达式生效了。
+fn const_value(e: &Expr) -> Option<JsonValue> {
+    match e {
+        Expr::Num(n) => Some(JsonValue::from(*n)),
+        Expr::Str(s) => Some(JsonValue::String(s.clone())),
+        _ => None,
+    }
+}
+
+/// 解析 `expand_expr`：必须是**常量数组字面量**。
+fn parse_expand_list(src: &str) -> Result<Vec<JsonValue>, String> {
+    match expr::parse(src) {
+        Ok(Expr::Array(items)) => items
+            .iter()
+            .map(const_value)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "元素只能是数字或字符串常量".to_string()),
+        Ok(_) => Err("必须是数组字面量，如 [\"1月\",\"2月\"]".to_string()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// 按**字面量顺序**分组：列表里的每一项都占一行，即使数据里没有。
+///
+/// 与 `group_by_field` 的两处关键差异（就是 `expand_expr` 的全部价值）：
+/// 1. 顺序按字面量写死，不按数据出现顺序 —— 资产负债表科目顺序既不是字母序
+///    也不是数据顺序，只能手订；
+/// 2. 数据里没有的项**照样保留**（`rows` 为空），值格走 Null / 模板兜底值，
+///    这就是「月份补全」。`group_by_field` 做不到，因为它只能按现有数据分组。
+///
+/// 返回的 `rows` 升序且无重复（按 `view` 的顺序分桶），满足行列主格求交的
+/// 二分前提。
+fn group_by_list(
+    ds: &DataSet,
+    view: &[usize],
+    field: Option<&str>,
+    list: &[JsonValue],
+) -> Vec<(JsonValue, Vec<usize>)> {
+    let mut buckets: HashMap<String, Vec<usize>> = HashMap::new();
+    if let Some(f) = field {
+        for &r in view {
+            let val = ds.get(r).and_then(|row| row.get(f)).cloned().unwrap_or(JsonValue::Null);
+            buckets.entry(value_key(&val)).or_default().push(r);
+        }
+    }
+    list.iter()
+        .map(|item| {
+            let rows = buckets.get(&value_key(item)).cloned().unwrap_or_default();
+            (item.clone(), rows)
+        })
+        .collect()
+}
+
 fn group_by_field(ds: &DataSet, view: &[usize], field: &str) -> Vec<(JsonValue, Vec<usize>)> {
     let mut out: Vec<(JsonValue, Vec<usize>)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     for r in view {
         let val = ds.get(*r).and_then(|row| row.get(field)).cloned().unwrap_or(JsonValue::Null);
-        let key = match &val {
-            JsonValue::Null => "\u{0}null".to_string(),
-            JsonValue::String(s) => format!("s:{s}"),
-            other => format!("v:{other}"),
-        };
+        let key = value_key(&val);
         match index.get(&key) {
             Some(&i) => out[i].1.push(*r),
             None => {
@@ -2234,6 +2315,7 @@ fn expr_is_cur_independent(e: &Expr) -> bool {
         }
         Expr::Neg(inner) | Expr::Dollar(inner) => expr_is_cur_independent(inner),
         Expr::Num(_) | Expr::Str(_) | Expr::SelfValue => true,
+        Expr::Array(items) => items.iter().all(expr_is_cur_independent),
         Expr::Filter { .. } => false,
     }
 }
