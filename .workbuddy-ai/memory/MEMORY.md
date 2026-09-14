@@ -91,7 +91,8 @@ cd designer-react && NODE_OPTIONS="--require /Users/lushaohui/project/report/scr
 
 ## 报表文件是怎么「可视化定义」的（架构速查）
 
-**报表文件 = ReportDef**，存 `print-server/reports/<id>.json`（配置文件同级）。
+**报表文件 = ReportDef**，存 `print-server/reports/<id>.json`（配置文件同级——
+**注意这是相对配置路径算的，见文末「报表目录跟着 cwd 走」**）。
 顶层：`format` `version` `id` `name` `description` `updatedAt` `template` `sources` `options`。
 **存的是「模板 + 数据源声明 + 渲染选项」，不是数据快照** —— 打开/执行时按 sources 现查。
 
@@ -118,3 +119,26 @@ cd designer-react && NODE_OPTIONS="--require /Users/lushaohui/project/report/scr
 现成样例：`print-server/reports/sales-by-region.json`
 （A3 region → B3 city(row_parent A3) → C3 salesman(row_parent B3)；
 小计 `D3[B3:+0].sum()`、合计 `D3.sum()`）。
+
+## 报表目录跟着 cwd 走（起服务必须 cd 到 print-server/）
+
+`store::reports_dir(config_path)` = **配置文件同级**的 `reports/`，而默认配置路径是
+**相对**的 `print-server.json`。所以「从哪个目录启动」决定看见哪个 `reports/`：
+从仓库根启动 → `/api/reports` 返回 `[]`，**没有任何报错**。
+
+- 正确启动：`cd print-server && <binary>`（或 `--config <绝对路径>` / 环境变量
+  `OPENPRINT_PRINT_SERVER_CONFIG`）
+- 目录跟着配置文件走是**刻意设计**（整体备份/迁移方便），所以没改行为，只做披露：
+  启动横幅 `报表目录:` 一行 · `/health.reportsDir` · `/api/reports` 的
+  `x-reports-dir` 响应头 · 设计器空列表时的行内提示
+- 加自定义响应头要注意**跨域下默认读不到**，服务端得 expose（本项目
+  `CorsLayer::permissive()` 自带 `expose_headers(Any)`）。**curl 证明不了浏览器能读**，
+  必须在页面里 `fetch(...).then(r=>r.headers.get(...))` 才算验过
+- `HeaderValue` 只收可见 ASCII → 中文路径要 percent 编码（`store::header_safe`），
+  别 `.ok()` 一丢了之
+
+## 判断「这个类型错是不是我引入的」：stash 再跑一遍
+
+`vue-tsc` / `tsc` 报错时不要靠肉眼判断归属。`git stash push -- <那个文件>` →
+重跑 → `git stash pop`，对比错误集合与行号偏移。本次实测：报错完全一致、
+只是行号被自己新增的行推移，**确认既有**，于是敢提交。
