@@ -614,6 +614,22 @@ describe('自由模板：per-cell 属性按格直设', () => {
     expect(m?.expand_max_count).toBe(9)
     expect(m?.keep_expand_empty).toBe(true)
   })
+
+  it('col_after / merge_to_end 也活着走完提交（且不互相串位）', () => {
+    const grid = emptyGrid(3, 2)
+    grid[1][0] = {
+      value: null,
+      model: { ds: 'ds1', field: 'amount', col_after: 'C1' },
+      merge_to_end: true,
+    }
+    const tpl = withExportFormula({ sheets: [gridToSheet(grid, '自由模板')] }, true)
+    const cell = tpl.sheets[0]!.rows[1]!.cells[0]!
+    // col_after 是 model 字段
+    expect(cell.model?.col_after).toBe('C1')
+    // merge_to_end 是 CellTpl 字段，不在 model 里 —— 两条各走各的路，别串
+    expect(cell.merge_to_end).toBe(true)
+    expect((cell.model as Record<string, unknown>).merge_to_end).toBeUndefined()
+  })
 })
 
 describe('自由模板：格文本 ↔ 语义', () => {

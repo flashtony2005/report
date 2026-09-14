@@ -442,6 +442,10 @@ function CellModelEditor({
     const empty = Object.values(next).every((v) => v === undefined)
     onChange({ ...cell, model: empty ? undefined : next })
   }
+  // model 之外的 CellTpl 字段（如 merge_to_end）走这条，不动 model
+  const patchCell = (p: Partial<CellTpl>): void => {
+    onChange({ ...cell, ...p })
+  }
   const text = formatCellText(cell)
 
   return (
@@ -565,6 +569,19 @@ function CellModelEditor({
             data-testid="free-cell-col-parent"
           />
         </Space>
+        <Tooltip title="列向定位：本格排在目标 pos 所占列区间**之后**。列数随数据变化时用它（行合计列不能写死模板列号）">
+          <Space size={4}>
+            <Typography.Text style={{ fontSize: 12 }}>列后</Typography.Text>
+            <Input
+              size="small"
+              style={{ width: 68 }}
+              placeholder="C1"
+              value={m?.col_after ?? ''}
+              onChange={(e) => patch({ col_after: e.target.value.trim() || undefined })}
+              data-testid="free-cell-col-after"
+            />
+          </Space>
+        </Tooltip>
         <Input
           size="small"
           style={{ width: 240 }}
@@ -749,6 +766,17 @@ function CellModelEditor({
       )}
 
       <Space wrap size="small">
+        <Tooltip title="横向铺到行尾：列数随数据变化时标题/表头无法写死合并宽度，勾上这一项代替 merge_across">
+          <Space size={4}>
+            <Switch
+              size="small"
+              checked={!!cell.merge_to_end}
+              onChange={(v: boolean) => patchCell({ merge_to_end: v || undefined })}
+              data-testid="free-merge-to-end"
+            />
+            <Typography.Text style={{ fontSize: 12 }}>铺到行尾</Typography.Text>
+          </Space>
+        </Tooltip>
         <Typography.Text style={{ fontSize: 12 }}>合并</Typography.Text>
         {merge ? (
           <>
