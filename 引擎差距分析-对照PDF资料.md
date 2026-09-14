@@ -308,6 +308,25 @@ if (m.expand_type && !m.field && !m.expand_expr && ...) // 没字段？写 expan
 | `group_by_list` 的 `list.iter()` → `.rev()` | 红，`left = [..., "3月 \| ", "1月 \| 250", "2月 \| 450"]` |
 | `validateTemplate` 去掉 `!m.expand_expr` 口子 | TS 新测红，报出 `A2：设了扩展方向却没有数据集（也没写 expand_expr）` |
 
+### 浏览器端到端
+
+`free-cell-expand-expr` 控件在自由模板 cell 面板里有，且**只在设了 `expand_type` 才出现**（与其它展开控件同包在 `{m?.expand_type && (...)}` 下）：
+
+- 输入 `["1月","2月","3月"]` → DOM 读到一致（`fill` 触发 onChange → patch → setState）
+- 把 `expand_type` 切到「不扩展」（控件被 unmount）再切回「纵向 ↓」（重新 mount）→ 值仍在
+  → 不是 DOM 残留，是 React state
+- 直接 POST 到 `/api/report/render` 同一份模板（数据里只有 1月、2月）：
+
+  ```
+  <td rowspan="1" colspan="1">1月</td>
+  <td rowspan="1" colspan="1">2月</td>
+  <td rowspan="1" colspan="1">3月</td>
+  ```
+
+  字面量顺序、数据里没有的 `3月` 照样出。
+
+截图：`.workbuddy-ai/screenshots/expand-expr-ui-panel.png`。
+
 ### 顺带查清并修掉的一个既有坑（不是 `expand_expr` 引入的）
 
 `expand_expr` 解析失败时我一度看到 `" \| 700"` 这种「全量合计」的假行。查下来是
