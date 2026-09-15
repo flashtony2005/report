@@ -8,6 +8,7 @@
 
 pub mod engine;
 pub mod expr;
+pub mod import;
 pub mod model;
 pub mod store;
 pub mod xlsx;
@@ -35,6 +36,13 @@ pub struct RenderRequest {
     /// 可选：由服务端现查的数据源（走 print-server 已配置的数据库连接，同 /api/data/rows）
     #[serde(default)]
     pub sources: Option<Vec<ReportSource>>,
+}
+
+/// `POST /api/report/import` 的请求体：xlsx 文件的 base64
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ImportRequest {
+    /// xlsx 文件内容的 base64（与 `/print` 的 `pdf` 字段同一套约定）
+    pub base64: String,
 }
 
 /// 报表数据源声明：字段与 /api/data/rows 的 DataQuery 对齐，另加 name 作为数据集名
@@ -443,6 +451,19 @@ pub async fn render_handler(
 }
 
 /// `POST /api/report/xlsx`：渲染并直接返回 xlsx 文件
+/// `POST /api/report/import`：上传 xlsx（base64），返回**模板** JSON
+///
+/// 注意这里返回的是模板（可被设计器直接打开编辑），不是渲染结果——
+/// 导入是「拿别人的 Excel 当模板」，下一步才是配数据源、执行。
+pub async fn import_handler(
+    Json(req): Json<ImportRequest>,
+) -> Result<Json<ReportTemplate>, (StatusCode, String)> {
+    let bytes = crate::util::decode_base64_lenient(&req.base64)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("base64 解码失败：{e}")))?;
+    let tpl = import::import_xlsx(&bytes).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(tpl))
+}
+
 pub async fn xlsx_handler(
     State(state): State<AppState>,
     Json(req): Json<RenderRequest>,
