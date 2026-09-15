@@ -653,6 +653,13 @@ pub struct Engine {
     /// 引用过但从来没被赋值的变量名。**渲染结束后会变成告警**：
     /// 变量名写错却静默当 0 用，是本项目一直在抓的那类静默失败。
     var_misses: RefCell<BTreeSet<String>>,
+    /// 求值期发现、**渲染结束后转成告警**的「写法不受支持」消息（去重）。
+    ///
+    /// 为什么要它：`eval_call` 是 `&self`，没法直接 `self.warnings.push`。
+    /// 而某些「组合写法」目前确实没实现（如 `ACCSUM` 接过滤表达式），
+    /// 老代码是 `_ => Val::Null` —— 结果是**一格空白**，作者只会以为「没数据」。
+    /// 静默变空是本项目一直在抓的那类失败，所以这里记一笔、末尾转告警。
+    unsupported: RefCell<BTreeSet<String>>,
 }
 
 impl Engine {
@@ -685,6 +692,7 @@ impl Engine {
             coord_prefix_cache: RefCell::new(HashMap::new()),
             vars: RefCell::new(BTreeMap::new()),
             var_misses: RefCell::new(BTreeSet::new()),
+            unsupported: RefCell::new(BTreeSet::new()),
         }
     }
 
@@ -771,6 +779,7 @@ impl Engine {
         // 探针（故意不清）证实：去掉它们，跨 sheet 的用例照样通过。
         self.vars.borrow_mut().clear();
         self.var_misses.borrow_mut().clear();
+        self.unsupported.borrow_mut().clear();
 
         // 起始视图不再预先算一份：一个 sheet 可能有多份数据，行下标只在自己那份里
         // 有效，所以改成**按格子自己的数据集**现算（见下面的 `cell_ds_name`）。
@@ -1011,6 +1020,10 @@ impl Engine {
             self.warnings.push(format!(
                 "表达式引用了变量「{name}」，但它从没被 assign 赋值过（按空值处理）"
             ));
+        }
+        // 不受支持的组合写法 → 告警。老行为是静默返回空值，出表就是一格空白
+        for msg in self.unsupported.borrow().iter() {
+            self.warnings.push(msg.clone());
         }
 
         grid.into_iter()
@@ -2594,7 +2607,26 @@ impl Engine {
                     };
                     Val::Num(self.prefix_sum(target, n))
                 }
-                _ => Val::Null,
+                // `ACCSUM(C1[A1:+0]{cond})`：`args[0]` 是 `Expr::Filter` 而非 `Expr::Cell`，
+                // 上面两条分支都接不到。语义上「累计到第几个」依赖「**当前实例**在集合里的
+                // 位置」，而过滤后的集合未必含当前实例（`{}` 的典型用法恰恰是去取另一组 /
+                // 另一年的格），累计基准无从确定 —— 所以这里不臆造语义。
+                //
+                // 但**失败必须可见**：老行为是直接返回 Null，出表就是**一格空白**，
+                // 作者只会以为「没数据」，而不会想到「这个写法不支持」。记一笔（去重），
+                // 由 `expand_sheet` 末尾统一转成 warnings。
+                other => {
+                    self.unsupported.borrow_mut().insert(match other {
+                        Expr::Filter { .. } => "ACCSUM 不支持过滤表达式参数（如 \
+                            `ACCSUM(C1[A1:+0]{条件})`）：累计需要「当前实例在集合里的位置」，\
+                            而过滤后的集合不一定包含当前实例，基准无从确定。该格按空值输出。"
+                            .to_string(),
+                        _ => "ACCSUM 的参数只能是单个单元格引用（如 `ACCSUM(C1[A1:+0])`）；\
+                              其它写法该格按空值输出。"
+                            .to_string(),
+                    });
+                    Val::Null
+                }
             },
             _ => Val::Null,
         }
@@ -4032,6 +4064,74 @@ mod scale {
         assert_ne!(
             g1[0][3].raw_number, g2[0][3].raw_number,
             "带条件的求和与整组合计**不能**相等，否则条件等于没生效"
+        );
+    }
+
+    /// 过滤 × 聚合的**组合**矩阵：每个函数要么算对，要么**报出来**，不能静默。
+    ///
+    /// 上一个提交修的是「条件被静默丢掉」（`{cond}.sum()` 算成了整组）。
+    /// 这条换一个方向：把**所有**聚合函数都与过滤组合一遍，看还有没有别的静默失败。
+    /// 实测抓到一个：`ACCSUM(C1[A1:+0]{cond})` 落到 `_ => Val::Null`，
+    /// 出表是一格**空白** —— 不报错、不告警，作者只会以为「没数据」。
+    ///
+    /// 数据 1..=N，`{$B1 == B1}` 只留本行那一格 → 期望就是本行金额 k+1。
+    #[test]
+    fn filter_combined_with_every_aggregate() {
+        const N: usize = 4;
+
+        // 只留一格 → 这些口径的结果都等于本行金额
+        for expr in [
+            "C1[A1:+0]{$B1 == B1}.sum()",
+            "C1[A1:+0]{$B1 == B1}.avg()",
+            "C1[A1:+0]{$B1 == B1}.min()",
+            "C1[A1:+0]{$B1 == B1}.max()",
+            "SUM(C1[A1:+0]{$B1 == B1})",
+            "AVG(C1[A1:+0]{$B1 == B1})",
+            "MIN(C1[A1:+0]{$B1 == B1})",
+            "MAX(C1[A1:+0]{$B1 == B1})",
+            "PRODUCT(C1[A1:+0]{$B1 == B1})",
+        ] {
+            let sheet = one_group_coord_sheet(Some(expr));
+            let mut engine = Engine::new(one_group_data(N));
+            let grid = engine.expand_sheet(&sheet);
+            for (k, row) in grid.iter().enumerate() {
+                assert_eq!(
+                    row[3].raw_number,
+                    Some((k + 1) as f64),
+                    "{expr}：第 {} 行应是本行金额 {}",
+                    k + 1,
+                    k + 1
+                );
+            }
+        }
+
+        // 只留一格 → 计数类恒为 1、名次恒为 1、占比恒为 1
+        for expr in [
+            "C1[A1:+0]{$B1 == B1}.count()",
+            "COUNT(C1[A1:+0]{$B1 == B1})",
+            "COUNTA(C1[A1:+0]{$B1 == B1})",
+            "RANK(C1[A1:+0]{$B1 == B1})",
+            "PROPORTION(C1[A1:+0]{$B1 == B1})",
+        ] {
+            let sheet = one_group_coord_sheet(Some(expr));
+            let mut engine = Engine::new(one_group_data(N));
+            let grid = engine.expand_sheet(&sheet);
+            for row in grid.iter() {
+                assert_eq!(row[3].raw_number, Some(1.0), "{expr}：只留一格，结果应为 1");
+            }
+        }
+
+        // `ACCSUM` + 过滤：**不支持**（累计基准无从确定），但必须**说出来**，不能只是空白
+        let sheet = one_group_coord_sheet(Some("ACCSUM(C1[A1:+0]{$B1 == B1})"));
+        let mut engine = Engine::new(one_group_data(N));
+        let grid = engine.expand_sheet(&sheet);
+        for row in grid.iter() {
+            assert_eq!(row[3].raw_number, None, "ACCSUM+过滤 目前按空值输出");
+        }
+        assert!(
+            engine.warnings().iter().any(|w| w.contains("ACCSUM 不支持过滤表达式")),
+            "静默变空不行，必须给出告警。实际告警：{:?}",
+            engine.warnings()
         );
     }
 
