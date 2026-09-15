@@ -204,6 +204,45 @@ warnings: （无）
 E2E 固化在 `print-server/scripts/multi-ds-e2e.py`（自带「端口必须是本次进程占的」
 校验 —— 第一次跑就踩到上一次会话留下的旧进程，测的是旧二进制）。
 
+## 2026-09-15：设计器两个新入口的真机验证（浏览器里点过）
+
+上面两个入口（导入 .xlsx / 循环字段）此前**只过了类型检查和纯函数单测**，
+React 接线没实测过 —— 这是我自己标出的验证缺口。补上了：真 Chromium
+（`agent-browser`）跑 `designer-react`（vite:5188）+ 真实 `print-server`（:18888）。
+
+**导入 .xlsx**：往隐藏的 `<input type="file">` 传一份手搓的真实 xlsx →
+页面出现 `已导入「订单明细」，已切到自由模板`，模式自动切到**自由模板**，
+网格里出现 `订单明细报表` / `=ds1.order_no` / `=ds1.amount` / `=ds1.amount.sum()`。
+
+**循环字段**：填 `created_at`，选 `demo.db` + `orders`，存为 `uitest-loop`。
+`GET /api/reports/uitest-loop` 读回 `loop_field: 'created_at'`、
+`sources: [('ds1','orders')]` —— 证明 `rawTemplate` 的时机对了，没有「预览对、存盘丢」。
+
+**闭环的那一下**：直接跑浏览器刚存下的那张报表：
+
+```
+POST /api/reports/uitest-loop/run {}
+warnings: （无）
+
+=== 自由模板 - 2026-09-10 ===      === 自由模板 - 2026-09-09 ===
+SO20260910001 | 1250.50            SO20260910003 | 640.25
+SO20260910002 | 88                 合计 | 640.25
+合计 | 1338.50
+```
+
+UI 里填的循环字段一路走完 **保存 → 读盘 → 渲染**，真出了 N 张表 ——
+不只是「单测里那个纯函数对」。
+
+### 两个必须记住的浏览器坑
+
+1. **antd `Select` 不是原生 `<select>`** —— `agent-browser select` 只改 value，
+   不触发 React 的 onChange，于是 `buildRequest()` 照样报「请先在数据源里选择库和表」
+   （看着像没选上）。正确做法：点开下拉 → `ArrowDown` → 点选项
+   （顺带发现第三个选项 `demo` 一开始被滚动挡住）。
+2. **预览区是 canvas 渲染的**，内容不进 a11y tree，`snapshot` 读不到。
+   所以没在预览里断言，而是**把刚存的报表用 API 跑一遍**来验 —— 同一份磁盘源，
+   结论更硬。
+
 ## 本次实施进度（2026-09-12）
 
 按下面的顺序动手，1–4 已完成，`print-server` 测试 53 个全绿（基线 44 个）。
