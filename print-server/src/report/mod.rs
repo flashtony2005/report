@@ -4724,5 +4724,147 @@ mod tests {
         assert!(w.contains("row_parent"), "自引用应当告警，实际：{w:?}");
     }
 
+
+    /// 一行 N 格，每格只写 `value_expr`（不绑字段、不展开），用来隔离测表达式本身
+    fn expr_row(exprs: &[&str]) -> ReportTemplate {
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), json_rows(vec![serde_json::json!({"a": 1})]));
+        ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "t".into(),
+                page: None,
+                rows: vec![RowTpl {
+                    cells: exprs
+                        .iter()
+                        .map(|e| CellTpl {
+                            pos: None,
+                            value: None,
+                            model: Some(CellModel {
+                                ds: Some("ds1".into()),
+                                value_expr: Some((*e).to_string()),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        })
+                        .collect(),
+                }],
+                loop_field: None,
+            }],
+            datasets,
+        }
+    }
+
+    #[test]
+    fn assign_binds_a_value_the_rest_of_the_sheet_can_read() {
+        // 前一格 assign，后一格用裸名字引用 —— 这就是「变量式 assign」的主链路
+        let resp = render(RenderRequest {
+            template: expr_row(&[r#"assign("rate", 2)"#, "rate * 5"]),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        assert!(
+            resp.warnings.clone().unwrap_or_default().is_empty(),
+            "不该有告警: {:?}",
+            resp.warnings
+        );
+        let got = cell_texts(&resp.sheets[0].rows);
+        assert_eq!(got, vec![vec!["2", "10"]], "{got:#?}");
+    }
+
+    #[test]
+    fn assign_returns_the_value_so_it_composes() {
+        // 返回被赋的值，所以能直接嵌进更大的表达式
+        let resp = render(RenderRequest {
+            template: expr_row(&[r#"assign("x", 3) + 1"#]),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        let got = cell_texts(&resp.sheets[0].rows);
+        assert_eq!(got, vec![vec!["4"]], "{got:#?}");
+    }
+
+    #[test]
+    fn unknown_variable_warns_instead_of_silently_being_null() {
+        // 变量名写错却静默当 0 用，正是本项目一直在抓的那类静默失败
+        let resp = render(RenderRequest {
+            template: expr_row(&["nope * 2"]),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        let w = resp.warnings.clone().unwrap_or_default().join("\n");
+        assert!(w.contains("nope"), "告警要点名变量: {w}");
+        assert!(w.contains("assign"), "要提示用 assign 赋值: {w}");
+    }
+
+    #[test]
+    fn names_that_look_like_cells_are_still_cell_refs() {
+        // 守住 is_cell_name 的判据：`A1` 必须还是格子引用。
+        // 它若被当成变量，这里会变成「告警 + 出空」而不是 10
+        let mut tpl = expr_row(&["A1 * 2"]);
+        tpl.sheets[0].rows[0].cells.insert(
+            0,
+            CellTpl {
+                pos: None,
+                value: Some(JsonValue::from(5)),
+                model: None,
+                ..Default::default()
+            },
+        );
+        let resp = render(RenderRequest {
+            template: tpl,
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        assert!(
+            resp.warnings.clone().unwrap_or_default().is_empty(),
+            "A1 应仍是格子: {:?}",
+            resp.warnings
+        );
+        let got = cell_texts(&resp.sheets[0].rows);
+        assert_eq!(got, vec![vec!["5", "10"]], "{got:#?}");
+    }
+
+    #[test]
+    fn variables_do_not_leak_between_sheets() {
+        // 变量是**本 sheet 作用域**：第二张表不该看到第一张表的赋值
+        let mut tpl = expr_row(&[r#"assign("k", 7)"#]);
+        tpl.sheets.push(SheetTpl {
+            name: "第二张".into(),
+            page: None,
+            rows: vec![RowTpl {
+                cells: vec![CellTpl {
+                    pos: None,
+                    value: None,
+                    model: Some(CellModel {
+                        ds: Some("ds1".into()),
+                        value_expr: Some("k".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+            }],
+            loop_field: None,
+        });
+        let resp = render(RenderRequest {
+            template: tpl,
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        let w = resp.warnings.clone().unwrap_or_default().join("\n");
+        assert!(w.contains("k"), "第二张表引用 k 应告警（没漏过来）: {w}");
+        let got = cell_texts(&resp.sheets[1].rows);
+        assert_eq!(got, vec![vec![""]], "第二张表不该看到 7: {got:#?}");
+    }
+
 }
 

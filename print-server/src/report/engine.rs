@@ -11,7 +11,7 @@ use crate::report::model::*;
 use serde_json::Value as JsonValue;
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// 布局递归深度上限（防御异常模板导致的深递归）
 const MAX_LAYOUT_DEPTH: usize = 256;
@@ -570,6 +570,15 @@ pub struct Engine {
     /// 同一组 N 个明细行共享同一个 anchor → 同一份结果算 N 次 → 缓存命中后
     /// 单次 resolve 缩成「祖链 + HashMap 查表」。
     excel_resolve_cache: RefCell<HashMap<(String, Coord, usize), (Rc<[usize]>, Option<String>)>>,
+
+    /// `assign("name", 值)` 绑定的命名变量，作用域是**本 sheet**。
+    ///
+    /// 用 RefCell 是因为求值是 `&self`（`eval_call` 也是），而赋值要改状态 ——
+    /// 跟上面几个缓存同一个套路。
+    vars: RefCell<BTreeMap<String, JsonValue>>,
+    /// 引用过但从来没被赋值的变量名。**渲染结束后会变成告警**：
+    /// 变量名写错却静默当 0 用，是本项目一直在抓的那类静默失败。
+    var_misses: RefCell<BTreeSet<String>>,
 }
 
 impl Engine {
@@ -597,6 +606,8 @@ impl Engine {
             pos_index: RefCell::new(HashMap::new()),
             deps_done: RefCell::new(HashSet::new()),
             excel_resolve_cache: RefCell::new(HashMap::new()),
+            vars: RefCell::new(BTreeMap::new()),
+            var_misses: RefCell::new(BTreeSet::new()),
         }
     }
 
@@ -677,6 +688,12 @@ impl Engine {
         self.layout_depth = 0;
         self.pos_index.borrow_mut().clear();
         self.deps_done.borrow_mut().clear();
+        // 变量表跟着其它状态一起清：这让 `expand_sheet` 可重复调用。
+        // 注意「变量不跨 sheet」的保证**不在这里** —— 它来自调用方每张 sheet
+        // 新建一个 Engine（`render` 就是这么做的），所以下面两行是防御性的，
+        // 探针（故意不清）证实：去掉它们，跨 sheet 的用例照样通过。
+        self.vars.borrow_mut().clear();
+        self.var_misses.borrow_mut().clear();
 
         // 起始视图不再预先算一份：一个 sheet 可能有多份数据，行下标只在自己那份里
         // 有效，所以改成**按格子自己的数据集**现算（见下面的 `cell_ds_name`）。
@@ -905,6 +922,13 @@ impl Engine {
                 num_format: inst.format.as_ref().and_then(excel_num_format),
                 formula,
             });
+        }
+
+        // 引用了从没赋过值的变量 → 告警。静默当 Null 用会让人以为「算出来就是空的」
+        for name in self.var_misses.borrow().iter() {
+            self.warnings.push(format!(
+                "表达式引用了变量「{name}」，但它从没被 assign 赋值过（按空值处理）"
+            ));
         }
 
         grid.into_iter()
@@ -1184,7 +1208,10 @@ impl Engine {
                 let parts = parts?;
                 format!("IF({},{},{})", parts[0], parts[1], parts[2])
             }
-            Expr::SelfValue | Expr::Filter { .. } | Expr::Dollar(_) | Expr::Array(_) => return None,
+            // 变量在 Excel 里没有对应物（值来自渲染期的 assign），导出成公式会算出别的东西
+            Expr::SelfValue | Expr::Var { .. } | Expr::Filter { .. } | Expr::Dollar(_) | Expr::Array(_) => {
+                return None
+            }
         })
     }
 
@@ -1618,7 +1645,8 @@ impl Engine {
             }
             Expr::Neg(inner) => self.collect_deps(inner, cur, out),
             // `value` 是本格自身，不构成依赖；若在此递归 ensure_value(cur) 会自己等自己
-            Expr::Num(_) | Expr::Str(_) | Expr::SelfValue => {}
+            // 变量不构成格依赖：它的值由 assign 决定，借不到任何格子上
+            Expr::Num(_) | Expr::Str(_) | Expr::SelfValue | Expr::Var { .. } => {}
             // 过滤条件的依赖按当前格收集（候选格是运行期才知道的，无法在此精确展开）
             Expr::Filter { cell, cond } => {
                 self.collect_deps(cell, cur, out);
@@ -1941,6 +1969,15 @@ impl Engine {
             // value 还是 Null，取出来就是 Null，不会递归下去。
             Expr::SelfValue => Val::from_json(self.insts[cur].value.clone()),
 
+            // 命名变量：取 assign 绑上去的那个值。没绑过就记一笔 miss（渲染完变告警）
+            Expr::Var { name } => match self.vars.borrow().get(name) {
+                Some(v) => Val::from_json(v.clone()),
+                None => {
+                    self.var_misses.borrow_mut().insert(name.clone());
+                    Val::Null
+                }
+            },
+
             // 格集过滤：条件以**候选格**为上下文求值（裸 B2 = 候选格的主格），
             // 于是 `outer` 传当前格，`$B2` 才能回到当前格的主格。
             Expr::Filter { cell, cond } => {
@@ -2042,6 +2079,22 @@ impl Engine {
 
     fn eval_call(&self, name: &str, args: &[Expr], cur: usize, outer: usize) -> Val {
         match name {
+            // assign("name", 值)：把值绑到本 sheet 的命名变量上，之后在表达式里
+            // 直接写这个名字就能引用。**返回被赋的值**，所以能嵌进更大的表达式。
+            //
+            // 这是 NopReport 自定义函数那条差距的**轻量版**：那边是在【展开前】
+            // 脚本里 `assign("myFunc", myFunc)` 绑一个真正的 JS 函数；我们这里绑的是
+            // 值，够覆盖「把公共常量 / 中间结果提出来复用」，且不需要内嵌脚本引擎。
+            "ASSIGN" if args.len() == 2 => {
+                let key = match &args[0] {
+                    Expr::Str(s) => s.clone(),
+                    // 名字不是字面量：求值前没法知道该绑到哪个名字，只能放弃绑定
+                    _ => return Val::Null,
+                };
+                let v = self.eval_ast(&args[1], cur, outer).scalar(self);
+                self.vars.borrow_mut().insert(key, val_to_json(&v));
+                v
+            }
             "IF" if args.len() == 3 => {
                 let c = self.eval_ast(&args[0], cur, outer).scalar(self);
                 let branch = if c.truthy() { &args[1] } else { &args[2] };
@@ -2464,9 +2517,23 @@ fn expr_is_cur_independent(e: &Expr) -> bool {
             expr_is_cur_independent(lhs) && expr_is_cur_independent(rhs)
         }
         Expr::Neg(inner) | Expr::Dollar(inner) => expr_is_cur_independent(inner),
+        // 变量的值可能来自「某一行的 assign」，跨行复用依赖集不安全 → 保守按「有关」
         Expr::Num(_) | Expr::Str(_) | Expr::SelfValue => true,
+        Expr::Var { .. } => false,
         Expr::Array(items) => items.iter().all(expr_is_cur_independent),
         Expr::Filter { .. } => false,
+    }
+}
+
+/// `Val` → JSON，只为把 `assign` 的值存进变量表。
+/// `Set` 走不到这里（调用方都先 `scalar()` 过了），落到 Null 而不是 panic。
+fn val_to_json(v: &Val) -> JsonValue {
+    match v {
+        Val::Num(n) => JsonValue::from(*n),
+        Val::Str(s) => JsonValue::String(s.clone()),
+        Val::Bool(b) => JsonValue::Bool(*b),
+        Val::Null => JsonValue::Null,
+        Val::Set { .. } => JsonValue::Null,
     }
 }
 

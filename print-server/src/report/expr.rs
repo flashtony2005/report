@@ -80,6 +80,11 @@ pub enum Expr {
     Str(String),
     /// 单元格引用（可带层次坐标与后缀）
     Cell { target: String, coord: Option<Coord>, prop: Option<Prop> },
+    /// 命名变量：`assign("name", 值)` 绑定过之后，用裸名字引用它。
+    ///
+    /// 跟格子的区分靠**长相**：格子是「字母 + 数字」（`A1` / `B3` / `AA10`），
+    /// 其余裸标识符一律当变量。所以别把变量起成 `x1` 这种名字。
+    Var { name: String },
     /// 函数调用，`IF` / `SUM` / `PROPORTION` 等
     Call { name: String, args: Vec<Expr> },
     /// `value`：指代本格自身的值，仅 `format_expr` 里有意义
@@ -105,6 +110,24 @@ pub enum Expr {
 
 #[derive(Debug, Clone)]
 pub struct ParseError(pub String);
+
+/// 像不像格子名：**至少一个字母 + 至少一个数字，且只有这两段**（`A1` / `B3` / `AA10`）。
+///
+/// 用来把裸标识符切成「格子」和「变量」两类。写成 `sum`、`total`、`rate_pct`
+/// 的都是变量；写成 `x1` 的会被判成格子 —— 这是取舍：宁可让少数变量名不可用，
+/// 也不要让 `B3` 这种最常见的写法变得不确定。
+pub fn is_cell_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() && b[i].is_ascii_alphabetic() {
+        i += 1;
+    }
+    let letters = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    letters > 0 && i > letters && i == b.len()
+}
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -369,6 +392,11 @@ impl<'a> Parser<'a> {
         // `value`：本格自身的值，只有展示期表达式（format_expr）用得上
         if name.eq_ignore_ascii_case("value") {
             return Ok(Expr::SelfValue);
+        }
+
+        // 不像格子的裸标识符 → 命名变量（见 `Expr::Var` 的判据说明）
+        if !is_cell_name(&name) {
+            return Ok(Expr::Var { name });
         }
 
         // 单元格引用
