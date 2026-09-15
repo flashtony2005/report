@@ -4001,6 +4001,12 @@ mod scale {
             // 取反：留下 N-1 格 → 总计减掉本行
             ("C1[A1:+0]{$B1 != B1}.sum()", Box::new(move |k| total - (k + 1) as f64)),
             ("C1[A1:+0]{$B1 != B1}.count()", Box::new(|_k| (N - 1) as f64)),
+            // **函数调用式**：过滤写在参数里，走的是 `arg_numbers` 而不是
+            // `Filter` 分支的聚合路径 —— 另一条代码路径，得单独覆盖。
+            // （实测这条本来就是对的，上面那条属性式才是坏的；两条都留着防止将来互带偏。）
+            ("SUM(C1[A1:+0]{$B1 == B1})", Box::new(|k| (k + 1) as f64)),
+            ("COUNT(C1[A1:+0]{$B1 == B1})", Box::new(|_k| 1.0)),
+            ("SUM(C1[A1:+0]{$B1 != B1})", Box::new(move |k| total - (k + 1) as f64)),
         ];
 
         for (expr, want) in cases {
