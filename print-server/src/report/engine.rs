@@ -2567,6 +2567,7 @@ mod parent_tests {
                         .collect(),
                 })
                 .collect(),
+            loop_field: None,
         }
     }
 
@@ -2804,6 +2805,7 @@ mod scale {
                     ],
                 },
             ],
+            loop_field: None,
         }
     }
 
@@ -2859,6 +2861,7 @@ mod scale {
                     ],
                 },
             ],
+            loop_field: None,
         }
     }
 
@@ -3340,6 +3343,7 @@ mod scale {
                     ),
                 ],
             }],
+            loop_field: None,
         }
     }
 

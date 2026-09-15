@@ -121,48 +121,61 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
         for w in ds_warns {
             warnings.push(format!("[{}] {}", sheet.name, w));
         }
-        let mut engine = engine::Engine::new(ds);
-        let rows = engine.expand_sheet(sheet);
-        for w in engine.warnings() {
-            warnings.push(format!("[{}] {}", sheet.name, w));
-        }
-        if want_dump {
-            dumps.push(format!("=== sheet: {} ===\n{}", sheet.name, engine.dump_text()));
-        }
-        if let Some(cfg) = &sheet.page {
-            let grids = paginate(&rows, cfg);
-            let n = grids.len();
-            // 公式是按**整表**的行列位置生成的，逐页复制后行号就对不上了——
-            // 第 2 页的 SUM(C2:C5) 只会算到本页那几行，跟同一格显示的静态值不一致。
-            // 半对不对的公式比静态值危险，多页时统一回落写值并告警。
-            if n > 1 && grids.iter().any(|g| g.iter().any(|r| r.iter().any(|c| c.formula.is_some()))) {
-                warnings.push(format!(
-                    "[{}] 分页导出时公式坐标按整表生成、与逐页复制后的行号不一致，已回落写值",
-                    sheet.name
-                ));
+        // 循环变量：一个取值一张表。suffix 为空表示没开循环，仍按单张表走。
+        let groups = loop_groups(&ds, sheet.loop_field.as_deref(), &sheet.name, &mut warnings);
+        for (suffix, sub_ds) in groups {
+            let sheet_name = if suffix.is_empty() {
+                sheet.name.clone()
+            } else {
+                format!("{} - {}", sheet.name, suffix)
+            };
+            let mut engine = engine::Engine::new(sub_ds);
+            let rows = engine.expand_sheet(sheet);
+            for w in engine.warnings() {
+                warnings.push(format!("[{}] {}", sheet_name, w));
             }
-            for (i, grid) in grids.into_iter().enumerate() {
-                let rows = if n > 1 {
-                    grid.into_iter()
-                        .map(|r| {
-                            r.into_iter()
-                                .map(|mut c| {
-                                    c.formula = None;
-                                    c
-                                })
-                                .collect()
-                        })
-                        .collect()
-                } else {
-                    grid
-                };
-                all_pages.push(RenderedSheet {
-                    name: format!("{} ({}/{})", sheet.name, i + 1, n),
-                    rows,
-                });
+            if want_dump {
+                dumps.push(format!("=== sheet: {} ===\n{}", sheet_name, engine.dump_text()));
             }
+            if let Some(cfg) = &sheet.page {
+                let grids = paginate(&rows, cfg);
+                let n = grids.len();
+                // 公式是按**整表**的行列位置生成的，逐页复制后行号就对不上了——
+                // 第 2 页的 SUM(C2:C5) 只会算到本页那几行，跟同一格显示的静态值不一致。
+                // 半对不对的公式比静态值危险，多页时统一回落写值并告警。
+                if n > 1
+                    && grids
+                        .iter()
+                        .any(|g| g.iter().any(|r| r.iter().any(|c| c.formula.is_some())))
+                {
+                    warnings.push(format!(
+                        "[{}] 分页导出时公式坐标按整表生成、与逐页复制后的行号不一致，已回落写值",
+                        sheet_name
+                    ));
+                }
+                for (i, grid) in grids.into_iter().enumerate() {
+                    let rows = if n > 1 {
+                        grid.into_iter()
+                            .map(|r| {
+                                r.into_iter()
+                                    .map(|mut c| {
+                                        c.formula = None;
+                                        c
+                                    })
+                                    .collect()
+                            })
+                            .collect()
+                    } else {
+                        grid
+                    };
+                    all_pages.push(RenderedSheet {
+                        name: format!("{} ({}/{})", sheet_name, i + 1, n),
+                        rows,
+                    });
+                }
+            }
+            sheets.push(RenderedSheet { name: sheet_name, rows });
         }
-        sheets.push(RenderedSheet { name: sheet.name.clone(), rows });
     }
     let html = to_html(&sheets);
     let dump = if want_dump { Some(dumps.join("\n")) } else { None };
@@ -174,6 +187,73 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
     let pages = if all_pages.is_empty() { None } else { Some(all_pages) };
     let warnings = if warnings.is_empty() { None } else { Some(warnings) };
     Ok(RenderResponse { sheets, html, dump, pages, pages_html, warnings })
+}
+
+/// 循环变量：按 `field` 的**不同取值**把数据集分组，一个取值渲染出一张 sheet。
+///
+/// 这是 NopReport「循环变量出 N 个 sheet」那一层，用来做
+/// 「一个客户一张表 / 一个部门一张表 / 一个员工一份档案」。
+/// 每组只看到属于自己的那几行，所以组内的 `=^ds1.xxx` 只会展开本组的行
+/// —— 配合 UNNEST 就是档案式报表：按人循环，表内再摊平他的子表。
+///
+/// 返回 `(分组名, 该组数据)`；**分组名为空串表示没开循环**，调用方照旧出单张表。
+/// 分组顺序 = 取值在数据集里首次出现的顺序（不重排，跟源数据一致）。
+fn loop_groups(
+    ds: &DataSet,
+    field: Option<&str>,
+    sheet_name: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<(String, DataSet)> {
+    let field = match field {
+        Some(f) if !f.trim().is_empty() => f,
+        _ => return vec![(String::new(), ds.to_vec())],
+    };
+    // 空数据集分不出组，但仍出一张空表：xlsx 至少要有一个 worksheet，
+    // 整个报表 0 张 sheet 会在导出时直接报错
+    if ds.is_empty() {
+        return vec![(String::new(), ds.to_vec())];
+    }
+    // 字段压根不存在 —— 多半是字段名写错了。宁可告警 + 退回单张表，
+    // 也不要按「(空)」出一张看起来正常、其实什么都没筛的空表
+    if !ds.iter().any(|r| r.contains_key(field)) {
+        warnings.push(format!(
+            "[{sheet_name}] 循环字段「{field}」在数据集中不存在，已按单张表渲染"
+        ));
+        return vec![(String::new(), ds.to_vec())];
+    }
+
+    let mut order: Vec<String> = Vec::new();
+    let mut map: BTreeMap<String, DataSet> = BTreeMap::new();
+    for row in ds {
+        let key = match row.get(field) {
+            Some(JsonValue::Null) | None => "(空)".to_string(),
+            Some(JsonValue::String(s)) => s.clone(),
+            Some(JsonValue::Number(n)) => {
+                if let Some(i) = n.as_i64() {
+                    i.to_string()
+                } else if let Some(u) = n.as_u64() {
+                    u.to_string()
+                } else {
+                    // 跟格子渲染一个规矩：整数不拖 .0（Rust 的 f64 Display 已经如此）
+                    format!("{}", n.as_f64().unwrap_or(0.0))
+                }
+            }
+            Some(JsonValue::Bool(b)) => b.to_string(),
+            Some(other) => other.to_string(),
+        };
+        if !map.contains_key(&key) {
+            order.push(key.clone());
+        }
+        map.entry(key).or_default().push(row.clone());
+    }
+
+    let mut out = Vec::with_capacity(order.len());
+    for k in order {
+        if let Some(v) = map.remove(&k) {
+            out.push((k, v));
+        }
+    }
+    out
 }
 
 /// 页面级分页：把展开后的网格按数据行数切页，表头/表尾每页重复
@@ -925,6 +1005,7 @@ pub fn sample_template() -> ReportTemplate {
                 ],
             },
         ],
+        loop_field: None,
     };
 
     ReportTemplate { sheets: vec![sheet], datasets }
@@ -984,6 +1065,7 @@ pub fn cross_tab_template() -> ReportTemplate {
                 ],
             },
         ],
+        loop_field: None,
     };
     ReportTemplate { sheets: vec![sheet], datasets }
 }
@@ -1043,6 +1125,7 @@ pub fn cross_tab_two_metrics_template() -> ReportTemplate {
                 ],
             },
         ],
+        loop_field: None,
     };
     ReportTemplate { sheets: vec![sheet], datasets }
 }
@@ -1136,6 +1219,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
                 ],
             },
         ],
+        loop_field: None,
     };
 
     ReportTemplate { sheets: vec![sheet], datasets }
@@ -1226,6 +1310,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
                 ],
             },
         ],
+        loop_field: None,
     };
 
     ReportTemplate { sheets: vec![sheet], datasets }
@@ -1359,6 +1444,7 @@ pub fn cross_tab_multi_level_template() -> ReportTemplate {
                 ],
             },
         ],
+        loop_field: None,
     };
     ReportTemplate { sheets: vec![sheet], datasets }
 }
@@ -1432,6 +1518,7 @@ mod tests {
                         merge_to_end: false,
                     }],
                 }],
+                loop_field: None,
             }],
             datasets: BTreeMap::new(),
         }
@@ -1617,6 +1704,7 @@ mod tests {
                         ],
                     },
                 ],
+                loop_field: None,
             }],
             datasets,
         };
@@ -1670,6 +1758,7 @@ mod tests {
                         CellTpl { pos: None, value: None, model: m("C1"), merge_across: 0, merge_down: 0, merge_to_end: false },
                     ],
                 }],
+                loop_field: None,
             }],
             datasets,
         };
@@ -1732,6 +1821,7 @@ mod tests {
                         ],
                     },
                 ],
+                loop_field: None,
             }],
             datasets,
         };
@@ -1818,6 +1908,7 @@ mod tests {
                         ],
                     },
                 ],
+                loop_field: None,
             }],
             datasets,
         };
@@ -1886,6 +1977,7 @@ mod tests {
                         ],
                     },
                 ],
+                loop_field: None,
             }],
             datasets,
         };
@@ -1962,6 +2054,7 @@ mod tests {
                         ],
                     },
                 ],
+                loop_field: None,
             }],
             datasets,
         };
@@ -2093,6 +2186,7 @@ mod tests {
                         ],
                     },
                 ],
+                loop_field: None,
             }],
             datasets,
         };
@@ -2149,6 +2243,7 @@ mod tests {
                     // 子格在下一个模板行，且显式挂到 A1 下面
                     RowTpl { cells: vec![bind("city", true, Some("A1"))] },
                 ],
+                loop_field: None,
             }],
             datasets,
         };
@@ -2231,6 +2326,7 @@ mod tests {
                         .map(|(ds, f)| bind(ds, f))
                         .collect(),
                 }],
+                loop_field: None,
             }],
             datasets,
         }
@@ -2332,6 +2428,7 @@ mod tests {
                             .collect(),
                     },
                 ],
+                loop_field: None,
             }],
             datasets,
         }
@@ -2400,6 +2497,182 @@ mod tests {
         );
     }
 
+    fn json_rows(rows: Vec<JsonValue>) -> DataSet {
+        rows.into_iter()
+            .map(|v| {
+                v.as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, x)| (k.clone(), x.clone()))
+                    .collect::<BTreeMap<String, JsonValue>>()
+            })
+            .collect()
+    }
+
+    /// 循环变量模板：A1 是分组字段本身（不展开，取本组值），A2 展开明细。
+    fn loop_template(loop_field: Option<&str>, ds: DataSet) -> ReportTemplate {
+        let bind = |field: &str, expand: bool| CellTpl {
+            pos: None,
+            value: None,
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some(field.into()),
+                agg: None,
+                expand_type: if expand { Some(ExpandType::R) } else { None },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), ds);
+        ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "分区".into(),
+                page: None,
+                rows: vec![
+                    RowTpl { cells: vec![bind("region", false)] },
+                    RowTpl { cells: vec![bind("city", true)] },
+                ],
+                loop_field: loop_field.map(|s| s.to_string()),
+            }],
+            datasets,
+        }
+    }
+
+    /// 华东出现两次且不相邻 —— 用来验证分组是「按值聚合」而不是「按行切段」
+    fn region_rows() -> DataSet {
+        json_rows(vec![
+            serde_json::json!({"region": "华东", "city": "上海"}),
+            serde_json::json!({"region": "华南", "city": "广州"}),
+            serde_json::json!({"region": "华东", "city": "杭州"}),
+            serde_json::json!({"region": "华北", "city": "北京"}),
+        ])
+    }
+
+    #[test]
+    fn loop_field_splits_one_sheet_into_n() {
+        let resp = render(RenderRequest {
+            template: loop_template(Some("region"), region_rows()),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+
+        // 顺序 = 取值在数据里首次出现的顺序（不是排序后的顺序）
+        let names: Vec<String> = resp.sheets.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(names, vec!["分区 - 华东", "分区 - 华南", "分区 - 华北"], "{names:?}");
+
+        // 每张表只看到自己那几行；华东的两行不相邻也能聚到一起
+        let east = lines(&resp.sheets[0].rows).join("\n");
+        assert!(east.contains("华东"), "{east}");
+        assert!(east.contains("上海") && east.contains("杭州"), "华东应有上海+杭州: {east}");
+        assert!(!east.contains("广州"), "华南的广州不该串到华东表: {east}");
+
+        let south = lines(&resp.sheets[1].rows).join("\n");
+        assert!(south.contains("广州"), "{south}");
+        assert!(!south.contains("上海"), "华东不该串到华南表: {south}");
+    }
+
+    #[test]
+    fn loop_field_off_keeps_a_single_sheet() {
+        let resp = render(RenderRequest {
+            template: loop_template(None, region_rows()),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        assert_eq!(resp.sheets.len(), 1);
+        assert_eq!(resp.sheets[0].name, "分区", "没开循环时不该加后缀");
+    }
+
+    #[test]
+    fn loop_field_missing_warns_and_falls_back_to_one_sheet() {
+        let resp = render(RenderRequest {
+            template: loop_template(Some("regionn"), region_rows()),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        assert_eq!(resp.sheets.len(), 1, "字段写错应退回单张表，而不是出一张假空表");
+        assert_eq!(resp.sheets[0].name, "分区");
+        let w = resp.warnings.clone().unwrap_or_default().join("\n");
+        assert!(w.contains("regionn"), "告警应点名写错的字段: {w}");
+        assert!(w.contains("不存在"), "应说明字段在数据集里不存在: {w}");
+    }
+
+    #[test]
+    fn loop_field_empty_dataset_still_yields_one_sheet() {
+        // 0 张 sheet 会让 xlsx 导出直接失败（至少得有一个 worksheet）
+        let resp = render(RenderRequest {
+            template: loop_template(Some("region"), vec![]),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        assert_eq!(resp.sheets.len(), 1, "空数据集不能产出 0 张 sheet");
+        assert_eq!(resp.sheets[0].name, "分区");
+    }
+
+    #[test]
+    fn loop_field_composes_with_unnest() {
+        // 档案式报表：按人循环出 N 张表，表内再摊平他的 educations
+        let bind = |field: &str, expand: bool| CellTpl {
+            pos: None,
+            value: None,
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some(field.into()),
+                agg: None,
+                expand_type: if expand { Some(ExpandType::R) } else { None },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut datasets = BTreeMap::new();
+        datasets.insert(
+            "ds1".to_string(),
+            json_rows(vec![
+                serde_json::json!({"name": "张三", "educations": [
+                    {"school": "清华", "year": 2000}, {"school": "北大", "year": 2004}
+                ]}),
+                serde_json::json!({"name": "李四", "educations": [
+                    {"school": "浙大", "year": 2010}
+                ]}),
+            ]),
+        );
+        let resp = render(RenderRequest {
+            template: ReportTemplate {
+                sheets: vec![SheetTpl {
+                    name: "档案".into(),
+                    page: None,
+                    rows: vec![
+                        RowTpl { cells: vec![bind("name", false)] },
+                        RowTpl { cells: vec![bind("educations.school", true)] },
+                    ],
+                    loop_field: Some("name".to_string()),
+                }],
+                datasets,
+            },
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+
+        let names: Vec<String> = resp.sheets.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(names, vec!["档案 - 张三", "档案 - 李四"], "{names:?}");
+        let zs = lines(&resp.sheets[0].rows).join("\n");
+        assert!(zs.contains("张三") && zs.contains("清华") && zs.contains("北大"), "{zs}");
+        assert!(!zs.contains("浙大"), "李四的经历不该串到张三表: {zs}");
+        let ls = lines(&resp.sheets[1].rows).join("\n");
+        assert!(ls.contains("李四") && ls.contains("浙大"), "{ls}");
+        assert!(!ls.contains("清华"), "张三的经历不该串到李四表: {ls}");
+    }
+
     /// 规则 3 的验模板：B2 向下合并一格把 A2 的展开范围撑到第 3 行，
     /// 第 3 行只留 C 列一个无父格格子（`c3_row_parent` 可指定它的 `row_parent`）。
     fn render_rule3_template(c3_row_parent: Option<&str>) -> RenderResponse {
@@ -2462,6 +2735,7 @@ mod tests {
                         cells: vec![blank(), blank(), bind("amount", false, true, 0, c3_row_parent)],
                     },
                 ],
+                loop_field: None,
             }],
             datasets,
         };
@@ -2647,6 +2921,7 @@ mod tests {
                             merge_to_end: false,
                         }],
                     }],
+                    loop_field: None,
                 }],
                 datasets,
             }
@@ -2731,7 +3006,7 @@ mod tests {
             rows.push(RowTpl { cells: vec![txt(&format!("(预留{})", i + 1)), txt("")] });
         }
         render(RenderRequest {
-            template: ReportTemplate { sheets: vec![SheetTpl { name: "t".into(), page: None, rows }], datasets },
+            template: ReportTemplate { sheets: vec![SheetTpl { name: "t".into(), page: None, rows, loop_field: None }], datasets },
             datasets: None,
             sources: None,
             dump: None,
@@ -2839,6 +3114,7 @@ mod tests {
                             }],
                         },
                     ],
+                    loop_field: None,
                 }],
                 datasets,
             }
@@ -2912,6 +3188,7 @@ mod tests {
                         CellTpl { pos: None, value: None, model: m(None, false, Some("RANK(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
                     ],
                 }],
+                loop_field: None,
             }],
             datasets,
         };
@@ -2971,6 +3248,7 @@ mod tests {
                         cell(None, cm(None, None, Some("D3.sum(("))),
                     ],
                 }],
+                loop_field: None,
             }],
             datasets,
         };
@@ -3144,6 +3422,7 @@ mod tests {
                     ],
                 },
             ],
+            loop_field: None,
         };
         let mut datasets = BTreeMap::new();
         datasets.insert("ds1".to_string(), ds);
@@ -3350,6 +3629,7 @@ mod tests {
                         merge_to_end: false,
                     }],
                 }],
+                loop_field: None,
             }],
             datasets: BTreeMap::new(),
         }
@@ -3491,6 +3771,7 @@ mod tests {
                         c(cm(None, false, Some("B1"), Some(value_expr), None)),
                     ],
                 }],
+                loop_field: None,
             }],
             datasets,
         }
@@ -3638,6 +3919,7 @@ mod tests {
                         ],
                     },
                 ],
+                loop_field: None,
             }],
             datasets,
         };
@@ -3884,6 +4166,7 @@ mod tests {
                     ],
                 },
             ],
+            loop_field: None,
         };
         let tpl = ReportTemplate { sheets: vec![sheet], datasets };
         let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None }).unwrap();
@@ -3939,6 +4222,7 @@ mod tests {
                     merge_to_end: false,
                 }],
             }],
+            loop_field: None,
         };
         let tpl = ReportTemplate { sheets: vec![sheet], datasets };
         let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None }).unwrap();
@@ -4011,6 +4295,7 @@ mod tests {
                         },
                     ],
                 }],
+                loop_field: None,
             };
             let resp = render(RenderRequest {
                 template: ReportTemplate { sheets: vec![sheet], datasets },
@@ -4119,6 +4404,7 @@ mod tests {
                     },
                 ],
             }],
+            loop_field: None,
         };
         let resp = render(RenderRequest {
             template: ReportTemplate { sheets: vec![sheet], datasets },

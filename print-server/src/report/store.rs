@@ -544,6 +544,7 @@ mod tests {
                     cells: vec![mk(true, None), mk(true, Some("A1"))],
                 }],
                 page: None,
+                loop_field: None,
             }],
             datasets: Default::default(),
         };

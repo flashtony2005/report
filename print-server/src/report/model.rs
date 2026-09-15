@@ -179,6 +179,12 @@ pub struct SheetTpl {
     pub rows: Vec<RowTpl>,
     /// 分页配置；缺省不分页
     pub page: Option<PageConfig>,
+    /// 循环变量：按该字段的**不同取值**把本 sheet 复制成 N 张，每值一张，
+    /// 每张只看到属于该值的那些行 —— 即「一个客户一张表 / 一个部门一张表」。
+    ///
+    /// 生成的 sheet 名是 `{name} - {取值}`。取值按在数据里**首次出现**的顺序排列。
+    /// 字段在数据集中不存在时告警并退回单张表（不静默出空表）。
+    pub loop_field: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

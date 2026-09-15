@@ -137,6 +137,11 @@ export interface SheetTpl {
   rows: RowTpl[]
   /** 分页配置；缺省不分页 */
   page?: PageConfig | null
+  /**
+   * 循环变量：按该字段的不同取值把本 sheet 复制成 N 张，每值一张，
+   * 每张只看到属于该值的行（「一个客户一张表」）。生成的 sheet 名为 `原名 - 取值`。
+   */
+  loop_field?: string | null
 }
 
 export interface ReportTemplate {

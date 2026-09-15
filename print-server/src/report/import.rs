@@ -204,6 +204,7 @@ pub fn import_xlsx(bytes: &[u8]) -> Result<ReportTemplate, String> {
             name: name.clone(),
             page: None,
             rows: rows.into_iter().map(|cells| RowTpl { cells }).collect(),
+            loop_field: None,
         });
     }
 
