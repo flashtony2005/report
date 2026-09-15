@@ -42,3 +42,6 @@ Thumbs.db
 
 # 报表定义文件（用户数据：含本地库路径，可能含连接信息；origin 是公开仓库）
 print-server/reports/
+
+# 本机覆盖配置（每台机器路径不同，例如 F:\... 这种，不该进公开仓库）
+*.local.json
