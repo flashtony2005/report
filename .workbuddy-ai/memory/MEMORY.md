@@ -143,7 +143,7 @@ cd designer-react && NODE_OPTIONS="--require /Users/lushaohui/project/report/scr
 重跑 → `git stash pop`，对比错误集合与行号偏移。本次实测：报错完全一致、
 只是行号被自己新增的行推移，**确认既有**，于是敢提交。
 
-## 剥 Univer 公式引擎要连带改三件事（漏一个就静默坏）
+## 剥 Univer 公式引擎要连带改四件事（漏一个就静默坏）
 
 1. **docs + docs-ui 插件不能省**——sheets-ui 的单元编辑器依赖
    `univer.editor.service`（定义在 docs-ui）。少了异步抛 `[redi] Expect 1
@@ -153,6 +153,14 @@ cd designer-react && NODE_OPTIONS="--require /Users/lushaohui/project/report/scr
    没 CSS 根塌成 22px（sheet 标签条）、canvas 0 高，同样没报错。
    按依赖顺序 import：design → ui → docs-ui → sheets-ui。
 3. `createUniver` 类型上 `presets` 必填，不传要 `presets: []` 占位。
+4. **语言包要自己带**（preset 会捎带一张合并好的表，自己拼就没人管了）。
+   少了不报错、界面照画，但 `LocaleService` 没初始化 → 任何走
+   `syncExecuteCommand` 的命令都会在
+   `SheetPermissionCheckController._getPermissionCheck` 抛
+   `[LocaleService]: Locale not initialized`（`setValue` 就是一个）。
+   **表现是「画布看着好好的，一改格子就静默失败」**，界面层完全看不出来。
+   按插件逐个 import zh-CN 再 `mergeLocales`：
+   design → ui → docs-ui → sheets → sheets-ui。
 
 配方：把 preset-sheets-core 的插件表照抄，只扣掉 rpc / engine-formula /
 sheets-formula(-ui) / sheets-numfmt(-ui)。详见 `univerFormulaFree.ts` 顶部注释。
