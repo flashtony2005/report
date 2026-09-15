@@ -72,6 +72,21 @@
 **已知边界**：合并只取左上格的文本；`a.b` 两段路径按 `ds.field` 解，
 嵌套数组要写全 `ds.数组名.字段名`（语法固有歧义，宁可确定也不猜）。
 
+**设计器按钮**（同日补上，之前只有 API）：「导入 .xlsx」→ 选文件 →
+`FileReader` 读成 base64 → `POST /api/report/import` → 拿回的模板灌进
+**自由模板**网格（它表达能力最全，进去还能逐格改）。多 sheet 的 xlsx
+只取第一张，并**明确提示其余 N 张没进来**，不假装全导了。
+
+两个容易踩的点，都已处理：
+
+- 二进制转 base64 走**分块** `String.fromCharCode`（一次 spread 整个 buffer
+  会在大文件上爆栈）。已用 102400 字节、覆盖全部 256 种字节值的样本比对过
+  Node 与 Python 的编码结果**完全一致**，不是「看着像」。
+- `<input type="file">` 的 value 必须清空，否则连着选同一个文件不触发 change。
+
+E2E：`print-server/scripts/import-xlsx-e2e.py`（用标准库 zipfile 手搓一份
+真实 xlsx 走 HTTP，断言合并 / 字面量 / 字段 / 方向 / 聚合都对）。
+
 ## 2026-09-15：循环变量出 N 个 sheet（`SheetTpl.loop_field`）
 
 原本标 ❌ 的第 2 项，也已补上。做法很轻：`SheetTpl` 加一个 `loop_field`，
@@ -97,6 +112,14 @@ xlsx 导出后读 `xl/workbook.xml` 确认 sheet 名真的写进文件了，不�
 **四个方向的探针都验过能变红**：把整份数据发给每个分组（串数据，
 华东/华南两条用例同时红）、改成字典序（顺序红）、去掉「字段不存在」
 告警（告警红）、关掉分组（表数红）。测试 145 → **150**。
+
+**设计器输入框**（同日补上）：「循环字段」跟分页那排开关放一起。
+它打在 `SheetTpl.loop_field` 上、**不在 `ReportOptions` 里**，所以
+`buildRequest` 必须在 `const rawTemplate = template` **之前**套
+`withLoopField` —— 套在之后就会「预览对、存盘丢」。打开已存报表时
+从 `template.sheets[0].loop_field` 回填（不是从 options 读）。
+`withLoopField` 对空串/空白**原样返回**，存盘文件里不留 `loop_field: ''`。
+三向探针（不 trim / 空值也写 / 只写第一张 sheet）都变红。测试 117 → **121**。
 
 ## 2026-09-15：一个 sheet 多个数据集（`Engine::new_multi` + `CellModel.join_on`）
 

@@ -1699,6 +1699,24 @@ export function withExportFormula(tpl: ReportTemplate, on = true): ReportTemplat
 }
 
 /**
+ * 循环变量：按该字段的**不同取值**把 sheet 复制成 N 张（一个客户一张表）。
+ *
+ * 空值 / 空串 / 全空白表示不开循环 —— **原样返回，不写字段**，
+ * 这样存盘文件里不会留一个空字符串的 `loop_field`。
+ *
+ * 打在**每张** sheet 上：本设计器一次只出一张表，多 sheet 的情况
+ * （导入 xlsx 得来的模板另说）交到这里时，语义就是「这些表都按这个字段循环」。
+ */
+export function withLoopField(tpl: ReportTemplate, loopField?: string | null): ReportTemplate {
+  const f = (loopField ?? '').trim()
+  if (!f) return tpl
+  return {
+    ...tpl,
+    sheets: tpl.sheets.map((s) => ({ ...s, loop_field: f })),
+  }
+}
+
+/**
  * 展开控制：最少条数 / 最多条数 / 空数据集时是否保留。
  *
  * 三个属性**打在不同层级上**，这是本函数存在的唯一理由：

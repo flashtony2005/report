@@ -43,6 +43,7 @@ import {
   validateTemplate,
   withExpandControl,
   withExportFormula,
+  withLoopField,
   type CellTpl,
   type ReportTemplate,
   type TplNode,
@@ -1675,5 +1676,42 @@ describe('自由模板：非线性语义画进网格', () => {
     expect(parentPosOf(undefined)).toEqual([])
     // 左右主格写同一格时只点亮一次
     expect(parentPosOf(cell(null, { row_parent: 'A2', col_parent: 'A2' }))).toEqual(['A2'])
+  })
+})
+
+describe('withLoopField：循环变量出 N 张表', () => {
+  const mk = (value: string | null, model?: CellTpl['model']): CellTpl => ({ value, model })
+  const tpl = (): ReportTemplate => ({
+    sheets: [
+      { name: 'A', rows: [{ cells: [mk(null, { ds: 'ds1', field: 'city', expand_type: 'r' })] }] },
+      { name: 'B', rows: [{ cells: [mk(null, { ds: 'ds1', field: 'name' })] }] },
+    ],
+  })
+
+  it('开了循环就给每张 sheet 写上 loop_field', () => {
+    const out = withLoopField(tpl(), 'region')
+    expect(out.sheets.map((s) => s.loop_field)).toEqual(['region', 'region'])
+  })
+
+  it('没开循环时原样返回，不留空字符串', () => {
+    // 存盘文件里不该出现 loop_field: '' —— 那会让打开时的「是否开循环」判断变模糊
+    const src = tpl()
+    expect(withLoopField(src, '')).toBe(src)
+    expect(withLoopField(src, null)).toBe(src)
+    expect(withLoopField(src, undefined)).toBe(src)
+    expect(withLoopField(src, '   ')).toBe(src)
+    expect(src.sheets[0].loop_field).toBeUndefined()
+  })
+
+  it('前后空白要 trim', () => {
+    expect(withLoopField(tpl(), '  region  ').sheets[0].loop_field).toBe('region')
+  })
+
+  it('只动 loop_field，rows 和格子原样不动', () => {
+    const src = tpl()
+    const out = withLoopField(src, 'region')
+    expect(out.sheets[0].rows).toBe(src.sheets[0].rows)
+    expect(out.sheets[0].name).toBe('A')
+    expect(out.sheets[1].rows).toBe(src.sheets[1].rows)
   })
 })

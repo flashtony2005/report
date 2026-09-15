@@ -75,6 +75,7 @@ import {
   validateTemplate,
   withExportFormula,
   withExpandControl,
+  withLoopField,
   type AggType,
   type CellFormatSpec,
   type CellModel,
@@ -855,6 +856,12 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const [repeatHeader, setRepeatHeader] = useState(1)
   const [repeatFooter, setRepeatFooter] = useState(0)
   /**
+   * 循环变量：按该字段的不同取值把本表复制成 N 张（一个客户一张表）。
+   * 空串 = 不开循环。它打在 `SheetTpl.loop_field` 上（**不是** options），
+   * 所以会跟着模板一起存盘。
+   */
+  const [loopField, setLoopField] = useState('')
+  /**
    * 导出 xlsx 时把 value_expr 落成 Excel 公式（而非写死算好的值），
    * 导出后在 Excel 里改明细，小计 / 合计会跟着重算。
    * 分页导出时会自动回落写值（公式坐标按整表生成，逐页复制后行号对不上）。
@@ -948,6 +955,9 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   /** 服务端上报的报表目录；读不到就是 null（不猜） */
   const [reportsDir, setReportsDir] = useState<string | null>(null)
   const [fileBusy, setFileBusy] = useState(false)
+  /** 导入 .xlsx 的结果提示（成功/失败都在这儿说；不复用「渲染失败」那个 alert） */
+  const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const importFileRef = useRef<HTMLInputElement | null>(null)
   /** 调试：让服务端回传展开中间结果（层次坐标 / 父格）与模板告警 */
   const [dump, setDump] = useState(false)
   const [dumpText, setDumpText] = useState('')
@@ -1030,8 +1040,10 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       // 只套导出公式。
       // **不套 withExpandControl**：那个函数按「最内/最外层」猜层级，
       // 而自由模板的主格层级是用户一格一格定好的，让它再猜一遍会覆盖用户意图。
-      template = withExportFormula(tpl, exportFormula)
-      const rawTemplate = tpl
+      // 循环变量是**模板的一部分**（不在 options 里），所以必须进 rawTemplate 才存得住
+      const looped = withLoopField(tpl, loopField)
+      template = withExportFormula(looped, exportFormula)
+      const rawTemplate = looped
       const opts: ReportOptions = {
         exportFormula: exportFormula || undefined,
         dump: dump || undefined,
@@ -1104,6 +1116,9 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       })
     }
 
+    // 循环变量是**模板的一部分**（不在 options 里），必须落在 rawTemplate 里才存得住
+    template = withLoopField(template, loopField)
+
     // 存原样：打开报表时由服务端按 options 再套一次
     const rawTemplate = template
     const opts: ReportOptions = {
@@ -1165,6 +1180,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     expandMax,
     keepExpandEmpty,
     dump,
+    loopField,
     dbSelection,
     grid,
   ])
@@ -1257,6 +1273,56 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
    * **一律落到「自由模板」模式**：自由模板能表达任何模板（分组/交叉/画布生成的
    * 也一样），进去之后还能逐格改。反过来做不到——向导模式填不出手写的模板。
    */
+  /**
+   * 导入 .xlsx 当模板：格内文本就是唯一的语义通道（`=ds1.city` / `=^ds1.city` /
+   * `=ds1.amount.sum()` / `=D3[B3:+0].sum()`），其余都当字面量。见服务端 import.rs。
+   */
+  const importXlsx = useCallback(
+    async (file: File) => {
+      setFileBusy(true)
+      setImportMsg(null)
+      try {
+        const buf = new Uint8Array(await file.arrayBuffer())
+        // 分块转字符串：一次 spread 整个 buffer 会在大文件上把调用栈打爆
+        let bin = ''
+        const CHUNK = 0x8000
+        for (let i = 0; i < buf.length; i += CHUNK) {
+          bin += String.fromCharCode(...buf.subarray(i, i + CHUNK))
+        }
+        const res = await fetch(`${REPORT_SERVER}/api/report/import`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ base64: btoa(bin) }),
+        })
+        const text = await res.text()
+        if (!res.ok) throw new Error(text || `导入失败 ${res.status}`)
+        const tpl = JSON.parse(text) as ReportTemplate
+        const sheets = tpl.sheets ?? []
+        if (sheets.length === 0) {
+          setImportMsg({ ok: false, text: '这个文件里没有可用的 sheet' })
+          return
+        }
+        // 设计器一次只编辑一张表：多 sheet 的 xlsx 只取第一张，并明说其余没进来
+        setGrid(templateToGrid(sheets[0]))
+        setMode('free')
+        setLoopField(sheets[0].loop_field ?? '')
+        if (!reportName.trim()) setReportName(sheets[0].name || '')
+        setImportMsg({
+          ok: sheets.length === 1,
+          text:
+            sheets.length === 1
+              ? `已导入「${sheets[0].name}」，已切到自由模板`
+              : `已导入第 1 张「${sheets[0].name}」，但这个文件有 ${sheets.length} 张表 —— 设计器一次只编辑一张，其余 ${sheets.length - 1} 张没进来`,
+        })
+      } catch (e) {
+        setImportMsg({ ok: false, text: e instanceof Error ? e.message : String(e) })
+      } finally {
+        setFileBusy(false)
+      }
+    },
+    [reportName],
+  )
+
   const openReport = useCallback(async (id: string) => {
     setFileBusy(true)
     try {
@@ -1275,6 +1341,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       if (def.options?.rowsPerPage) setRowsPerPage(def.options.rowsPerPage)
       if (def.options?.repeatHeaderRows != null) setRepeatHeader(def.options.repeatHeaderRows)
       if (def.options?.repeatFooterRows != null) setRepeatFooter(def.options.repeatFooterRows)
+      // 循环字段存在**模板**里（不是 options），从第一张 sheet 上取回来
+      setLoopField(def.template?.sheets?.[0]?.loop_field ?? '')
       // 数据源回填到左侧选择器，让人看得见数据从哪来
       const s0 = def.sources?.[0]
       if (s0?.database && s0?.table) {
@@ -1672,7 +1740,37 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           >
             执行
           </Button>
+          <Button
+            size="small"
+            loading={fileBusy}
+            onClick={() => importFileRef.current?.click()}
+            data-testid="report-file-import"
+          >
+            导入 .xlsx
+          </Button>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            style={{ display: 'none' }}
+            data-testid="report-file-import-input"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              // 必须清空 value：否则连着选同一个文件不会再触发 change
+              e.target.value = ''
+              if (f) void importXlsx(f)
+            }}
+          />
         </Space>
+        {importMsg && (
+          <Typography.Text
+            type={importMsg.ok ? 'success' : 'danger'}
+            style={{ fontSize: 12, display: 'block', marginTop: 6 }}
+            data-testid="report-file-import-msg"
+          >
+            {importMsg.text}
+          </Typography.Text>
+        )}
         {savedReports.length === 0 && (
           // 空列表必须能自我解释：报表目录由**服务端配置文件的位置**决定，
           // 而那个路径默认是相对的，所以换个目录启动服务端就会看到另一个列表。
@@ -2042,6 +2140,22 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
                   </Space>
                 </>
               )}
+              <Space size={4}>
+                <Typography.Text
+                  style={{ fontSize: 12 }}
+                  title="按该字段的不同取值把本表复制成 N 张表（一个客户一张表）。留空=不开循环"
+                >
+                  循环字段
+                </Typography.Text>
+                <Input
+                  size="small"
+                  style={{ width: 130 }}
+                  placeholder="如 region，留空不开"
+                  value={loopField}
+                  onChange={(e) => setLoopField(e.target.value)}
+                  data-testid="grid-report-loop-field"
+                />
+              </Space>
               <Space size={4}>
                 <Switch
                   size="small"
