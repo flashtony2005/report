@@ -198,3 +198,23 @@ parseCellText `=` → mutation 改写 → SheetValueChanged → setGrid → form
 fill `=ds1.city` → eval 读「数据集」=`ds1`、`「字段」`非空即字段绑定触发；
 切 `=D3[B3:+0].sum()` → eval 读「展示表达式」=`D3[B3:+0].sum()`、数据集默认 `ds1`。
 截图：`.workbuddy-ai/screenshots/nopreport-dialect-e2e.png`。
+
+## print-server（Rust 侧）的硬事实
+
+- 默认端口 **18888**；binary 在 `~/.cargo/target/debug/print-server`
+  —— 项目里**没有** `target/`，跑 `./target/debug/...` 直接 no such file。
+- **项目不是 rustfmt-clean**：`cargo fmt --check` 有 4483 行差异。
+  → **千万别 `cargo fmt`**，会把全仓库格式化成无关巨 diff。手改保持局部风格即可。
+- `ReportSource` 带 `#[serde(rename_all = "camelCase")]` → JSON 里是 **`connId`**。
+  写成 `conn_id` 会被 serde 忽略、静默落到第一个连接，报
+  「sqlite 文件不存在: F:\project\admin\data.db」——看着像配置没加载，
+  其实是字段名错了。配置本身可以 `GET /api/config` 验证。
+- 渲染输出的格子字段是 **`text`**（`GridCell.text`）；`value` 是模板侧
+  `CellTpl` 的。拿 `value` 去读渲染结果会得到一片空，容易误判成“渲染坏了”。
+- `SheetTpl` **不在** mirror-check 的 `CAMEL_CASED` 白名单里
+  （白名单是 ReportSource/ReportDef/ReportOptions/ReportSummary），
+  所以新字段两端都用 snake_case（如 `loop_field`）。
+- **批量给 struct 加字段**：正则要排除 `-> Foo {`（函数返回类型 + 函数体左括号
+  连在一起，长得和结构体字面量一样）。用 `(?<!-> )SheetTpl\s*\{`。
+  改完必须编译 + 看 diff：**插入数要和编译器报的错数对得上**，
+  多出来的就是误伤（这次 engine.rs 报 4 处、脚本插了 5 处）。
