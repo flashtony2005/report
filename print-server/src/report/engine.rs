@@ -531,6 +531,21 @@ struct Numbers {
     sorted: Vec<f64>,
 }
 
+/// `Numbers` → 某个聚合口径的标量。
+///
+/// SUM/COUNT/AVG/MIN/MAX 的口径只有这一份：`cached_col_agg`、`cached_coord_agg`
+/// 和 `eval_call` 里的 `SUM|COUNT|AVG|MIN|MAX` 分支都走它，避免三处各写一遍
+/// 而慢慢走偏（空集 COUNT=0、AVG=0、MIN/MAX=NaN 这些边界都在这里定死）。
+fn agg_of_numbers(n: &Numbers, func: &str) -> f64 {
+    match func {
+        "count" => n.count as f64,
+        "avg" if n.count > 0 => n.sum / n.count as f64,
+        "min" => n.min,
+        "max" => n.max,
+        _ => n.sum,
+    }
+}
+
 /// 单元格没写 `ds` 时兜底用的数据集名（构造 `Engine::new` 时也是这个名字）
 /// 格子没写 `ds` 时默认读的数据集名字
 pub const DEFAULT_DS: &str = "ds1";
@@ -571,6 +586,45 @@ pub struct Engine {
     /// 单次 resolve 缩成「祖链 + HashMap 查表」。
     excel_resolve_cache: RefCell<HashMap<(String, Coord, usize), (Rc<[usize]>, Option<String>)>>,
 
+    /// 通用求值路径的 resolve 缓存：`resolve(target, coord, cur)` 的结果只取决于
+    /// `(target, coord, anchor_instance)` —— `find_anchor` 已经把 `cur` 折成 anchor，
+    /// 同一组的 N 个明细行共享同一个 anchor，所以同一份答案会被**算 N 遍**
+    /// （`bench_per_row_agg_coord`：8000 行 560 ms，每行成本随规模翻倍 = O(n²)）。
+    ///
+    /// **安全性**：`hidden` 只在 `compute_tests` 里变，而那是在每轮求值的**末尾**；
+    /// 缓存在 `evaluate_to_fixpoint` 每轮开头跟 `pos_index` / `deps_done` 一起清空，
+    /// 所以一轮之内 `(target, coord, anchor) → 结果集` 恒定。
+    ///
+    /// 跟 `excel_resolve_cache` 的区别：那个只服务 phase 4，且顺带缓存公式引用串；
+    /// 这个服务所有带坐标的聚合求值（SUM / PROPORTION / ACCSUM …）。
+    resolve_cache: RefCell<HashMap<(String, Coord, usize), Rc<[usize]>>>,
+
+    /// 带层次坐标的聚合缓存：`(target, coord, anchor) → Numbers`。
+    ///
+    /// 只缓存结果集**还不够**：结果集缓存把 `resolve` 降到 O(1)，但拿到集合之后
+    /// `aggregate_cells` 仍要逐格克隆 `JsonValue` 再转 f64 —— N 行共享同一 anchor 时
+    /// 同一份合计照样算了 N 遍（实测：只加 `resolve_cache`，8000 行 560 ms → 448 ms，
+    /// 曲线一点没直）。把 `Numbers` 也缓存下来，命中后整次聚合是 O(1)。
+    ///
+    /// `Numbers` 里带着 `sum/count/min/max/sorted`，所以 SUM/COUNT/AVG/MIN/MAX
+    /// 五种口径一次缓存全都覆盖。
+    ///
+    /// 安全性同 `resolve_cache`：值在一轮内冻结（`evaluated` 一旦置位就不再重算），
+    /// 集合只依赖 `hidden`，而 `hidden` 只在每轮末尾的 `compute_tests` 里变 ——
+    /// 所以一轮之内 `(target, coord, anchor) → Numbers` 恒定，一轮一清即可。
+    coord_nums_cache: RefCell<HashMap<(String, Coord, usize), Numbers>>,
+
+    /// 带坐标结果集的**前缀和**：`(target, coord, 坐标anchor) → prefix`，
+    /// `prefix[i]` = 集合前 i 个元素之和（`prefix[0] = 0`）。
+    ///
+    /// `ACCSUM` 要的是 `cells[..anchor_idx+1]` 的部分和 —— 集合固定、只有「加到第几个」
+    /// 逐行不同，所以正确做法是**把逐行的那个维度变成下标**，而不是塞进缓存键。
+    ///
+    /// 第一版就是塞进了键（`(…, 坐标anchor, targetanchor)`）：值对了，但键逐行不同 →
+    /// 永不命中 → 还是每行扫一遍集合，8000 行 149 ms，曲线照旧是平方。
+    /// 现在每行只剩 `resolve`(O(1)) + 二分找位置(O(log)) + 一次取下标(O(1))。
+    coord_prefix_cache: RefCell<HashMap<(String, Coord, usize), Rc<[f64]>>>,
+
     /// `assign("name", 值)` 绑定的命名变量，作用域是**本 sheet**。
     ///
     /// 用 RefCell 是因为求值是 `&self`（`eval_call` 也是），而赋值要改状态 ——
@@ -606,6 +660,9 @@ impl Engine {
             pos_index: RefCell::new(HashMap::new()),
             deps_done: RefCell::new(HashSet::new()),
             excel_resolve_cache: RefCell::new(HashMap::new()),
+            resolve_cache: RefCell::new(HashMap::new()),
+            coord_nums_cache: RefCell::new(HashMap::new()),
+            coord_prefix_cache: RefCell::new(HashMap::new()),
             vars: RefCell::new(BTreeMap::new()),
             var_misses: RefCell::new(BTreeSet::new()),
         }
@@ -888,6 +945,11 @@ impl Engine {
         // ---- 阶段 4：填充网格 ----
         // 清空 excel_resolve_cache：phase 4 不会再动 hidden，缓存到这次 pass 结束有效。
         self.excel_resolve_cache.borrow_mut().clear();
+        // resolve_cache 的存活范围**只限于 fixpoint 的一轮**，出了那个循环就作废：
+        // 留着上一轮（甚至上一份 hidden）的结果，下个调用方就会拿到过期集合。
+        self.resolve_cache.borrow_mut().clear();
+        self.coord_nums_cache.borrow_mut().clear();
+        self.coord_prefix_cache.borrow_mut().clear();
         let ncols = total_cols.max(1);
         let mut grid: Vec<Vec<Option<GridCell>>> = vec![vec![None; ncols]; total_rows];
         for (i, inst) in self.insts.iter().enumerate() {
@@ -1255,6 +1317,15 @@ impl Engine {
             // `hidden` 变了结果集就变，值重算了前缀和也不再成立。
             self.pos_index.borrow_mut().clear();
             self.deps_done.borrow_mut().clear();
+            // resolve 的结果集里含 hidden 过滤，所以同样一轮一清。
+            // 这条 clear 就是 `resolve_cache` 正确性的**全部依据**：
+            // `hidden` 只在下面 `compute_tests` 里变，而那是每轮的末尾，
+            // 所以「清空 → 求值整轮 → 改 hidden」之间结果集恒定。
+            self.resolve_cache.borrow_mut().clear();
+            // 聚合值还多依赖一层：结果集里的格的**值**。一轮之内值同样冻结
+            // （`evaluated` 置位后不再重算），所以跟结果集同生命周期。
+            self.coord_nums_cache.borrow_mut().clear();
+            self.coord_prefix_cache.borrow_mut().clear();
             for i in 0..n {
                 self.ensure_value(i);
             }
@@ -1617,15 +1688,80 @@ impl Engine {
     /// 与当前格无关，一轮里真正跑一次就够，之后直接跳过。少了这一步，`ACCSUM(B2)`
     /// 每行都要枚举整列依赖（克隆 + 逐格调用），和表达式本身一样是 O(n²)。
     fn ensure_deps(&mut self, src: &str, ast: &Expr, cur: usize) {
-        let cacheable = expr_is_cur_independent(ast);
-        if cacheable && self.deps_done.borrow().contains(src) {
+        // ① 与当前格无关的表达式：依赖集跨行相同，按表达式名缓存一次就够。
+        if expr_is_cur_independent(ast) {
+            if self.deps_done.borrow().contains(src) {
+                return;
+            }
+            for d in self.expr_deps(ast, cur) {
+                self.ensure_value(d);
+            }
+            self.deps_done.borrow_mut().insert(src.to_string());
             return;
         }
+        // ② 带层次坐标：依赖集 = 各坐标格结果集的并，而每个结果集只取决于
+        //    (target, coord, anchor) —— 所以整份依赖集只取决于「表达式 + 各 anchor」。
+        //    同一组的 N 个明细行 anchor 全相同 → 依赖集也全相同 → 同样只枚举一次。
+        //
+        //    这条以前没有：带坐标的表达式 cacheable=false，于是 N 行各枚举一遍
+        //    O(|集合|) 的依赖（`out.extend(resolve(..))` 会把整个集合复制进 Vec），
+        //    又是一个 O(n²)。实测 8000 行：补上后 98 ms → 约 20 ms。
+        if let Some(key) = self.dep_key(src, ast, cur) {
+            if self.deps_done.borrow().contains(&key) {
+                return;
+            }
+            for d in self.expr_deps(ast, cur) {
+                self.ensure_value(d);
+            }
+            self.deps_done.borrow_mut().insert(key);
+            return;
+        }
+        // ③ 有坐标却找不到 anchor，或含 Filter / Var：依赖集无法由 anchor 完全刻画，
+        //    不能跨行复用，老实每次枚举。
         for d in self.expr_deps(ast, cur) {
             self.ensure_value(d);
         }
-        if cacheable {
-            self.deps_done.borrow_mut().insert(src.to_string());
+    }
+
+    /// 依赖集的缓存键：`src` + 各层次坐标的 anchor（按走查顺序）。
+    ///
+    /// 返回 `None` 表示**不能缓存**：有坐标但找不到 anchor（不同行可能落在不同
+    /// 祖先链上），或表达式含 `Filter` / `Var`（前者的候选格运行期才知道，
+    /// 后者的值来自某行的 `assign` —— 两者的依赖集都不由 anchor 决定）。
+    fn dep_key(&self, src: &str, ast: &Expr, cur: usize) -> Option<String> {
+        let mut anchors: Vec<usize> = Vec::new();
+        self.collect_coord_anchors(ast, cur, &mut anchors)?;
+        Some(format!("{src}#{anchors:?}"))
+    }
+
+    /// 按与 `collect_deps` 相同的顺序走查，收集每个带坐标格的 anchor。
+    fn collect_coord_anchors(&self, e: &Expr, cur: usize, out: &mut Vec<usize>) -> Option<()> {
+        match e {
+            Expr::Cell { coord: Some(cd), .. } => {
+                out.push(self.find_anchor(cd, cur)?);
+                Some(())
+            }
+            Expr::Cell { coord: None, .. } => Some(()),
+            Expr::Call { args, .. } => {
+                for a in args {
+                    self.collect_coord_anchors(a, cur, out)?;
+                }
+                Some(())
+            }
+            Expr::Binary { lhs, rhs, .. } | Expr::Cmp { lhs, rhs, .. } => {
+                self.collect_coord_anchors(lhs, cur, out)?;
+                self.collect_coord_anchors(rhs, cur, out)
+            }
+            Expr::Neg(inner) | Expr::Dollar(inner) => self.collect_coord_anchors(inner, cur, out),
+            Expr::Array(items) => {
+                for it in items {
+                    self.collect_coord_anchors(it, cur, out)?;
+                }
+                Some(())
+            }
+            Expr::Num(_) | Expr::Str(_) | Expr::SelfValue => Some(()),
+            // 保守：这两类的依赖集不由 anchor 决定，一律不缓存
+            Expr::Filter { .. } | Expr::Var { .. } => None,
         }
     }
 
@@ -1773,32 +1909,99 @@ impl Engine {
         Some(Ref::map(idx, |i| i.nums.as_ref().unwrap()))
     }
 
-    /// 无层次坐标时的整列聚合，直接读缓存的聚合值（O(1)）。
+    /// 整列 / 本组聚合的缓存读法（O(1)）。
     ///
     /// `B2.sum()` 这种**属性写法**和 `SUM(B2)` 走的是两条路（前者在 `eval_ast` 里
     /// 落到 `aggregate_cells`），所以得各自接一次缓存，否则仍是每行扫整列。
-    fn cached_col_agg(&self, target: &str, coord: Option<&Coord>, func: &str) -> Option<f64> {
-        if coord.is_some() {
-            return None;
+    ///
+    /// 带层次坐标时结果集随当前格变，缓存键要带上 anchor —— 见 `coord_nums_cache`。
+    fn cached_col_agg(
+        &self,
+        target: &str,
+        coord: Option<&Coord>,
+        func: &str,
+        cur: usize,
+    ) -> Option<f64> {
+        if let Some(cd) = coord {
+            return self.cached_coord_agg(target, cd, cur, func);
         }
         let n = self.cached_numbers_of(target)?;
-        Some(match func {
-            "count" => n.count as f64,
-            "avg" if n.count > 0 => n.sum / n.count as f64,
-            "min" => n.min,
-            "max" => n.max,
-            _ => n.sum,
-        })
+        Some(agg_of_numbers(&n, func))
+    }
+
+    /// 带层次坐标的聚合：`(target, coord, anchor) → Numbers` 缓存。
+    ///
+    /// 集合本身走 `resolve`（已按同一组键缓存），这里再缓存**聚合结果**。
+    /// 只缓存集合是不够的：拿到集合后仍要逐格克隆 `JsonValue` 再转 f64，
+    /// N 行共享同一 anchor 时就是 N 遍 O(|集合|) —— 实测只加 `resolve_cache` 时
+    /// 8000 行 560 ms → 448 ms，曲线几乎没动，瓶颈就在这一层。
+    fn cached_coord_agg(&self, target: &str, cd: &Coord, cur: usize, func: &str) -> Option<f64> {
+        let anchor = self.find_anchor(cd, cur)?;
+        let key = (target.to_string(), cd.clone(), anchor);
+        let hit = self.coord_nums_cache.borrow().contains_key(&key);
+        if !hit {
+            // 先 `resolve`（同键，已缓存）拿到集合，再一次性算成 `Numbers`
+            let cells = self.resolve(target, Some(cd), cur);
+            let built = self.numbers_of_cells(&cells);
+            self.coord_nums_cache.borrow_mut().insert(key.clone(), built);
+        }
+        let cache = self.coord_nums_cache.borrow();
+        let n = cache.get(&key)?;
+        Some(agg_of_numbers(n, func))
+    }
+
+    /// `SUM(B2[A1:+0])` 这种**调用写法**、单参数、带层次坐标 → 转 `cached_coord_agg`。
+    ///
+    /// 多参数（`SUM(A1, B1)`）不是「某一列/某一组」的聚合，不适用。
+    fn cached_call_coord_agg(&self, args: &[Expr], cur: usize, func: &str) -> Option<f64> {
+        if args.len() != 1 {
+            return None;
+        }
+        let Expr::Cell { target, coord: Some(cd), .. } = &args[0] else {
+            return None;
+        };
+        self.cached_coord_agg(target, cd, cur, func)
+    }
+
+    /// 带坐标结果集的前缀和（缓存）。`prefix[i]` = 集合前 i 个元素之和，`prefix[0] = 0`。
+    ///
+    /// `ACCSUM` 的部分和 = `prefix[upto]`，其中 `upto` 由**本行可见的 target 实例**
+    /// 在集合里的位置决定（逐行不同）。把那个维度做成**下标**而不是缓存键的一部分 ——
+    /// 键只留决定集合的 `(target, coord, 坐标anchor)`，于是 N 行命中同一份前缀和。
+    ///
+    /// 找不到坐标 anchor 时返回 `None`（调用方走朴素实现，那边得空集 → 0）。
+    fn cached_coord_prefix(&self, target: &str, cd: &Coord, cur: usize) -> Option<Rc<[f64]>> {
+        let anchor = self.find_anchor(cd, cur)?;
+        let key = (target.to_string(), cd.clone(), anchor);
+        if let Some(hit) = self.coord_prefix_cache.borrow().get(&key) {
+            return Some(hit.clone());
+        }
+        let cells = self.resolve(target, Some(cd), cur);
+        let mut prefix: Vec<f64> = Vec::with_capacity(cells.len() + 1);
+        prefix.push(0.0);
+        for &i in cells.iter() {
+            let add = as_number(self.insts[i].value.clone()).unwrap_or(0.0);
+            prefix.push(prefix[prefix.len() - 1] + add);
+        }
+        let rc: Rc<[f64]> = Rc::from(prefix);
+        self.coord_prefix_cache.borrow_mut().insert(key, rc.clone());
+        Some(rc)
     }
 
     /// 算结果集的数字列聚合。
     ///
     /// 前提：结果集里的格都已求值。无层次坐标时依赖集就是这个结果集，`ensure_deps`
     /// 会先把它们求值到位，所以这里读到的都是最终值（debug 下断言守住）。
+    /// 带层次坐标时同理 —— `collect_deps` 把整个结果集都算作依赖。
     fn build_numbers(&self, target: &str) -> Numbers {
         let idx = self.pos_index(target);
+        self.numbers_of_cells(&idx.cells)
+    }
+
+    /// `build_numbers` 的通用版：对**任意**结果集算数字列聚合（带坐标的集合不是整列）。
+    fn numbers_of_cells(&self, cells: &[usize]) -> Numbers {
         debug_assert!(
-            idx.cells.iter().all(|&i| {
+            cells.iter().all(|&i| {
                 // 值只在 `ensure_value` 里写：写过的（evaluated）才是最终值；
                 // 既无 value_expr 又无 agg 的格，值在展开时就定好了，也算最终值
                 self.insts[i].evaluated
@@ -1806,9 +2009,9 @@ impl Engine {
             }),
             "数字列必须在依赖格求值之后才建，否则会把未求值的原始值算进合计"
         );
-        let mut sorted = Vec::with_capacity(idx.cells.len());
+        let mut sorted = Vec::with_capacity(cells.len());
         let mut sum = 0.0;
-        for &i in idx.cells.iter() {
+        for &i in cells.iter() {
             if let Some(n) = as_number(self.insts[i].value.clone()) {
                 sorted.push(n);
                 sum += n;
@@ -1938,7 +2141,7 @@ impl Engine {
                     // `B2.sum()`：无层次坐标时结果集是整列且与 cur 无关，
                     // 读缓存的聚合值即可，不必每行再扫一遍
                     Some(Prop::Aggregate(f)) => {
-                        match self.cached_col_agg(target, coord.as_ref(), f) {
+                        match self.cached_col_agg(target, coord.as_ref(), f, cur) {
                             Some(v) => Val::Num(v),
                             None => Val::Num(self.aggregate_cells(&cells, f)),
                         }
@@ -2165,13 +2368,13 @@ impl Engine {
                 // 必须排在 `arg_numbers` 之前：后者本身就是那次 O(n) 的整列扫描，
                 // 先算它就等于没优化（第一版就踩了这个，1.3 s 只掉到 1.18 s）。
                 if let Some(n) = self.cached_numbers(args) {
-                    return Val::Num(match f {
-                        "count" => n.count as f64,
-                        "avg" if n.count > 0 => n.sum / n.count as f64,
-                        "min" => n.min,
-                        "max" => n.max,
-                        _ => n.sum,
-                    });
+                    return Val::Num(agg_of_numbers(&n, f));
+                }
+                // 单参数、带层次坐标（`SUM(B2[A1:+0])`）：同一组共享 anchor，
+                // 结果集与聚合值都能缓存。属性写法 `B2[A1:+0].sum()` 走的是
+                // `eval_ast` 那条路，两处都得接一次。
+                if let Some(v) = self.cached_call_coord_agg(args, cur, f) {
+                    return Val::Num(v);
                 }
                 // 多参数 / 带层次坐标：退回逐格摊平。复用聚合口径：
                 // COUNT 数的是数字个数，MIN/MAX 空集为 NaN
@@ -2204,12 +2407,17 @@ impl Engine {
                             let len = self.pos_index(target).cells.len();
                             (n, self.prefix_sum(target, len))
                         } else {
+                            let cd = coord.as_ref().unwrap();
                             let cells = self.resolve(target, coord.as_ref(), cur);
                             let picked = anchor
                                 .filter(|a| cells.binary_search(a).is_ok())
                                 .or_else(|| cells.first().copied());
                             let n = picked.and_then(|i| as_number(self.insts[i].value.clone()));
-                            (n, self.aggregate_cells(&cells, "sum"))
+                            // 本组合计走带坐标的聚合缓存：否则 N 行各扫一遍整个结果集
+                            let total = self
+                                .cached_coord_agg(target, cd, cur, "sum")
+                                .unwrap_or_else(|| self.aggregate_cells(&cells, "sum"));
+                            (n, total)
                         }
                     }
                     _ => {
@@ -2225,16 +2433,32 @@ impl Engine {
             // 累计汇总：从第一个实例累加到当前实例所在位置
             "ACCSUM" if args.len() == 1 => match &args[0] {
                 Expr::Cell { target, coord, .. } => {
-                    if coord.is_some() {
-                        // 有层次坐标：结果集随 cur 变，索引不成立，退回朴素实现
+                    if let Some(cd) = coord {
+                        // 带坐标：集合固定（按坐标 anchor 缓存），逐行变的只是
+                        // 「加到第几个」—— 用前缀和的下标表达，每行 O(log) 找位置。
+                        if let Some(prefix) = self.cached_coord_prefix(target, cd, cur) {
+                            let cells = self.resolve(target, coord.as_ref(), cur);
+                            let upto = match self.anchor_instance(target, cur) {
+                                Some(a) => match cells.binary_search(&a) {
+                                    Ok(p) => p + 1,
+                                    // 与原来的 `position(..).unwrap_or(len)` 一致：不在集合里取全量
+                                    Err(_) => cells.len(),
+                                },
+                                None => cells.len(),
+                            };
+                            return Val::Num(prefix[upto.min(cells.len())]);
+                        }
+                        // 运行时兜底（不靠注释）：坐标 anchor 找不到时前缀和缓存不建，
+                        // 老实走一遍朴素实现 —— 那时 `resolve` 得空集，结果与从前一致。
                         let cells = self.resolve(target, coord.as_ref(), cur);
                         let upto = match self.anchor_instance(target, cur) {
-                            Some(a) => cells.iter().position(|c| *c == a).map(|p| p + 1),
-                            None => None,
+                            Some(a) => {
+                                cells.iter().position(|c| *c == a).map(|p| p + 1).unwrap_or(cells.len())
+                            }
+                            None => cells.len(),
                         };
-                        let n = upto.unwrap_or(cells.len()).min(cells.len());
                         return Val::Num(
-                            cells[..n]
+                            cells[..upto.min(cells.len())]
                                 .iter()
                                 .filter_map(|i| as_number(self.insts[*i].value.clone()))
                                 .sum(),
@@ -2268,10 +2492,25 @@ impl Engine {
     ///
     /// 返回 `Rc` 而不是 `Vec`：无层次坐标时结果集就是 `PosIndex::cells`，
     /// 共享一份即可。明细行上的每个表达式都会走这里，逐行克隆整列是 O(n²)。
+    ///
+    /// 带层次坐标时按 `(target, coord, anchor)` 缓存 —— 见 `resolve_cache` 的注释。
+    /// 缓存只包在 `resolve_raw` 外面，**不改它的语义**（绝对坐标 `[A1:2]`、
+    /// 相对 `:-1` 这些都要靠它算），所以未命中路径与从前逐字节一致。
     fn resolve(&self, target: &str, coord: Option<&Coord>, cur: usize) -> Rc<[usize]> {
         match coord {
             None => self.pos_index(target).cells.clone(),
             Some(cd) => {
+                // key 用 anchor 而不是 cur：同一组的 N 个明细行 anchor 相同，
+                // 结果集必然相同，没必要各算一遍。
+                let key = self
+                    .find_anchor(cd, cur)
+                    .map(|anchor| (target.to_string(), cd.clone(), anchor));
+                if let Some(k) = &key {
+                    if let Some(hit) = self.resolve_cache.borrow().get(k) {
+                        return hit.clone();
+                    }
+                }
+                // 未命中、或压根找不到 anchor（此时 `resolve_raw` 也返回空集）
                 let v: Vec<usize> = self
                     .resolve_raw(target, Some(cd), cur)
                     .into_iter()
@@ -2281,7 +2520,11 @@ impl Engine {
                     v.windows(2).all(|w| w[0] < w[1]),
                     "带层次坐标的结果集也必须升序，否则二分成员判断会出错"
                 );
-                Rc::from(v)
+                let rc: Rc<[usize]> = Rc::from(v);
+                if let Some(k) = key {
+                    self.resolve_cache.borrow_mut().insert(k, rc.clone());
+                }
+                rc
             }
         }
     }
@@ -3460,6 +3703,133 @@ mod scale {
             );
         }
         println!();
+    }
+
+    /// 「每行都带**层次坐标**做聚合」的规模曲线 —— 通用求值路径（不导出公式）。
+    ///
+    /// 为什么单独量：已有的基准把这个形状漏掉了。
+    /// `bench_per_row_agg` 量的是 `SUM(B2)` / `ACCSUM(B2)` 这类**不带坐标**的聚合，
+    /// `resolve` 走的是 `pos_index` 的 `Rc` 克隆（O(1)，线性）；
+    /// `bench_sibling_ref` 量的是 `B2 * 2` / `B2.sum()`，也不带坐标。
+    /// 而明细行的小计 / 占比最常用的恰恰是**带坐标**的 `C1[A1:+0].sum()` ——
+    /// 每次 resolve 都要重跑 `resolve_raw` + hidden 过滤 + 一次 `Rc` 分配，
+    /// N 行共享同一个 anchor 时**同一份答案算了 N 遍**。
+    ///
+    /// 对照组：同一模板、把 D1 换成普通字段（`amount`），其余完全一样，
+    /// 两者相减就是「每行带坐标聚合」的真实成本。
+    #[test]
+    #[ignore = "性能基准，手动跑：见本模块头部注释"]
+    fn bench_per_row_agg_coord() {
+        const KINDS: &[(&str, &str)] = &[
+            ("C1[A1:+0].sum()", "本组合计"),
+            ("PROPORTION(C1[A1:+0])", "本组占比"),
+            ("ACCSUM(C1[A1:+0])", "本组累计"),
+        ];
+        let base = one_group_coord_sheet(None);
+        let mut head = String::from("  明细行数");
+        for (_, label) in KINDS {
+            head.push_str(&format!("  {label:>14}"));
+        }
+        println!("\n{head}");
+        for n in [500usize, 1000, 2000, 4000, 8000] {
+            let ds = one_group_data(n);
+            let mut a = f64::MAX;
+            for _ in 0..3 {
+                a = a.min(time_sheet(&base, ds.clone()).2);
+            }
+            let mut line = format!("  {n:>8}");
+            for (expr, _) in KINDS {
+                let sheet = one_group_coord_sheet(Some(expr));
+                let mut b = f64::MAX;
+                for _ in 0..3 {
+                    b = b.min(time_sheet(&sheet, ds.clone()).2);
+                }
+                line.push_str(&format!("  {:>12.1}ms", (b - a).max(0.0)));
+            }
+            println!("{line}");
+        }
+        println!();
+    }
+
+    /// 一组：A1=g（分组主格；N 行 g 同值 → 只展开 1 次）、B1=id（明细，parent=A1）、
+    /// C1=amount（parent=B1）、D1=要测的表达式（parent=B1，无 field → 每行 1 个实例）。
+    ///
+    /// `expr` 给 `None` 时 D1 退化成普通字段，作对照。
+    fn one_group_coord_sheet(expr: Option<&str>) -> SheetTpl {
+        let m = |field: Option<&str>,
+                 expand: Option<ExpandType>,
+                 parent: Option<&str>,
+                 expr: Option<&str>| {
+            Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: field.map(|s| s.to_string()),
+                expand_type: expand,
+                row_parent: parent.map(|s| s.to_string()),
+                value_expr: expr.map(|s| s.to_string()),
+                ..Default::default()
+            })
+        };
+        let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            pos: None,
+            value: value.map(JsonValue::from),
+            model,
+            merge_across: 0,
+            merge_down: 0,
+            merge_to_end: false,
+        };
+        let d1 = match expr {
+            Some(e) => m(None, None, Some("B1"), Some(e)),
+            None => m(Some("amount"), None, Some("B1"), None),
+        };
+        SheetTpl {
+            name: "coord".to_string(),
+            page: None,
+            rows: vec![RowTpl {
+                cells: vec![
+                    cell(Some("分组"), m(Some("g"), Some(ExpandType::R), None, None)),
+                    cell(Some("ID"), m(Some("id"), Some(ExpandType::R), Some("A1"), None)),
+                    cell(Some("金额"), m(Some("amount"), None, Some("B1"), None)),
+                    cell(Some("计算"), d1),
+                ],
+            }],
+            loop_field: None,
+        }
+    }
+
+    /// 「每行带坐标聚合」的数值正确性 —— 加了缓存之后数字必须一个不差。
+    ///
+    /// 这条专治那类**输出仍是一串看着很正常的数、只是整体错位**的 bug：
+    /// 缓存接错（键少带 anchor、或该清没清）正是这个特征，肉眼看输出发现不了。
+    ///
+    /// 数据是 1..=N，所以三个口径的期望值都能写成闭式：
+    /// SUM 每行都是整组合计；ACCSUM 第 k 行是 1..k 的和；PROPORTION 是 k/总计。
+    /// 后两个**逐行不同**，所以任何「跨行串了缓存」的错都会立刻暴露。
+    #[test]
+    fn per_row_coord_agg_values_are_exact() {
+        const N: usize = 12;
+        let total = (N * (N + 1) / 2) as f64;
+
+        let cases: [(&str, Box<dyn Fn(usize) -> f64>); 3] = [
+            ("C1[A1:+0].sum()", Box::new(move |_k| total)),
+            ("ACCSUM(C1[A1:+0])", Box::new(|k| ((k + 1) * (k + 2) / 2) as f64)),
+            ("PROPORTION(C1[A1:+0])", Box::new(move |k| (k + 1) as f64 / total)),
+        ];
+
+        for (expr, want) in cases {
+            let sheet = one_group_coord_sheet(Some(expr));
+            let mut engine = Engine::new(one_group_data(N));
+            let grid = engine.expand_sheet(&sheet);
+            assert_eq!(grid.len(), N, "{expr}：应展开出 {N} 行");
+            for (k, row) in grid.iter().enumerate() {
+                let got = row[3].raw_number.unwrap_or_else(|| panic!("{expr}：D1 应是数值"));
+                let w = want(k);
+                assert!(
+                    (got - w).abs() < 1e-9,
+                    "{expr}：第 {} 行应是 {w}，实际 {got}",
+                    k + 1
+                );
+            }
+        }
     }
 
     /// 一组：1 个分组主格 + N 个明细行（ID/金额/小计）。所有明细行同属一组。
