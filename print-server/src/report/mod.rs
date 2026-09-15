@@ -109,7 +109,10 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
     let mut all_pages: Vec<RenderedSheet> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     for sheet in tpl.sheets.iter() {
-        let ds = pick_dataset(&tpl.datasets, sheet);
+        let (ds, ds_warns) = pick_dataset(&tpl.datasets, sheet);
+        for w in ds_warns {
+            warnings.push(format!("[{}] {}", sheet.name, w));
+        }
         let mut engine = engine::Engine::new(ds);
         let rows = engine.expand_sheet(sheet);
         for w in engine.warnings() {
@@ -224,19 +227,63 @@ pub async fn render_with_sources(
 }
 
 /// 选择该 sheet 使用的数据集：取单元格里声明的 ds，否则取第一个
-fn pick_dataset(datasets: &BTreeMap<String, DataSet>, sheet: &SheetTpl) -> DataSet {
+/// 挑本 sheet 用的数据集，顺带报出「挑不到 / 挑了但别人还想要别的」这类静默问题。
+///
+/// **引擎一个 sheet 只支持一个数据集**（`Engine::new` 只收一份 `ds`，展开、层次坐标、
+/// 行父链全建在「实例 ↔ 行下标」这一套索引上）。所以单元格上的 `ds` 只有第一个
+/// 扫到的说了算，其余的被悄悄忽略 —— 那些格子取不到自己的字段，表现为**静默出空**，
+/// 既不报错也不崩溃。这正是 warnings 要抓的东西。
+fn pick_dataset(datasets: &BTreeMap<String, DataSet>, sheet: &SheetTpl) -> (DataSet, Vec<String>) {
+    let mut referenced: Vec<String> = Vec::new();
     for row in sheet.rows.iter() {
         for cell in row.cells.iter() {
             if let Some(m) = &cell.model {
                 if let Some(name) = &m.ds {
-                    if let Some(ds) = datasets.get(name) {
-                        return ds.clone();
+                    if !referenced.contains(name) {
+                        referenced.push(name.clone());
                     }
                 }
             }
         }
     }
-    datasets.values().next().cloned().unwrap_or_default()
+
+    let mut warns = Vec::new();
+
+    // 引用了不存在的名字：回落到别的数据集后，字段必然取不到
+    let available: Vec<String> = datasets.keys().cloned().collect();
+    for n in referenced.iter().filter(|n| !datasets.contains_key(*n)) {
+        warns.push(format!(
+            "单元格引用了数据集 {n}，但提交的数据集里没有它（有：{}）",
+            if available.is_empty() {
+                "无".to_string()
+            } else {
+                available.join("、")
+            }
+        ));
+    }
+
+    let live: Vec<String> = referenced
+        .iter()
+        .filter(|n| datasets.contains_key(*n))
+        .cloned()
+        .collect();
+    let picked = live.first().cloned();
+
+    // 多个数据集都真实存在：只有一个生效，其余的格子会静默出空
+    if live.len() > 1 {
+        warns.push(format!(
+            "本 sheet 引用了多个数据集（{}），但一个 sheet 只能用一个，实际用的是 {}；\
+             绑到其余数据集的格子取不到字段，会出空（要跨数据集请先在 SQL 侧 JOIN 成一张表）",
+            live.join("、"),
+            picked.as_deref().unwrap_or("?")
+        ));
+    }
+
+    let ds = match &picked {
+        Some(n) => datasets.get(n).cloned().unwrap_or_default(),
+        None => datasets.values().next().cloned().unwrap_or_default(),
+    };
+    (ds, warns)
 }
 
 fn to_html(sheets: &[RenderedSheet]) -> String {
@@ -1997,6 +2044,121 @@ mod tests {
             .collect();
         assert!(texts.iter().any(|t| t.contains("华东")), "父格「华东」丢了: {texts:#?}");
         assert!(texts.iter().any(|t| t.contains("华南")), "父格「华南」丢了: {texts:#?}");
+    }
+
+    /// 一个 sheet 只支持一个数据集：引用了多个必须**告警**，不能让多余的格子静默出空。
+    fn multi_ds_template(names: &[&str]) -> ReportTemplate {
+        let mut datasets = BTreeMap::new();
+        datasets.insert(
+            "ds1".to_string(),
+            vec![serde_json::json!({"city":"北京"})]
+                .into_iter()
+                .map(|v| {
+                    v.as_object()
+                        .unwrap()
+                        .iter()
+                        .map(|(k, x)| (k.clone(), x.clone()))
+                        .collect::<BTreeMap<String, JsonValue>>()
+                })
+                .collect::<Vec<BTreeMap<String, JsonValue>>>(),
+        );
+        datasets.insert(
+            "ds2".to_string(),
+            vec![serde_json::json!({"name":"甲公司"})]
+                .into_iter()
+                .map(|v| {
+                    v.as_object()
+                        .unwrap()
+                        .iter()
+                        .map(|(k, x)| (k.clone(), x.clone()))
+                        .collect::<BTreeMap<String, JsonValue>>()
+                })
+                .collect::<Vec<BTreeMap<String, JsonValue>>>(),
+        );
+        let bind = |ds: &str, field: &str| CellTpl {
+            pos: None,
+            value: None,
+            model: Some(CellModel {
+                ds: Some(ds.into()),
+                field: Some(field.into()),
+                agg: None,
+                expand_type: None,
+                row_parent: None,
+                col_parent: None,
+                col_after: None,
+                value_expr: None,
+                expand_expr: None,
+                expand_min_count: None,
+                expand_max_count: None,
+                keep_expand_empty: None,
+                format: None,
+                format_expr: None,
+                dict: None,
+                row_test_expr: None,
+                col_test_expr: None,
+                export_formula: None,
+            }),
+            ..Default::default()
+        };
+        ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "t".into(),
+                page: None,
+                rows: vec![RowTpl {
+                    cells: names
+                        .iter()
+                        .zip(["city", "name"])
+                        .map(|(ds, f)| bind(ds, f))
+                        .collect(),
+                }],
+            }],
+            datasets,
+        }
+    }
+
+    #[test]
+    fn multi_dataset_reference_warns() {
+        let resp = render(RenderRequest {
+            template: multi_ds_template(&["ds1", "ds2"]),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        let w = resp.warnings.clone().unwrap_or_default().join("\n");
+        assert!(w.contains("多个数据集"), "应告警但没告警: {w}");
+        assert!(w.contains("ds1") && w.contains("ds2"), "告警里要点名两个数据集: {w}");
+    }
+
+    #[test]
+    fn single_dataset_reference_does_not_warn() {
+        // 全都绑同一个数据集不该报——否则正常报表会被噪声淹没
+        let resp = render(RenderRequest {
+            template: multi_ds_template(&["ds1", "ds1"]),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        assert!(
+            !resp.warnings.clone().unwrap_or_default().iter().any(|w| w.contains("多个数据集")),
+            "单一数据集不该告警: {:?}",
+            resp.warnings
+        );
+    }
+
+    #[test]
+    fn unknown_dataset_name_warns() {
+        let resp = render(RenderRequest {
+            template: multi_ds_template(&["ds3"]),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        let w = resp.warnings.clone().unwrap_or_default().join("\n");
+        assert!(w.contains("ds3"), "应点名不存在的数据集 ds3: {w}");
+        assert!(w.contains("没有它"), "应说明数据集里没有它: {w}");
     }
 
     /// 规则 3 的验模板：B2 向下合并一格把 A2 的展开范围撑到第 3 行，
