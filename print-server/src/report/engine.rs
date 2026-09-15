@@ -1192,11 +1192,30 @@ impl Engine {
             self.insts[idx].row_span = 1;
             return 1;
         }
+        // 父格锚在「第一组子格」那一行上（横向主从 `华东 | 37,900` 就是这个行为，
+        // 父格与子格不同模板行也照样同行）。这是既有语义，见
+        // `default_row_parent_follows_neighbour`。
+        //
+        // 但如果第一组子格里**有跟父格同列的**，同格落位会把父格整个盖掉
+        // ——上下堆叠的主从（A1=地区 / A2=城市，都在 A 列）正是这种形状，
+        // 地区名会静默消失。这时整组子格下移一行，把父格那一行让出来。
+        let parent_col = self.insts[idx].tpl_col;
+        let first_row = children
+            .iter()
+            .map(|c| self.insts[*c].tpl_row)
+            .min()
+            .unwrap_or(0);
+        let collides = children
+            .iter()
+            .any(|c| self.insts[*c].tpl_row == first_row && self.insts[*c].tpl_col == parent_col);
+        let own = if collides { 1 } else { 0 };
         self.layout_depth += 1;
-        let used = self.layout_group(&children, offset).max(1);
+        let used = self.layout_group(&children, offset + own).max(1);
         self.layout_depth -= 1;
-        self.insts[idx].row_span = used;
-        used
+        // 让出一行时父格不再纵跨子树：否则下面的子格会被盖进父格的合并区。
+        // `row_span` 只用于输出 rowspan（见 `to_grid`），不参与布局推进。
+        self.insts[idx].row_span = if own == 1 { 1 } else { used };
+        own + used
     }
 
     /// 布局一组实例：

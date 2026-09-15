@@ -1936,6 +1936,69 @@ mod tests {
         assert_eq!(rows, 7, "{:#?}", lines(&resp.sheets[0].rows));
     }
 
+    /// 上下堆叠的主从：子格在**更下面的模板行**时，父格自己那一行不能被吃掉。
+    ///
+    /// 这是「档案式 / 分组报表」最常见的形状：A1 展开出「华东 / 华南」，
+    /// A2 挂在 A1 下面展开出城市。A1 和 A2 不在同一模板行，所以 A1 必须
+    /// 独占一行，子格从下一行开始排。
+    #[test]
+    fn stacked_parent_keeps_its_own_row() {
+        let mut datasets = BTreeMap::new();
+        datasets.insert(
+            "ds1".to_string(),
+            vec![
+                serde_json::json!({"region":"华东","city":"上海"}),
+                serde_json::json!({"region":"华南","city":"广州"}),
+            ]
+            .into_iter()
+            .map(|v| {
+                v.as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, x)| (k.clone(), x.clone()))
+                    .collect::<BTreeMap<String, JsonValue>>()
+            })
+            .collect::<Vec<BTreeMap<String, JsonValue>>>(),
+        );
+        let bind = |field: &str, expand: bool, row_parent: Option<&str>| CellTpl {
+            pos: None,
+            value: None,
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some(field.into()),
+                agg: None,
+                expand_type: if expand { Some(ExpandType::R) } else { None },
+                row_parent: row_parent.map(|s| s.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let tpl = ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "t".into(),
+                page: None,
+                rows: vec![
+                    RowTpl { cells: vec![bind("region", true, None)] },
+                    // 子格在下一个模板行，且显式挂到 A1 下面
+                    RowTpl { cells: vec![bind("city", true, Some("A1"))] },
+                ],
+            }],
+            datasets,
+        };
+        let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None })
+            .unwrap();
+        // 华东 / 上海 / 华南 / 广州 = 4 行。父格那一行被吃掉就只剩 2 行。
+        let rows = &resp.sheets[0].rows;
+        assert_eq!(rows.len(), 4, "{:#?}", lines(rows));
+        // 父格的值必须真的出现在网格里，不只是实例存在
+        let texts: Vec<String> = rows
+            .iter()
+            .map(|r| r.iter().map(|c| c.text.clone()).collect::<Vec<_>>().join("|"))
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("华东")), "父格「华东」丢了: {texts:#?}");
+        assert!(texts.iter().any(|t| t.contains("华南")), "父格「华南」丢了: {texts:#?}");
+    }
+
     /// 规则 3 的验模板：B2 向下合并一格把 A2 的展开范围撑到第 3 行，
     /// 第 3 行只留 C 列一个无父格格子（`c3_row_parent` 可指定它的 `row_parent`）。
     fn render_rule3_template(c3_row_parent: Option<&str>) -> RenderResponse {

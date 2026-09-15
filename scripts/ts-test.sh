@@ -57,6 +57,12 @@ for f in "${FILES[@]}"; do
   cp "$SRC_DIR/$f" "$WORK/"
 done
 
+# 存盘报表样本：`真实存盘报表的每一格经 = 方言往返` 那条用例要读真实文件。
+# 拷到 $WORK/reports/ 下 —— spec 的 findSavedReport() 会去 spec 同级的 reports/ 找，
+# 因为临时目录不在仓库里，靠 `import.meta.dirname` 上溯是找不到的。
+mkdir -p "$WORK/reports"
+cp "$ROOT/print-server/reports/sales-by-region.json" "$WORK/reports/"
+
 # 临时目录里没有 tsconfig，故这里只给最朴素的配置
 cat > "$WORK/vitest.config.mjs" <<'EOF'
 export default {

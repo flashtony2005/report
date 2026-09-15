@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import {
   buildCrossTemplate,
   buildDetailTemplate,
@@ -46,6 +46,45 @@ import {
   type ReportTemplate,
   type TplNode,
 } from './grid-report'
+
+/**
+ * 定位那份存盘报表样本。
+ *
+ * 不能直接写死相对 `import.meta.dirname` 的路径：`scripts/ts-test.sh` 为了绕开
+ * 装不出来的 tsconfig，会把 spec **拷到临时目录**再跑，那时 `import.meta.dirname`
+ * 已经不在仓库里了。所以按候选依次找，找不到就**抛错**而不是跳过——
+ * 静默跳过会让这条用例变成永远绿的空转。
+ */
+function findSavedReport(): string {
+  const name = 'sales-by-region.json'
+  const here = import.meta.dirname ?? process.cwd()
+  const candidates = [
+    // 正常位置：openprint/src/report → 仓库根
+    resolve(here, '../../../print-server/reports', name),
+    // 临时目录里跑：ts-test.sh 会把样本拷到 spec 同级的 reports/ 下
+    resolve(here, 'reports', name),
+    // 兜底：从 cwd 逐级往上找仓库根
+    ...(() => {
+      const out: string[] = []
+      let d = process.cwd()
+      for (let i = 0; i < 8; i += 1) {
+        out.push(resolve(d, 'print-server/reports', name))
+        const up = dirname(d)
+        if (up === d) break
+        d = up
+      }
+      return out
+    })(),
+  ]
+  const hit = candidates.find((p) => existsSync(p))
+  if (!hit) {
+    throw new Error(
+      `找不到存盘报表样本 ${name}。找过：\n${candidates.join('\n')}\n` +
+        `（若用临时目录跑，请让 harness 把样本拷到 spec 同级 reports/ 下）`,
+    )
+  }
+  return hit
+}
 
 describe('位置名', () => {
   it('列下标转 Excel 列名', () => {
@@ -754,12 +793,7 @@ describe('自由模板：格文本 ↔ 语义', () => {
   it('真实存盘报表的每一格经 `=` 方言往返都不丢语义', () => {
     // 合成用例再全也盖不住真实模板的形状（有主格、有小计、有纯占位格），
     // 所以直接拿存盘那份报表当样本，逐格 format → parse 往回认。
-    // 注意：沙箱的 fs / url shim 不收 URL 对象（"The URL must be of scheme file"），
-    // 连 fileURLToPath 也会被拦，所以用 import.meta.dirname 拼普通路径字符串
-    const raw = readFileSync(
-      resolve(import.meta.dirname, '../../../print-server/reports/sales-by-region.json'),
-      'utf8',
-    )
+    const raw = readFileSync(findSavedReport(), 'utf8')
     const def = JSON.parse(raw) as { template: { sheets: unknown[] } }
     const grid = templateToGrid(def.template.sheets[0] as never)
 
