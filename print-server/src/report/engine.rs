@@ -2243,6 +2243,32 @@ impl Engine {
             // 格集过滤：条件以**候选格**为上下文求值（裸 B2 = 候选格的主格），
             // 于是 `outer` 传当前格，`$B2` 才能回到当前格的主格。
             Expr::Filter { cell, cond } => {
+                // `C1[A1:+0]{cond}.sum()`：解析器把聚合后缀挂在**内层** Cell 上
+                //（见 `expr.rs` 的解析测试），但语义是「先按条件筛出格集，再对筛完的聚合」。
+                // 若照字面先求内层聚合，拿到的是**未过滤**的整组聚合，条件被静默丢掉 ——
+                // 输出仍是一个看着很正常的合计，肉眼根本发现不了。
+                // 所以这里把后缀摘下来，先过滤、再聚合。
+                if let Expr::Cell { target, coord, prop: Some(Prop::Aggregate(f)) } = cell.as_ref()
+                {
+                    let func = *f;
+                    let base = Expr::Cell {
+                        target: target.clone(),
+                        coord: coord.clone(),
+                        prop: None,
+                    };
+                    let cells = match self.eval_ast(&base, cur, outer) {
+                        Val::Set { cells, .. } => cells,
+                        // 过滤只能作用在格集上；单值原样返回
+                        other => return other,
+                    };
+                    let kept: Vec<usize> = cells
+                        .iter()
+                        .copied()
+                        .filter(|&cand| self.eval_ast(cond, cand, cur).truthy())
+                        .collect();
+                    // 聚合口径复用整族共用的那一份，别在这里再抄一遍 sum/avg 的边界
+                    return Val::Num(agg_of_numbers(&self.numbers_of_cells(&kept), func));
+                }
                 let cells = match self.eval_ast(cell, cur, outer) {
                     Val::Set { cells, .. } => cells,
                     // 过滤只能作用在格集上；单值原样返回
@@ -3895,9 +3921,116 @@ mod scale {
         println!();
     }
 
-    /// 一组：A1=g（分组主格；N 行 g 同值 → 只展开 1 次）、B1=id（明细，parent=A1）、
-    /// C1=amount（parent=B1）、D1=要测的表达式（parent=B1，无 field → 每行 1 个实例）。
+    /// 「每行带 `{}` 格集过滤」的规模曲线 —— 同族的**另一个**形状，而且是**平方**的。
     ///
+    /// `Expr::Filter` 会**遍历整组候选格**，对每一格求一次条件表达式，再把留下的格
+    /// 拿去聚合。逐行做一次 = O(组大小) × N 行。此前**没有任何基准覆盖**这个形状
+    ///（只有解析器测试 + 一条 `$` 语义测试）。
+    ///
+    /// 表达式取自真实用法：`C1[A1:+0]{$B1 == B1}.sum()` ——
+    /// 「本组里 key 与当前行相同的那些格」，`$` 回到当前行、裸引用指候选格。
+    ///
+    /// **最后一列「常量条件」是判别实验，别删**：`{1 == 1}` 既没有 `$` 也不引用任何格，
+    /// 于是它只承担「依赖集枚举」那部分开销。实测 2000 行：常量条件 63 ms、
+    /// 而带 `$B1` 的三列都是 ~570 ms —— 说明这里有**两处独立**的 O(n²)：
+    ///   ① 依赖枚举（`ensure_deps` 对 `Filter` 每行重枚举，`collect_deps` 把整个结果集复制进 Vec）
+    ///   ② 逐候选求条件（N 格 × 每格两次 resolve + 主格定位 + `JsonValue` 克隆 + 转字符串）
+    /// 少了这一列就会把两者混为一谈。
+    ///
+    /// 已知未优化（2026-09-16 记）：两处都还在。`{}` 是「月份不连续」这类**小分组**
+    /// 场景的工具（组内十几行时成本可忽略），所以按现状记录、不建投机性的索引。
+    ///
+    /// 对照组同样是 `one_group_coord_sheet(None)`（D1 退化成普通字段 `amount`）。
+    /// 阶梯只到 2000 行（别的基准到 8000）：这个形状是平方的，再往上单点就要好几秒。
+    #[test]
+    #[ignore = "性能基准，手动跑：见本模块头部注释"]
+    fn bench_per_row_filter() {
+        const KINDS: &[(&str, &str)] = &[
+            ("C1[A1:+0]{$B1 == B1}.sum()", "过滤后求和"),
+            ("C1[A1:+0]{$B1 == B1}", "仅过滤"),
+            ("C1[A1:+0]{$B1 != B1}.sum()", "过滤取反"),
+            // 判别实验：常量条件 → 只承担「依赖枚举」那部分（见上面的说明，别删）
+            ("C1[A1:+0]{1 == 1}.sum()", "常量条件"),
+        ];
+        let base = one_group_coord_sheet(None);
+        let mut head = String::from("  明细行数");
+        for (_, label) in KINDS {
+            head.push_str(&format!("  {label:>12}"));
+        }
+        head.push_str(&format!("  {:>10}", "基线"));
+        println!("\n{head}");
+        for n in [250usize, 500, 1000, 2000] {
+            let ds = one_group_data(n);
+            let mut a = f64::MAX;
+            for _ in 0..3 {
+                a = a.min(time_sheet(&base, ds.clone()).2);
+            }
+            let mut line = format!("  {n:>8}");
+            for (expr, _) in KINDS {
+                let sheet = one_group_coord_sheet(Some(expr));
+                let mut b = f64::MAX;
+                for _ in 0..3 {
+                    b = b.min(time_sheet(&sheet, ds.clone()).2);
+                }
+                line.push_str(&format!("  {:>10.1}ms", b));
+            }
+            line.push_str(&format!("  {:>8.1}ms", a));
+            println!("{line}");
+        }
+        println!();
+    }
+
+    /// `{条件}.聚合` —— 后缀在解析期挂在**内层** Cell 上，但语义是「先筛、再聚合」。
+    ///
+    /// 这里踩过一个**静默错值**：`eval_ast` 先求内层 Cell（带聚合后缀）→ 拿到的是
+    /// **未过滤**的整组聚合并返回 `Val::Num`，于是 `Filter` 分支走 `other => return other`
+    /// 把条件整个丢掉。输出仍是「一个看着很正常的合计」，没人会发现。
+    /// 实测：`C1[A1:+0]{$B1 == B1}.sum()` 曾对**每一行**都返回整组合计 21。
+    ///
+    /// 数据 1..=N，期望值都能写成闭式；`sum` 逐行不同 → 一眼看出是否又退回了整组合计。
+    #[test]
+    fn filter_then_aggregate_applies_the_condition() {
+        const N: usize = 6;
+        let total = (N * (N + 1) / 2) as f64;
+
+        let cases: Vec<(&str, Box<dyn Fn(usize) -> f64>)> = vec![
+            // 只留「key 与当前行相同」的那一格 → 就是本行的金额 k+1
+            ("C1[A1:+0]{$B1 == B1}.sum()", Box::new(|k| (k + 1) as f64)),
+            ("C1[A1:+0]{$B1 == B1}.count()", Box::new(|_k| 1.0)),
+            ("C1[A1:+0]{$B1 == B1}.max()", Box::new(|k| (k + 1) as f64)),
+            // 取反：留下 N-1 格 → 总计减掉本行
+            ("C1[A1:+0]{$B1 != B1}.sum()", Box::new(move |k| total - (k + 1) as f64)),
+            ("C1[A1:+0]{$B1 != B1}.count()", Box::new(|_k| (N - 1) as f64)),
+        ];
+
+        for (expr, want) in cases {
+            let sheet = one_group_coord_sheet(Some(expr));
+            let mut engine = Engine::new(one_group_data(N));
+            let grid = engine.expand_sheet(&sheet);
+            assert_eq!(grid.len(), N, "{expr}：应展开出 {N} 行");
+            for (k, row) in grid.iter().enumerate() {
+                let got = row[3].raw_number.unwrap_or_else(|| panic!("{expr}：D1 应是数值"));
+                let w = want(k);
+                assert!((got - w).abs() < 1e-9, "{expr}：第 {} 行应是 {w}，实际 {got}", k + 1);
+            }
+        }
+
+        // 防空转：带条件的求和**必须**与整组合计不同 —— 否则说明条件又被静默丢掉了。
+        // 上面那些闭式期望本身逐行不同，但这条把「条件被丢弃」这个具体故障直接钉死：
+        // 若将来有人把 `want` 误改成整组合计，测试会跟着一起错，而这条不会。
+        let mut e1 = Engine::new(one_group_data(N));
+        let mut e2 = Engine::new(one_group_data(N));
+        let g1 = e1.expand_sheet(&one_group_coord_sheet(Some("C1[A1:+0].sum()")));
+        let g2 = e2.expand_sheet(&one_group_coord_sheet(Some("C1[A1:+0]{$B1 == B1}.sum()")));
+        assert_eq!(g1[0][3].raw_number, Some(total), "对照组：整组合计应是 {total}");
+        assert_ne!(
+            g1[0][3].raw_number, g2[0][3].raw_number,
+            "带条件的求和与整组合计**不能**相等，否则条件等于没生效"
+        );
+    }
+
+    /// 一组：A1=g（分组主格；N 行 g 同值 → 只展开 1 次）、B1=id（明细，parent=A1）、
+    /// C1=amount（parent=B1）、D1=要测的表达式（parent=B1，无 field → 每行 1 个实例）。    ///
     /// `expr` 给 `None` 时 D1 退化成普通字段，作对照。
     fn one_group_coord_sheet(expr: Option<&str>) -> SheetTpl {
         let m = |field: Option<&str>,
