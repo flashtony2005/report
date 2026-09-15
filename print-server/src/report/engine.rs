@@ -519,11 +519,23 @@ struct PosIndex {
 
 /// 一个结果集的数字列聚合。
 ///
-/// 只留聚合值和有序副本，不留原始序列：用到它的场景（SUM/COUNT/AVG/MIN/MAX/RANK）
-/// 都能在这几样上 O(1) / O(log n) 算完。
+/// 只留聚合值和有序副本，不留原始序列：用到它的场景
+/// （SUM/COUNT/AVG/MIN/MAX/RANK/PRODUCT/COUNTA）都能在这几样上 O(1) / O(log n) 算完。
+///
+/// 为什么把 PRODUCT / COUNTA 也算进来：它们和 SUM 是**同一族写法**，
+/// 只是散在 `eval_call` 的不同分支里。缓存若只存 sum/min/max，那两个分支就接不上，
+/// 于是同一份结果集被每行各重扫一遍 —— 实测 `RANK`/`PRODUCT`/`COUNTA` 在 8000 行
+/// 分别是 301 / 336 / 37 ms（平方曲线），而 SUM 那一支已经是 2.5 ms。
+/// 与其为每个函数单开一份缓存（键、失效点都要各自维护，迟早走偏），
+/// 不如让**一个** `Numbers` 同时喂饱整族。
 struct Numbers {
     count: usize,
     sum: f64,
+    /// 非空格数（`COUNTA` 用）。与 `count` **不同**：`count` 只数能转成数字的，
+    /// `non_null` 数所有非空值（文本、日期也算一格）。
+    non_null: usize,
+    /// 数值之积（`PRODUCT` 用）。空集为 1.0，与 `iter().product()` 的口径一致。
+    product: f64,
     /// 空集为 NaN，与 `aggregate_cells` 的 `fold(NAN, ..)` 口径一致
     min: f64,
     max: f64,
@@ -533,15 +545,20 @@ struct Numbers {
 
 /// `Numbers` → 某个聚合口径的标量。
 ///
-/// SUM/COUNT/AVG/MIN/MAX 的口径只有这一份：`cached_col_agg`、`cached_coord_agg`
-/// 和 `eval_call` 里的 `SUM|COUNT|AVG|MIN|MAX` 分支都走它，避免三处各写一遍
-/// 而慢慢走偏（空集 COUNT=0、AVG=0、MIN/MAX=NaN 这些边界都在这里定死）。
+/// SUM/COUNT/AVG/MIN/MAX/PRODUCT 的口径只有这一份：`cached_col_agg`、
+/// `cached_coord_agg` 和 `eval_call` 里的 `SUM|COUNT|AVG|MIN|MAX` 分支都走它，
+/// 避免三处各写一遍而慢慢走偏（空集 COUNT=0、AVG=0、MIN/MAX=NaN、
+/// PRODUCT=1 这些边界都在这里定死）。
+///
+/// 注意 `"counta"` **不**走这里：它要的是 `non_null`，与 `count` 语义不同，
+/// 混进一个 match 里迟早有人把两者当同一个。
 fn agg_of_numbers(n: &Numbers, func: &str) -> f64 {
     match func {
         "count" => n.count as f64,
         "avg" if n.count > 0 => n.sum / n.count as f64,
         "min" => n.min,
         "max" => n.max,
+        "product" => n.product,
         _ => n.sum,
     }
 }
@@ -599,20 +616,23 @@ pub struct Engine {
     /// 这个服务所有带坐标的聚合求值（SUM / PROPORTION / ACCSUM …）。
     resolve_cache: RefCell<HashMap<(String, Coord, usize), Rc<[usize]>>>,
 
-    /// 带层次坐标的聚合缓存：`(target, coord, anchor) → Numbers`。
+    /// 带层次坐标的聚合缓存：`(target, coord, anchor) → Rc<Numbers>`。
     ///
     /// 只缓存结果集**还不够**：结果集缓存把 `resolve` 降到 O(1)，但拿到集合之后
     /// `aggregate_cells` 仍要逐格克隆 `JsonValue` 再转 f64 —— N 行共享同一 anchor 时
     /// 同一份合计照样算了 N 遍（实测：只加 `resolve_cache`，8000 行 560 ms → 448 ms，
     /// 曲线一点没直）。把 `Numbers` 也缓存下来，命中后整次聚合是 O(1)。
     ///
-    /// `Numbers` 里带着 `sum/count/min/max/sorted`，所以 SUM/COUNT/AVG/MIN/MAX
-    /// 五种口径一次缓存全都覆盖。
+    /// `Numbers` 里带着 `sum/count/non_null/product/min/max/sorted`，所以
+    /// SUM/COUNT/AVG/MIN/MAX/PRODUCT/COUNTA/RANK **整族**一次缓存全都覆盖 ——
+    /// 这正是它要存 `Rc` 而不是裸 `Numbers` 的原因：RANK 要拿 `sorted` 做二分，
+    /// 若按值取就得克隆整个有序数组，每行一次 O(n) 克隆，等于没缓存。
+    /// 存 `Rc` 后取用是 O(1)，`sorted` 原地共享。
     ///
     /// 安全性同 `resolve_cache`：值在一轮内冻结（`evaluated` 一旦置位就不再重算），
     /// 集合只依赖 `hidden`，而 `hidden` 只在每轮末尾的 `compute_tests` 里变 ——
     /// 所以一轮之内 `(target, coord, anchor) → Numbers` 恒定，一轮一清即可。
-    coord_nums_cache: RefCell<HashMap<(String, Coord, usize), Numbers>>,
+    coord_nums_cache: RefCell<HashMap<(String, Coord, usize), Rc<Numbers>>>,
 
     /// 带坐标结果集的**前缀和**：`(target, coord, 坐标anchor) → prefix`，
     /// `prefix[i]` = 集合前 i 个元素之和（`prefix[0] = 0`）。
@@ -1929,25 +1949,38 @@ impl Engine {
         Some(agg_of_numbers(&n, func))
     }
 
-    /// 带层次坐标的聚合：`(target, coord, anchor) → Numbers` 缓存。
+    /// 带层次坐标的结果集的 `Numbers`（缓存）：`(target, coord, anchor) → Rc<Numbers>`。
     ///
-    /// 集合本身走 `resolve`（已按同一组键缓存），这里再缓存**聚合结果**。
+    /// 集合本身走 `resolve`（已按同一组键缓存），这里再缓存**物化后的数字列**。
     /// 只缓存集合是不够的：拿到集合后仍要逐格克隆 `JsonValue` 再转 f64，
     /// N 行共享同一 anchor 时就是 N 遍 O(|集合|) —— 实测只加 `resolve_cache` 时
     /// 8000 行 560 ms → 448 ms，曲线几乎没动，瓶颈就在这一层。
-    fn cached_coord_agg(&self, target: &str, cd: &Coord, cur: usize, func: &str) -> Option<f64> {
+    ///
+    /// 返回 `Rc` 而不是借用：调用方（RANK 要二分 `sorted`）拿到后还会调
+    /// `eval_ast`（内部要借 `pos_index`），若手里攥着 `coord_nums_cache` 的 `Ref`，
+    /// 第二个 RefCell 借用就会 panic。`Rc` 出栈即解绑，谁也不欠谁。
+    fn cached_coord_numbers(
+        &self,
+        target: &str,
+        cd: &Coord,
+        cur: usize,
+    ) -> Option<Rc<Numbers>> {
         let anchor = self.find_anchor(cd, cur)?;
         let key = (target.to_string(), cd.clone(), anchor);
-        let hit = self.coord_nums_cache.borrow().contains_key(&key);
-        if !hit {
-            // 先 `resolve`（同键，已缓存）拿到集合，再一次性算成 `Numbers`
-            let cells = self.resolve(target, Some(cd), cur);
-            let built = self.numbers_of_cells(&cells);
-            self.coord_nums_cache.borrow_mut().insert(key.clone(), built);
+        if let Some(hit) = self.coord_nums_cache.borrow().get(&key) {
+            return Some(hit.clone());
         }
-        let cache = self.coord_nums_cache.borrow();
-        let n = cache.get(&key)?;
-        Some(agg_of_numbers(n, func))
+        // 先 `resolve`（同键，已缓存）拿到集合，再一次性算成 `Numbers`
+        let cells = self.resolve(target, Some(cd), cur);
+        let built = Rc::new(self.numbers_of_cells(&cells));
+        self.coord_nums_cache.borrow_mut().insert(key, built.clone());
+        Some(built)
+    }
+
+    /// 带层次坐标的聚合：`(target, coord, anchor) → Numbers` 缓存。
+    fn cached_coord_agg(&self, target: &str, cd: &Coord, cur: usize, func: &str) -> Option<f64> {
+        let n = self.cached_coord_numbers(target, cd, cur)?;
+        Some(agg_of_numbers(&n, func))
     }
 
     /// `SUM(B2[A1:+0])` 这种**调用写法**、单参数、带层次坐标 → 转 `cached_coord_agg`。
@@ -1961,6 +1994,21 @@ impl Engine {
             return None;
         };
         self.cached_coord_agg(target, cd, cur, func)
+    }
+
+    /// `COUNTA(B2[A1:+0])` 的缓存读法：单参数、带坐标 → 取 `Numbers.non_null`。
+    ///
+    /// 与 `cached_call_coord_agg` 分开写，是因为 `COUNTA` 的口径是**非空格数**，
+    /// 不是 `agg_of_numbers` 里任何一种 —— 混进去迟早被当成 `count`。
+    fn cached_call_coord_counta(&self, args: &[Expr], cur: usize) -> Option<f64> {
+        if args.len() != 1 {
+            return None;
+        }
+        let Expr::Cell { target, coord: Some(cd), .. } = &args[0] else {
+            return None;
+        };
+        let n = self.cached_coord_numbers(target, cd, cur)?;
+        Some(n.non_null as f64)
     }
 
     /// 带坐标结果集的前缀和（缓存）。`prefix[i]` = 集合前 i 个元素之和，`prefix[0] = 0`。
@@ -2011,16 +2059,27 @@ impl Engine {
         );
         let mut sorted = Vec::with_capacity(cells.len());
         let mut sum = 0.0;
+        let mut product = 1.0;
+        let mut non_null = 0usize;
         for &i in cells.iter() {
-            if let Some(n) = as_number(self.insts[i].value.clone()) {
+            let v = &self.insts[i].value;
+            // COUNTA 数的是「非空」，与「能转成数字」是两回事：
+            // 一格文本既不进 `sorted`，也不该被算漏。
+            if !v.is_null() {
+                non_null += 1;
+            }
+            if let Some(n) = as_number(v.clone()) {
                 sorted.push(n);
                 sum += n;
+                product *= n;
             }
         }
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         Numbers {
             count: sorted.len(),
             sum,
+            non_null,
+            product,
             min: sorted.first().copied().unwrap_or(f64::NAN),
             max: sorted.last().copied().unwrap_or(f64::NAN),
             sorted,
@@ -2311,9 +2370,20 @@ impl Engine {
                     v
                 }
             }
-            "PRODUCT" => Val::Num(self.arg_numbers(args, cur, outer).iter().product::<f64>()),
+            "PRODUCT" => {
+                // 单参数带坐标：整族缓存里已有现成的乘积，别每行把整组重乘一遍
+                // （实测 8000 行 336 ms → 毫秒级）
+                if let Some(v) = self.cached_call_coord_agg(args, cur, "product") {
+                    return Val::Num(v);
+                }
+                Val::Num(self.arg_numbers(args, cur, outer).iter().product::<f64>())
+            }
             // COUNTA 数的是非空单元格，与 COUNT（只数数字）不同
             "COUNTA" => {
+                // 单参数带坐标：非空格数已在整族缓存里（`Numbers.non_null`）
+                if let Some(v) = self.cached_call_coord_counta(args, cur) {
+                    return Val::Num(v);
+                }
                 let mut n = 0usize;
                 for a in args {
                     match self.eval_ast(a, cur, outer) {
@@ -2345,6 +2415,24 @@ impl Engine {
                         .map(|n| n.sorted.len() - n.sorted.partition_point(|v| *v <= x));
                     if let Some(g) = greater {
                         return Val::Num(1.0 + g as f64);
+                    }
+                }
+                // 带层次坐标（`RANK(C1[A1:+0])`）：整族缓存里已有本组的升序副本，
+                // 同样退化成分区点。少了这条就是每行扫一遍整组 → O(n²)
+                // （实测 8000 行 301 ms）。属性式那条缓存接不到这里，必须单独接。
+                if let Expr::Cell { target, coord: Some(cd), .. } = &args[0] {
+                    // 顺序同上面：先取 `Rc`（O(1) 克隆，借用立刻释放），再 `eval_ast`
+                    // 取本行的值。反了就会攥着 `coord_nums_cache` 的借用进 `pos_index`
+                    if let Some(nums) = self.cached_coord_numbers(target, cd, cur) {
+                        let v = self.eval_ast(&args[0], cur, outer).scalar(self).as_num();
+                        return match v {
+                            Some(x) => Val::Num(
+                                1.0 + (nums.sorted.len()
+                                    - nums.sorted.partition_point(|v| *v <= x))
+                                    as f64,
+                            ),
+                            None => Val::Null,
+                        };
                     }
                 }
                 let nums = self.arg_numbers(args, cur, outer);
@@ -3751,6 +3839,62 @@ mod scale {
         println!();
     }
 
+    /// 「每行带坐标聚合」的**其余写法** —— 同一语义往往散在好几条代码路径上。
+    ///
+    /// `bench_per_row_agg_coord` 只量了 `C1[A1:+0].sum()`（属性式）/ PROPORTION /
+    /// ACCSUM。可「本组求和」还能写成 `SUM(C1[A1:+0])`（调用式），COUNT/AVG/MIN/MAX
+    /// 也各有调用式；RANK / PRODUCT / COUNTA 同样接受格集参数。
+    /// 这些**不是同一条代码路径**：调用式进 `eval_call` 的 `"SUM"|"COUNT"|…` 分支，
+    /// RANK / PRODUCT / COUNTA 各自独立 —— 属性式那条缓存接不上它们。
+    /// 所以必须一次量完，不能靠「应该也快了」来推断。
+    ///
+    /// 对照组同样是 `one_group_coord_sheet(None)`（D1 退化成普通字段 `amount`）。
+    ///
+    /// 报的是**绝对耗时**（不是「减去基线」的差）：修好之后表达式的增量已经掉到
+    /// 噪声以下，差值会被 `max(0.0)` 夹成 0.0，看着像「不要钱」—— 那是测量假象。
+    /// 绝对耗时里含一段共同的展开开销（线性），所以**看形状**：某一列随 n 翻倍而
+    /// 四倍增长，就是还有平方路径。基线列放在最右，用来判断噪声水位。
+    #[test]
+    #[ignore = "性能基准，手动跑：见本模块头部注释"]
+    fn bench_per_row_agg_coord_family() {
+        const KINDS: &[(&str, &str)] = &[
+            ("SUM(C1[A1:+0])", "SUM调用"),
+            ("COUNT(C1[A1:+0])", "COUNT调用"),
+            ("AVG(C1[A1:+0])", "AVG调用"),
+            ("MIN(C1[A1:+0])", "MIN调用"),
+            ("MAX(C1[A1:+0])", "MAX调用"),
+            ("RANK(C1[A1:+0])", "RANK"),
+            ("PRODUCT(C1[A1:+0])", "PRODUCT"),
+            ("COUNTA(C1[A1:+0])", "COUNTA"),
+        ];
+        let base = one_group_coord_sheet(None);
+        let mut head = String::from("  明细行数");
+        for (_, label) in KINDS {
+            head.push_str(&format!("  {label:>9}"));
+        }
+        head.push_str(&format!("  {:>9}", "基线"));
+        println!("\n{head}");
+        for n in [1000usize, 2000, 4000, 8000] {
+            let ds = one_group_data(n);
+            let mut a = f64::MAX;
+            for _ in 0..5 {
+                a = a.min(time_sheet(&base, ds.clone()).2);
+            }
+            let mut line = format!("  {n:>8}");
+            for (expr, _) in KINDS {
+                let sheet = one_group_coord_sheet(Some(expr));
+                let mut b = f64::MAX;
+                for _ in 0..5 {
+                    b = b.min(time_sheet(&sheet, ds.clone()).2);
+                }
+                line.push_str(&format!("  {:>7.1}ms", b));
+            }
+            line.push_str(&format!("  {:>7.1}ms", a));
+            println!("{line}");
+        }
+        println!();
+    }
+
     /// 一组：A1=g（分组主格；N 行 g 同值 → 只展开 1 次）、B1=id（明细，parent=A1）、
     /// C1=amount（parent=B1）、D1=要测的表达式（parent=B1，无 field → 每行 1 个实例）。
     ///
@@ -3801,18 +3945,30 @@ mod scale {
     /// 这条专治那类**输出仍是一串看着很正常的数、只是整体错位**的 bug：
     /// 缓存接错（键少带 anchor、或该清没清）正是这个特征，肉眼看输出发现不了。
     ///
-    /// 数据是 1..=N，所以三个口径的期望值都能写成闭式：
-    /// SUM 每行都是整组合计；ACCSUM 第 k 行是 1..k 的和；PROPORTION 是 k/总计。
-    /// 后两个**逐行不同**，所以任何「跨行串了缓存」的错都会立刻暴露。
+    /// 数据是 1..=N，所以每个口径的期望值都能写成闭式。
+    /// 覆盖**整族写法**而不只是 `SUM`：调用式和属性式是两条代码路径，
+    /// RANK/PRODUCT/COUNTA 又各自独立 —— 只测 SUM 等于只测了其中一条。
+    /// 其中 ACCSUM / PROPORTION / RANK **逐行不同**，任何「跨行串了缓存」都会立刻暴露。
     #[test]
     fn per_row_coord_agg_values_are_exact() {
         const N: usize = 12;
         let total = (N * (N + 1) / 2) as f64;
+        let factorial = (1..=N).fold(1.0f64, |a, b| a * b as f64);
 
-        let cases: [(&str, Box<dyn Fn(usize) -> f64>); 3] = [
+        let cases: Vec<(&str, Box<dyn Fn(usize) -> f64>)> = vec![
             ("C1[A1:+0].sum()", Box::new(move |_k| total)),
             ("ACCSUM(C1[A1:+0])", Box::new(|k| ((k + 1) * (k + 2) / 2) as f64)),
             ("PROPORTION(C1[A1:+0])", Box::new(move |k| (k + 1) as f64 / total)),
+            // —— 调用式整族：与属性式不是同一条代码路径，缓存得各自接一次 ——
+            ("SUM(C1[A1:+0])", Box::new(move |_k| total)),
+            ("COUNT(C1[A1:+0])", Box::new(|_k| N as f64)),
+            ("AVG(C1[A1:+0])", Box::new(move |_k| total / N as f64)),
+            ("MIN(C1[A1:+0])", Box::new(|_k| 1.0)),
+            ("MAX(C1[A1:+0])", Box::new(|_k| N as f64)),
+            ("PRODUCT(C1[A1:+0])", Box::new(move |_k| factorial)),
+            ("COUNTA(C1[A1:+0])", Box::new(|_k| N as f64)),
+            // 降序名次：值 k+1 在 1..=N 里「比我大的」有 N-(k+1) 个 → 名次 N-k
+            ("RANK(C1[A1:+0])", Box::new(|k| (N - k) as f64)),
         ];
 
         for (expr, want) in cases {
@@ -3826,6 +3982,36 @@ mod scale {
                 assert!(
                     (got - w).abs() < 1e-9,
                     "{expr}：第 {} 行应是 {w}，实际 {got}",
+                    k + 1
+                );
+            }
+        }
+    }
+
+    /// `COUNTA` 与 `COUNT` 的**口径差**，在缓存接上之后必须仍然成立。
+    ///
+    /// 两者在「全是数字」的数据上恒等 —— 所以上面那条整族测试**抓不出**把
+    /// `Numbers.non_null` 和 `Numbers.count` 写反的错。差别只在文本格：
+    /// COUNT 只数能转成数字的，COUNTA 连文本也算一格。
+    /// 这里把一行的金额改成文本，两个口径就分道扬镳了。
+    #[test]
+    fn coord_counta_counts_text_but_count_does_not() {
+        const N: usize = 6;
+        let mut ds = one_group_data(N);
+        // 第 3 行（0 起）的金额换成文本：不是数字，但**不是空**
+        ds[2].insert("amount".into(), JsonValue::from("N/A"));
+
+        let cases = [("COUNT(C1[A1:+0])", (N - 1) as f64), ("COUNTA(C1[A1:+0])", N as f64)];
+        for (expr, want) in cases {
+            let sheet = one_group_coord_sheet(Some(expr));
+            let mut engine = Engine::new(ds.clone());
+            let grid = engine.expand_sheet(&sheet);
+            assert_eq!(grid.len(), N, "{expr}：应展开出 {N} 行");
+            for (k, row) in grid.iter().enumerate() {
+                let got = row[3].raw_number.unwrap_or_else(|| panic!("{expr}：D1 应是数值"));
+                assert!(
+                    (got - want).abs() < 1e-9,
+                    "{expr}：第 {} 行应是 {want}，实际 {got}",
                     k + 1
                 );
             }
