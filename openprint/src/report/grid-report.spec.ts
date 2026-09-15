@@ -11,6 +11,7 @@ import {
   headerRowCount,
   labelOf,
   parseParams,
+  applyCellText,
   colIndex,
   clearGridMerge,
   deleteGridCol,
@@ -763,6 +764,124 @@ describe('自由模板：格文本 ↔ 语义', () => {
     )
     // 字面量不加前缀，原样出去
     expect(formatCellText({ value: '地区', model: undefined })).toBe('地区')
+  })
+
+  it('方向标记 ^ / > → 展开方向（沿用 NopReport 的 *=^ / *=>）', () => {
+    expect(parseCellText('=^ds1.city')).toEqual({
+      kind: 'field',
+      ds: 'ds1',
+      field: 'city',
+      expand: 'r',
+    })
+    expect(parseCellText('=>ds1.city')).toEqual({
+      kind: 'field',
+      ds: 'ds1',
+      field: 'city',
+      expand: 'c',
+    })
+  })
+
+  it('方向标记能和聚合叠着用', () => {
+    expect(parseCellText('=^ds1.amount.sum()')).toEqual({
+      kind: 'field',
+      ds: 'ds1',
+      field: 'amount',
+      agg: 'sum',
+      expand: 'r',
+    })
+  })
+
+  it('方向标记在 {{}} 写法里也认', () => {
+    expect(parseCellText('{{^ds1.city}}')).toEqual({
+      kind: 'field',
+      ds: 'ds1',
+      field: 'city',
+      expand: 'r',
+    })
+  })
+
+  it('没写标记时不带 expand —— 保留格子上原有的方向，不静默清掉', () => {
+    const got = parseCellText('=ds1.city')
+    expect(got.kind).toBe('field')
+    expect((got as { expand?: string }).expand).toBeUndefined()
+  })
+
+  it('只有标记没有内容 → 字面量（跟 `=` 单独一个字符一致）', () => {
+    expect(parseCellText('=^')).toEqual({ kind: 'literal', text: '=^' })
+    expect(parseCellText('=>')).toEqual({ kind: 'literal', text: '=>' })
+  })
+
+  it('层次坐标带方向标记：剥掉标记，expr 里不留 ^', () => {
+    expect(parseCellText('=^D3[B3:+0].sum()')).toEqual({
+      kind: 'expr',
+      expr: 'D3[B3:+0].sum()',
+      expand: 'r',
+    })
+  })
+
+  it('formatCellText 不写方向标记 —— 方向在 model 上，不挤进文本', () => {
+    expect(
+      formatCellText({ value: null, model: { ds: 'ds1', field: 'city', expand_type: 'r' } }),
+    ).toBe('=ds1.city')
+    expect(
+      formatCellText({ value: null, model: { ds: 'ds1', field: 'city', expand_type: 'c' } }),
+    ).toBe('=ds1.city')
+  })
+
+  describe('applyCellText（格文本 → 格子，右栏输入与画布回写共用）', () => {
+    it('字面量写 value，model 原样保留', () => {
+      const before = { value: null, model: { ds: 'ds1', field: 'city', expand_type: 'r' as const } }
+      expect(applyCellText(before, '地区')).toEqual({ value: '地区', model: before.model })
+    })
+
+    it('`=ds1.city` 写字段并清掉 value_expr', () => {
+      const got = applyCellText(
+        { value: null, model: { ds: 'ds1', value_expr: 'D3.sum()' } },
+        '=ds1.city',
+      )
+      expect(got.model?.field).toBe('city')
+      expect(got.model?.value_expr).toBeUndefined()
+    })
+
+    it('`=^ds1.city` 把方向写进 expand_type', () => {
+      const got = applyCellText({ value: null, model: undefined }, '=^ds1.city')
+      expect(got.model?.expand_type).toBe('r')
+      expect(applyCellText({ value: null, model: undefined }, '=>ds1.city').model?.expand_type).toBe(
+        'c',
+      )
+    })
+
+    it('没写标记时**保留**格子上原有的方向，不静默清掉', () => {
+      // 用户在已经设成纵向展开的格子里改个字段名，方向不该跟着丢
+      const got = applyCellText(
+        { value: null, model: { ds: 'ds1', field: 'city', expand_type: 'r' } },
+        '=ds1.town',
+      )
+      expect(got.model?.field).toBe('town')
+      expect(got.model?.expand_type).toBe('r')
+    })
+
+    it('标记能覆盖已有方向', () => {
+      const got = applyCellText(
+        { value: null, model: { ds: 'ds1', field: 'city', expand_type: 'r' } },
+        '=>ds1.city',
+      )
+      expect(got.model?.expand_type).toBe('c')
+    })
+
+    it('层次坐标 → value_expr，清掉 field，ds 兜底 ds1', () => {
+      const got = applyCellText(
+        { value: null, model: { ds: 'ds1', field: 'city' } },
+        '=D3[B3:+0].sum()',
+      )
+      expect(got.model?.value_expr).toBe('D3[B3:+0].sum()')
+      expect(got.model?.field).toBeUndefined()
+      expect(got.model?.ds).toBe('ds1')
+    })
+
+    it('空串 → value 变 null', () => {
+      expect(applyCellText({ value: '地区', model: undefined }, '').value).toBeNull()
+    })
   })
 
   it('两种写法解析结果一致（= 与 {{}} 等价）', () => {

@@ -947,11 +947,21 @@ const FIELD_RE = /^([A-Za-z_]\w*)\.([A-Za-z_][\w.]*)$/
 /** `ds1.amount.sum()` */
 const AGG_RE = /^([A-Za-z_]\w*)\.([A-Za-z_][\w.]*)\.(sum|count|avg|min|max)\(\)$/
 
-/** 模板格文本解析结果 */
+/**
+ * 模板格文本解析结果。
+ *
+ * `expand` 只在文本里**带方向标记**时出现：`=^ds1.city` 纵向、`=>ds1.city` 横向，
+ * 沿用 NopReport 的 `*=^` / `*=>`（Rust 侧同一套记号见
+ * `print-server/src/report/import.rs`）。
+ *
+ * 它纯是**输入兼容**——给「从 Excel 模板里粘进来」的格子用的。我们自己存的
+ * ReportDef 里方向在 `model.expand_type` 上，所以 `formatCellText` **不往外写**
+ * 这个记号（跟「只写 `=`、不写 `{{}}`」同一个道理：记号只留一种）。
+ */
 export type CellText =
   | { kind: 'literal'; text: string }
-  | { kind: 'field'; ds: string; field: string; agg?: AggType }
-  | { kind: 'expr'; expr: string }
+  | { kind: 'field'; ds: string; field: string; agg?: AggType; expand?: ExpandDir }
+  | { kind: 'expr'; expr: string; expand?: ExpandDir }
 
 /** 模板格文本 → 语义。`=...` / `{{...}}` 之外一律当字面量。 */
 export function parseCellText(raw: string): CellText {
@@ -961,14 +971,25 @@ export function parseCellText(raw: string): CellText {
   // 跟 Univer `isFormulaString` 的 length > 1 判定保持一致）
   const inner = (m?.[1] ?? m?.[2] ?? '').trim()
   if (!m || !inner) return { kind: 'literal', text: raw ?? '' }
-  const agg = AGG_RE.exec(inner)
-  if (agg) {
-    return { kind: 'field', ds: agg[1], field: agg[2], agg: agg[3] as AggType }
+
+  // 方向标记只在最前面认一个；剥掉后剩下的按正常字段 / 表达式判定
+  let expand: ExpandDir | undefined
+  let body = inner
+  if (body.startsWith('^') || body.startsWith('>')) {
+    expand = body[0] === '^' ? 'r' : 'c'
+    body = body.slice(1).trim()
+    // `=^` 这种只有标记没有内容的，当字面量（跟 `=` 单独一个字符一致）
+    if (!body) return { kind: 'literal', text: raw ?? '' }
   }
-  const fld = FIELD_RE.exec(inner)
-  if (fld) return { kind: 'field', ds: fld[1], field: fld[2] }
+
+  const agg = AGG_RE.exec(body)
+  if (agg) {
+    return { kind: 'field', ds: agg[1], field: agg[2], agg: agg[3] as AggType, expand }
+  }
+  const fld = FIELD_RE.exec(body)
+  if (fld) return { kind: 'field', ds: fld[1], field: fld[2], expand }
   // 既不是 ds.field 也不是 ds.field.agg()：当表达式（层次坐标 / 条件表达式等）
-  return { kind: 'expr', expr: inner }
+  return { kind: 'expr', expr: body, expand }
 }
 
 /**
@@ -987,6 +1008,49 @@ export function formatCellText(cell: CellTpl): string {
   }
   if (cell.value === undefined || cell.value === null) return ''
   return String(cell.value)
+}
+
+/**
+ * 把一段格文本落到格子上：`parseCellText` 的结果 → 新的 CellTpl。
+ *
+ * 这段逻辑原先在 `GridReportModal` 里**抄了两份**（右栏 `free-cell-text` 输入
+ * 与画布 `SheetValueChanged` 回写）。两处都得对同一条规则保持一致 ——
+ * 「方向标记是**显式覆盖**：写了 `^` / `>` 才改，没写就保留 model 上原有的
+ * expand_type」—— 抄两份迟早走偏，所以收成纯函数，好单测。
+ *
+ * - 字面量 → 写 value，model 原样保留
+ * - 字段   → 写 ds/field/agg、清 value_expr
+ * - 其它   → 当表达式：清 field，写 value_expr（ds 兜底 ds1）
+ */
+export function applyCellText(cell: CellTpl, raw: string): CellTpl {
+  const parsed = parseCellText(raw)
+  if (parsed.kind === 'literal') {
+    return { ...cell, value: raw || null }
+  }
+  if (parsed.kind === 'field') {
+    return {
+      ...cell,
+      value: null,
+      model: {
+        ...(cell.model ?? {}),
+        ds: parsed.ds,
+        field: parsed.field,
+        agg: parsed.agg,
+        ...(parsed.expand ? { expand_type: parsed.expand } : {}),
+        value_expr: undefined,
+      },
+    }
+  }
+  return {
+    ...cell,
+    value: null,
+    model: {
+      ...(cell.model ?? {}),
+      ds: cell.model?.ds ?? 'ds1',
+      field: undefined,
+      value_expr: parsed.expr,
+    },
+  }
 }
 
 /** 模板设计网格：矩形的 CellTpl 二维数组（比 SheetTpl 多一层「固定尺寸」约束） */

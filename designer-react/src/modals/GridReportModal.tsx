@@ -55,7 +55,7 @@ import {
   insertGridRow,
   mergeAt,
   PARENT_HIGHLIGHT,
-  parseCellText,
+  applyCellText,
   parentChainOf,
   parentPosOf,
   parentTreeOf,
@@ -459,35 +459,7 @@ function CellModelEditor({
           style={{ width: 260 }}
           placeholder="格内容：字面量，或 =ds1.city / =D3[B3:+0].sum()"
           value={text}
-          onChange={(e) => {
-            const parsed = parseCellText(e.target.value)
-            if (parsed.kind === 'literal') {
-              onChange({ ...cell, value: e.target.value || null, model: cell.model })
-            } else if (parsed.kind === 'field') {
-              onChange({
-                ...cell,
-                value: null,
-                model: {
-                  ...(cell.model ?? {}),
-                  ds: parsed.ds,
-                  field: parsed.field,
-                  agg: parsed.agg,
-                  value_expr: undefined,
-                },
-              })
-            } else {
-              onChange({
-                ...cell,
-                value: null,
-                model: {
-                  ...(cell.model ?? {}),
-                  ds: cell.model?.ds ?? 'ds1',
-                  field: undefined,
-                  value_expr: parsed.expr,
-                },
-              })
-            }
-          }}
+          onChange={(e) => onChange(applyCellText(cell, e.target.value))}
           data-testid="free-cell-text"
         />
       </Space>
@@ -1539,35 +1511,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
               setGrid((g) => {
                 const cur = g[r]?.[c]
                 if (!cur) return g
-                const parsed = parseCellText(text)
-                let next: CellTpl
-                if (parsed.kind === 'literal') {
-                  next = { ...cur, value: text || null }
-                } else if (parsed.kind === 'field') {
-                  next = {
-                    ...cur,
-                    value: null,
-                    model: {
-                      ...(cur.model ?? {}),
-                      ds: parsed.ds,
-                      field: parsed.field,
-                      agg: parsed.agg,
-                      value_expr: undefined,
-                    },
-                  }
-                } else {
-                  next = {
-                    ...cur,
-                    value: null,
-                    model: {
-                      ...(cur.model ?? {}),
-                      ds: cur.model?.ds ?? 'ds1',
-                      field: undefined,
-                      value_expr: parsed.expr,
-                    },
-                  }
-                }
-                return setGridCell(g, r, c, next)
+                return setGridCell(g, r, c, applyCellText(cur, text))
               })
             }),
           )
