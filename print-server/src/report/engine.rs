@@ -2261,26 +2261,46 @@ impl Engine {
                 // 若照字面先求内层聚合，拿到的是**未过滤**的整组聚合，条件被静默丢掉 ——
                 // 输出仍是一个看着很正常的合计，肉眼根本发现不了。
                 // 所以这里把后缀摘下来，先过滤、再聚合。
-                if let Expr::Cell { target, coord, prop: Some(Prop::Aggregate(f)) } = cell.as_ref()
-                {
-                    let func = *f;
-                    let base = Expr::Cell {
-                        target: target.clone(),
-                        coord: coord.clone(),
-                        prop: None,
-                    };
-                    let cells = match self.eval_ast(&base, cur, outer) {
-                        Val::Set { cells, .. } => cells,
-                        // 过滤只能作用在格集上；单值原样返回
-                        other => return other,
-                    };
-                    let kept: Vec<usize> = cells
-                        .iter()
-                        .copied()
-                        .filter(|&cand| self.eval_ast(cond, cand, cur).truthy())
-                        .collect();
-                    // 聚合口径复用整族共用的那一份，别在这里再抄一遍 sum/avg 的边界
-                    return Val::Num(agg_of_numbers(&self.numbers_of_cells(&kept), func));
+                // 后缀挂在**内层** Cell 上（解析器就是这么构的），语义却是「先筛、再对
+                // 筛完的集合应用后缀」。所以按后缀类型分派，**不能**先求内层 Cell ——
+                // 那会把条件整个丢掉。
+                if let Expr::Cell { target, coord, prop: Some(p) } = cell.as_ref() {
+                    match p {
+                        // 聚合后缀：先筛、再对筛完的格集聚合（复用整族共用的口径）
+                        Prop::Aggregate(f) => {
+                            let func = *f;
+                            let base = Expr::Cell {
+                                target: target.clone(),
+                                coord: coord.clone(),
+                                prop: None,
+                            };
+                            let cells = match self.eval_ast(&base, cur, outer) {
+                                Val::Set { cells, .. } => cells,
+                                // 过滤只能作用在格集上；单值原样返回
+                                other => return other,
+                            };
+                            let kept: Vec<usize> = cells
+                                .iter()
+                                .copied()
+                                .filter(|&cand| self.eval_ast(cond, cand, cur).truthy())
+                                .collect();
+                            return Val::Num(agg_of_numbers(&self.numbers_of_cells(&kept), func));
+                        }
+                        // `.expandIndex` 接过滤：**不支持**。它是「本格在主格下的序号」，
+                        // 而筛完的集合未必含本格，序号无定义。老行为是先把内层 Cell
+                        // 求成一个标量、再由下面的 `other => return other` 原样返回 ——
+                        // 于是**条件被静默忽略**（实测：`{cond}.expandIndex` 与不带条件
+                        // 的结果一模一样）。不臆造语义，但必须说出来。
+                        Prop::ExpandIndex => {
+                            self.unsupported.borrow_mut().insert(
+                                "`.expandIndex` 不支持接过滤表达式（如 \
+                                 `C1[A1:+0]{条件}.expandIndex`）：expandIndex 是「本格在主格\
+                                 下的序号」，而筛完的集合未必含本格，序号无定义。该格按空值输出。"
+                                    .to_string(),
+                            );
+                            return Val::Null;
+                        }
+                    }
                 }
                 let cells = match self.eval_ast(cell, cur, outer) {
                     Val::Set { cells, .. } => cells,
@@ -4133,6 +4153,28 @@ mod scale {
             "静默变空不行，必须给出告警。实际告警：{:?}",
             engine.warnings()
         );
+
+        // `.expandIndex` 接过滤：**不支持**（expandIndex 是「本格在主格下的序号」，
+        // 而筛完的集合未必含本格，序号无定义）。老行为是求内层 Cell 拿到一个标量后
+        // 原样返回 —— **条件被静默忽略**：实测 `{cond}.expandIndex`、
+        // `{取反}.expandIndex` 与不带条件的裸 `expandIndex` **三者结果完全相同**。
+        // 同样按「不臆造语义、但必须说出来」处理。
+        for expr in [
+            "C1[A1:+0]{$B1 == B1}.expandIndex",
+            "C1[A1:+0]{$B1 == B1}.ei",
+        ] {
+            let sheet = one_group_coord_sheet(Some(expr));
+            let mut engine = Engine::new(one_group_data(N));
+            let grid = engine.expand_sheet(&sheet);
+            for row in grid.iter() {
+                assert_eq!(row[3].raw_number, None, "{expr}：目前按空值输出");
+            }
+            assert!(
+                engine.warnings().iter().any(|w| w.contains("不支持接过滤表达式")),
+                "{expr}：静默忽略条件不行，必须给出告警。实际告警：{:?}",
+                engine.warnings()
+            );
+        }
     }
 
     /// 一组：A1=g（分组主格；N 行 g 同值 → 只展开 1 次）、B1=id（明细，parent=A1）、
