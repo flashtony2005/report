@@ -3588,6 +3588,39 @@ mod tests {
         assert!(resp.html.contains("116,400"));
     }
 
+    /// 一次 `render` 的产物要同时喂给多个输出：网格 JSON、HTML、分页。
+    /// 这条守着「多格式同源」这条**结构性质** —— `html` 必须覆盖**全部** sheet。
+    /// 哪天有人为了省事只把第一张表发射进 html，单 sheet 的样例照样全绿，
+    /// 只有这条会红。
+    #[test]
+    fn one_render_emits_every_sheet_into_html() {
+        let mut tpl = sample_template();
+        // 复制出一张同内容、不同名的 sheet：单 sheet 的样例盖不住「漏发射」。
+        let mut second = tpl.sheets[0].clone();
+        second.name = "第二张表".to_string();
+        tpl.sheets.push(second);
+
+        let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None }).unwrap();
+        assert_eq!(resp.sheets.len(), 2, "样例应展开出 2 张 sheet");
+
+        // to_html 对每张 sheet 恰好写一个 <h3> + 一个 <table>
+        assert_eq!(
+            resp.html.matches("<table").count(),
+            resp.sheets.len(),
+            "html 的 <table> 数应等于 sheet 数：一次展开要覆盖全部 sheet，而不是只发第一张"
+        );
+        assert!(resp.html.contains("第二张表"), "第二张 sheet 的名字必须出现在 html 里");
+
+        // 同一份 IR：html 的正文来自 resp.sheets，不是又独立展开了一遍
+        let cell_text = &resp.sheets[0].rows[0][0].text;
+        assert!(!cell_text.is_empty(), "防空转：拿来断言的格子文本不能是空串");
+        assert!(
+            resp.html.contains(&escape(cell_text)),
+            "html 应包含 sheets 里的格子文本 {:?}",
+            cell_text
+        );
+    }
+
     /// 列向展开（expand_type: c）：地区 × 月份 交叉表
     #[test]
     fn cross_tab_col_expand() {
