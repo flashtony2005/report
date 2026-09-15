@@ -117,19 +117,25 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
     let mut all_pages: Vec<RenderedSheet> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     for sheet in tpl.sheets.iter_mut() {
-        let (ds, ds_warns) = prepare_dataset(&tpl.datasets, sheet);
+        let (sheet_datasets, primary, ds_warns) = prepare_dataset(&tpl.datasets, sheet);
         for w in ds_warns {
             warnings.push(format!("[{}] {}", sheet.name, w));
         }
         // 循环变量：一个取值一张表。suffix 为空表示没开循环，仍按单张表走。
-        let groups = loop_groups(&ds, sheet.loop_field.as_deref(), &sheet.name, &mut warnings);
+        let groups = loop_groups(
+            &sheet_datasets,
+            &primary,
+            sheet.loop_field.as_deref(),
+            &sheet.name,
+            &mut warnings,
+        );
         for (suffix, sub_ds) in groups {
             let sheet_name = if suffix.is_empty() {
                 sheet.name.clone()
             } else {
                 format!("{} - {}", sheet.name, suffix)
             };
-            let mut engine = engine::Engine::new(sub_ds);
+            let mut engine = engine::Engine::new_multi(sub_ds, primary.clone());
             let rows = engine.expand_sheet(sheet);
             for w in engine.warnings() {
                 warnings.push(format!("[{}] {}", sheet_name, w));
@@ -196,22 +202,31 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
 /// 每组只看到属于自己的那几行，所以组内的 `=^ds1.xxx` 只会展开本组的行
 /// —— 配合 UNNEST 就是档案式报表：按人循环，表内再摊平他的子表。
 ///
-/// 返回 `(分组名, 该组数据)`；**分组名为空串表示没开循环**，调用方照旧出单张表。
-/// 分组顺序 = 取值在数据集里首次出现的顺序（不重排，跟源数据一致）。
+/// 多数据集时：循环变量在**主数据集**上取值，其余数据集按同名同值跟着筛；
+/// 某个数据集里压根没这个字段就不筛它（整份透传），并告警说明。
+///
+/// 返回 `(分组名, 该组的各数据集)`；**分组名为空串表示没开循环**，调用方照旧出单张表。
+/// 分组顺序 = 取值在主数据集里首次出现的顺序（不重排，跟源数据一致）。
 fn loop_groups(
-    ds: &DataSet,
+    datasets: &BTreeMap<String, DataSet>,
+    primary: &str,
     field: Option<&str>,
     sheet_name: &str,
     warnings: &mut Vec<String>,
-) -> Vec<(String, DataSet)> {
+) -> Vec<(String, BTreeMap<String, DataSet>)> {
+    let all = || datasets.clone();
     let field = match field {
         Some(f) if !f.trim().is_empty() => f,
-        _ => return vec![(String::new(), ds.to_vec())],
+        _ => return vec![(String::new(), all())],
+    };
+    let ds = match datasets.get(primary) {
+        Some(d) => d,
+        None => return vec![(String::new(), all())],
     };
     // 空数据集分不出组，但仍出一张空表：xlsx 至少要有一个 worksheet，
     // 整个报表 0 张 sheet 会在导出时直接报错
     if ds.is_empty() {
-        return vec![(String::new(), ds.to_vec())];
+        return vec![(String::new(), all())];
     }
     // 字段压根不存在 —— 多半是字段名写错了。宁可告警 + 退回单张表，
     // 也不要按「(空)」出一张看起来正常、其实什么都没筛的空表
@@ -219,11 +234,25 @@ fn loop_groups(
         warnings.push(format!(
             "[{sheet_name}] 循环字段「{field}」在数据集中不存在，已按单张表渲染"
         ));
-        return vec![(String::new(), ds.to_vec())];
+        return vec![(String::new(), all())];
+    }
+
+    // 其它数据集没有这个字段就整份透传 —— 提前说清楚，免得用户以为也筛了
+    for (name, other) in datasets.iter() {
+        if name == primary || other.is_empty() {
+            continue;
+        }
+        if !other.iter().any(|r| r.contains_key(field)) {
+            warnings.push(format!(
+                "[{sheet_name}] 循环字段「{field}」在数据集 {name} 里不存在，\
+                 该数据集不会被拆分，每张表都会看到它的全部行"
+            ));
+        }
     }
 
     let mut order: Vec<String> = Vec::new();
     let mut map: BTreeMap<String, DataSet> = BTreeMap::new();
+    let mut vals: BTreeMap<String, JsonValue> = BTreeMap::new();
     for row in ds {
         let key = match row.get(field) {
             Some(JsonValue::Null) | None => "(空)".to_string(),
@@ -244,14 +273,37 @@ fn loop_groups(
         if !map.contains_key(&key) {
             order.push(key.clone());
         }
-        map.entry(key).or_default().push(row.clone());
+        map.entry(key.clone()).or_default().push(row.clone());
+        // 记下这一组对应的**原始值**，用来给其它数据集做同名同值的筛选
+        vals.entry(key)
+            .or_insert_with(|| row.get(field).cloned().unwrap_or(JsonValue::Null));
     }
 
     let mut out = Vec::with_capacity(order.len());
     for k in order {
-        if let Some(v) = map.remove(&k) {
-            out.push((k, v));
+        let Some(v) = map.remove(&k) else { continue };
+        let val = vals.remove(&k).unwrap_or(JsonValue::Null);
+        let mut group: BTreeMap<String, DataSet> = BTreeMap::new();
+        group.insert(primary.to_string(), v);
+        for (name, other) in datasets.iter() {
+            if name == primary {
+                continue;
+            }
+            // 有这个字段才筛；没有就整份透传（上面已经告警过了）
+            if other.iter().any(|r| r.contains_key(field)) {
+                group.insert(
+                    name.clone(),
+                    other
+                        .iter()
+                        .filter(|r| r.get(field) == Some(&val))
+                        .cloned()
+                        .collect(),
+                );
+            } else {
+                group.insert(name.clone(), other.clone());
+            }
         }
+        out.push((k, group));
     }
     out
 }
@@ -314,13 +366,6 @@ pub async fn render_with_sources(
     render(req)
 }
 
-/// 选择该 sheet 使用的数据集：取单元格里声明的 ds，否则取第一个
-/// 挑本 sheet 用的数据集，顺带报出「挑不到 / 挑了但别人还想要别的」这类静默问题。
-///
-/// **引擎一个 sheet 只支持一个数据集**（`Engine::new` 只收一份 `ds`，展开、层次坐标、
-/// 行父链全建在「实例 ↔ 行下标」这一套索引上）。所以单元格上的 `ds` 只有第一个
-/// 扫到的说了算，其余的被悄悄忽略 —— 那些格子取不到自己的字段，表现为**静默出空**，
-/// 既不报错也不崩溃。这正是 warnings 要抓的东西。
 /// 把每行 `field` 上的数组摊成多行：父行字段 + 数组元素字段合并成一行。
 ///
 /// 摊平后引擎看到的就是一张普通扁表，展开、层次坐标、行父链全走既有逻辑，
@@ -362,53 +407,77 @@ fn unnest(ds: &DataSet, field: &str) -> DataSet {
     out
 }
 
-/// 准备本 sheet 的数据集：先挑数据集，再按需把嵌套数组摊平成扁平行。
+/// 准备本 sheet 的数据集：先挑出本 sheet 用到的那些数据集，再**逐个**按需
+/// 把嵌套数组摊平成扁平行。
+///
+/// 一个 sheet 可以有多个数据集（每个数据源一条 SQL），这是正常的：
+/// 父子格跨数据集时用 `CellModel.join_on` 声明关联键即可，不需要在 SQL 侧
+/// 先 JOIN。返回 `(数据集表, 主数据集名, 告警)`。`primary` 是格子**没写 ds**
+/// 时用的那一份（= 模板里第一个引用到、且真实存在的数据集）。
 ///
 /// 嵌套绑定写成 `数组名.字段名`（如 `educations.school`）—— 跟普通字段名一样是
 /// 一个字符串，不用给 CellModel 加字段，模板里也自解释。摊平后前缀会被去掉，
 /// 因为元素字段此时已经和父行字段在同一层了。
-fn prepare_dataset(datasets: &BTreeMap<String, DataSet>, sheet: &mut SheetTpl) -> (DataSet, Vec<String>) {
-    let (ds, mut warns) = pick_dataset(datasets, sheet);
+/// 摊平是**按数据集分别做**的：ds1 摊平 educations、ds2 摊平 items 互不干扰。
+fn prepare_dataset(
+    datasets: &BTreeMap<String, DataSet>,
+    sheet: &mut SheetTpl,
+) -> (BTreeMap<String, DataSet>, String, Vec<String>) {
+    let (mut picked, primary, mut warns) = pick_datasets(datasets, sheet);
 
-    // 收集模板里写成 `数组名.字段名` 的绑定，取前缀（去重、保序）
-    let mut prefixes: Vec<String> = Vec::new();
+    // 收集模板里写成 `数组名.字段名` 的绑定，按「该格最终用哪个数据集」分组，
+    // 组内前缀去重、保序
+    let mut by_ds: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for row in sheet.rows.iter() {
         for cell in row.cells.iter() {
-            let f = cell.model.as_ref().and_then(|m| m.field.as_deref());
-            if let Some((head, rest)) = f.and_then(|f| f.split_once('.')) {
-                if !head.is_empty() && !rest.is_empty() && !prefixes.iter().any(|p| p == head) {
-                    prefixes.push(head.to_string());
-                }
+            let Some(m) = cell.model.as_ref() else { continue };
+            let name = m.ds.clone().unwrap_or_else(|| primary.clone());
+            let Some(f) = m.field.as_deref() else { continue };
+            let Some((head, rest)) = f.split_once('.') else { continue };
+            if head.is_empty() || rest.is_empty() {
+                continue;
+            }
+            let v = by_ds.entry(name).or_default();
+            if !v.iter().any(|p| p == head) {
+                v.push(head.to_string());
             }
         }
     }
-    if prefixes.is_empty() {
-        return (ds, warns);
+    if by_ds.is_empty() {
+        return (picked, primary, warns);
     }
 
-    // 一个 sheet 只能摊平一个数组：多个嵌套集合并进一张扁表会变成笛卡尔积。
-    if prefixes.len() > 1 {
-        warns.push(format!(
-            "本 sheet 引用了多个嵌套数组（{}）；一个 sheet 只能摊平一个，\
-             多个嵌套集合请拆到多个 sheet。本次不摊平，这些格子会取不到值",
-            prefixes.join("、")
-        ));
-        return (ds, warns);
-    }
+    for (ds_name, prefixes) in by_ds {
+        let Some(ds) = picked.get_mut(&ds_name) else { continue };
 
-    let head = &prefixes[0];
-    if !ds.iter().any(|r| matches!(r.get(head), Some(JsonValue::Array(_)))) {
-        warns.push(format!(
-            "绑定写了 {head}.x 的嵌套形式，但数据里 {head} 不是数组；按普通字段处理"
-        ));
-        return (ds, warns);
-    }
+        // 一个数据集只能摊平一个数组：多个嵌套集合并进一张扁表会变成笛卡尔积。
+        if prefixes.len() > 1 {
+            warns.push(format!(
+                "数据集 {ds_name} 上引用了多个嵌套数组（{}）；一个数据集只能摊平一个，\
+                 多个嵌套集合请拆到多个数据集或多个 sheet。本次不摊平，这些格子会取不到值",
+                prefixes.join("、")
+            ));
+            continue;
+        }
 
-    let ds = unnest(&ds, head);
-    // 去前缀：摊平后元素字段已经在这一层
-    for row in sheet.rows.iter_mut() {
-        for cell in row.cells.iter_mut() {
-            if let Some(m) = cell.model.as_mut() {
+        let head = &prefixes[0];
+        if !ds.iter().any(|r| matches!(r.get(head), Some(JsonValue::Array(_)))) {
+            warns.push(format!(
+                "绑定写了 {head}.x 的嵌套形式，但数据集 {ds_name} 里 {head} 不是数组；按普通字段处理"
+            ));
+            continue;
+        }
+
+        let unnested = unnest(ds, head);
+        *ds = unnested;
+        // 去前缀：摊平后元素字段已经在这一层。只改绑在这个数据集上的格子
+        for row in sheet.rows.iter_mut() {
+            for cell in row.cells.iter_mut() {
+                let Some(m) = cell.model.as_mut() else { continue };
+                let name = m.ds.clone().unwrap_or_else(|| primary.clone());
+                if name != ds_name {
+                    continue;
+                }
                 if let Some(f) = m.field.as_deref() {
                     if let Some(rest) = f.strip_prefix(head.as_str()).and_then(|s| s.strip_prefix('.')) {
                         m.field = Some(rest.to_string());
@@ -417,10 +486,17 @@ fn prepare_dataset(datasets: &BTreeMap<String, DataSet>, sheet: &mut SheetTpl) -
             }
         }
     }
-    (ds, warns)
+    (picked, primary, warns)
 }
 
-fn pick_dataset(datasets: &BTreeMap<String, DataSet>, sheet: &SheetTpl) -> (DataSet, Vec<String>) {
+/// 挑出本 sheet 引用的数据集。
+///
+/// 以前这里是「只能挑一个」并告警；现在多数据集是一等公民，**引用几个就给几个**。
+/// 只在「引用了不存在的名字」时告警 —— 那才是真会静默出空的错误。
+fn pick_datasets(
+    datasets: &BTreeMap<String, DataSet>,
+    sheet: &SheetTpl,
+) -> (BTreeMap<String, DataSet>, String, Vec<String>) {
     let mut referenced: Vec<String> = Vec::new();
     for row in sheet.rows.iter() {
         for cell in row.cells.iter() {
@@ -436,7 +512,7 @@ fn pick_dataset(datasets: &BTreeMap<String, DataSet>, sheet: &SheetTpl) -> (Data
 
     let mut warns = Vec::new();
 
-    // 引用了不存在的名字：回落到别的数据集后，字段必然取不到
+    // 引用了不存在的名字：这个数据集的行根本拿不到，字段必然取不到
     let available: Vec<String> = datasets.keys().cloned().collect();
     for n in referenced.iter().filter(|n| !datasets.contains_key(*n)) {
         warns.push(format!(
@@ -449,28 +525,27 @@ fn pick_dataset(datasets: &BTreeMap<String, DataSet>, sheet: &SheetTpl) -> (Data
         ));
     }
 
-    let live: Vec<String> = referenced
-        .iter()
-        .filter(|n| datasets.contains_key(*n))
-        .cloned()
-        .collect();
-    let picked = live.first().cloned();
-
-    // 多个数据集都真实存在：只有一个生效，其余的格子会静默出空
-    if live.len() > 1 {
-        warns.push(format!(
-            "本 sheet 引用了多个数据集（{}），但一个 sheet 只能用一个，实际用的是 {}；\
-             绑到其余数据集的格子取不到字段，会出空（要跨数据集请先在 SQL 侧 JOIN 成一张表）",
-            live.join("、"),
-            picked.as_deref().unwrap_or("?")
-        ));
+    let mut picked: BTreeMap<String, DataSet> = BTreeMap::new();
+    for n in &referenced {
+        if let Some(ds) = datasets.get(n) {
+            picked.insert(n.clone(), ds.clone());
+        }
     }
 
-    let ds = match &picked {
-        Some(n) => datasets.get(n).cloned().unwrap_or_default(),
-        None => datasets.values().next().cloned().unwrap_or_default(),
-    };
-    (ds, warns)
+    // 主数据集：格子没写 ds 时用哪一份。取「第一个引用到且真实存在」的，
+    // 没有引用就取名字最小的那个 —— 跟「单数据集时代」的行为一致
+    let primary = referenced
+        .iter()
+        .find(|n| datasets.contains_key(*n))
+        .cloned()
+        .or_else(|| datasets.keys().next().cloned())
+        .unwrap_or_else(|| engine::DEFAULT_DS.to_string());
+
+    // 一个格都没写 ds：把所有数据集都给它，免得老模板（不写 ds）突然只剩一份
+    if picked.is_empty() {
+        picked = datasets.clone();
+    }
+    (picked, primary, warns)
 }
 
 fn to_html(sheets: &[RenderedSheet]) -> String {
@@ -950,6 +1025,7 @@ pub fn sample_template() -> ReportTemplate {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            join_on: None,
         })
     };
 
@@ -1036,6 +1112,7 @@ pub fn cross_tab_template() -> ReportTemplate {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            join_on: None,
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
@@ -1095,6 +1172,7 @@ pub fn cross_tab_two_metrics_template() -> ReportTemplate {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            join_on: None,
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
@@ -1172,6 +1250,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            join_on: None,
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
@@ -1255,6 +1334,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            join_on: None,
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
@@ -1358,6 +1438,7 @@ pub fn cross_tab_multi_level_template() -> ReportTemplate {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            join_on: None,
         })
     };
     let cell = |value: Option<&str>,
@@ -1500,6 +1581,11 @@ mod tests {
     /// 把网格按物理行输出成文本，便于断言
     fn lines(rows: &[Vec<GridCell>]) -> Vec<String> {
         rows.iter().map(|r| r.iter().map(|c| c.text.clone()).collect::<Vec<_>>().join(" | ")).collect()
+    }
+
+    /// 网格原样取成二维字符串：不做 join、不 trim，断言列数/空格靠得住
+    fn cell_texts(rows: &[Vec<GridCell>]) -> Vec<Vec<String>> {
+        rows.iter().map(|r| r.iter().map(|c| c.text.clone()).collect()).collect()
     }
 
     /// 只含一个数值格的模板（隔离验证数值格式，不受分组/交叉表干扰）
@@ -1666,6 +1752,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let mut datasets = BTreeMap::new();
@@ -1744,6 +1831,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let tpl = ReportTemplate {
@@ -1805,6 +1893,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let tpl = ReportTemplate {
@@ -1874,6 +1963,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let tpl = ReportTemplate {
@@ -1954,6 +2044,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2031,6 +2122,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2261,7 +2353,8 @@ mod tests {
         assert!(texts.iter().any(|t| t.contains("华南")), "父格「华南」丢了: {texts:#?}");
     }
 
-    /// 一个 sheet 只支持一个数据集：引用了多个必须**告警**，不能让多余的格子静默出空。
+    /// 一个 sheet 可以引用多个数据集（每个数据源一条 SQL）。
+    /// ds1 只有 `city`、ds2 只有 `name`，两格的字段互不重叠 —— 绑错数据集就必然出空。
     fn multi_ds_template(names: &[&str]) -> ReportTemplate {
         let mut datasets = BTreeMap::new();
         datasets.insert(
@@ -2312,6 +2405,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             }),
             ..Default::default()
         };
@@ -2333,7 +2427,9 @@ mod tests {
     }
 
     #[test]
-    fn multi_dataset_reference_warns() {
+    fn multi_dataset_renders_both_without_warning() {
+        // 一个 sheet 引用多个数据集是**正常的**（每个数据源一条 SQL），不该再告警。
+        // 关键是第二格：以前「一个 sheet 只认一个 ds」会让它静默出空
         let resp = render(RenderRequest {
             template: multi_ds_template(&["ds1", "ds2"]),
             datasets: None,
@@ -2341,9 +2437,207 @@ mod tests {
             dump: None,
         })
         .unwrap();
+        assert!(
+            resp.warnings.clone().unwrap_or_default().is_empty(),
+            "多数据集不该再告警: {:?}",
+            resp.warnings
+        );
+        let texts: Vec<String> = resp.sheets[0].rows[0]
+            .iter()
+            .map(|c| c.text.clone())
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["北京".to_string(), "甲公司".to_string()],
+            "两格应各读各的数据集: {texts:?}"
+        );
+    }
+
+    /// 跨数据集父子格：ds1 是客户（主格，纵向展开），ds2 是订单（子格，按
+    /// `join_on` 的关联键取「与父行同值」的那几行）。
+    ///
+    /// ds1: 1=甲公司, 2=乙公司
+    /// ds2: 1→A001/A002, 2→B001
+    fn cross_ds_template(join_on: Option<&str>) -> ReportTemplate {
+        let cell = |ds: &str,
+                    field: &str,
+                    expand: bool,
+                    row_parent: Option<&str>,
+                    join_on: Option<&str>| {
+            CellTpl {
+                pos: None,
+                value: None,
+                model: Some(CellModel {
+                    ds: Some(ds.into()),
+                    field: Some(field.into()),
+                    expand_type: if expand { Some(ExpandType::R) } else { None },
+                    row_parent: row_parent.map(|s| s.to_string()),
+                    join_on: join_on.map(|s| s.to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        };
+        let mut datasets = BTreeMap::new();
+        // 注意两个数据集的**行数不同**（2 vs 3）—— 按行号硬凑必然错位
+        datasets.insert(
+            "ds1".to_string(),
+            json_rows(vec![
+                serde_json::json!({"cust_id": 1, "name": "甲公司"}),
+                serde_json::json!({"cust_id": 2, "name": "乙公司"}),
+            ]),
+        );
+        datasets.insert(
+            "ds2".to_string(),
+            json_rows(vec![
+                serde_json::json!({"cust_id": 1, "order_no": "A001", "amount": 100}),
+                serde_json::json!({"cust_id": 1, "order_no": "A002", "amount": 200}),
+                serde_json::json!({"cust_id": 2, "order_no": "B001", "amount": 50}),
+            ]),
+        );
+        ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "客户订单".into(),
+                page: None,
+                rows: vec![RowTpl {
+                    cells: vec![
+                        cell("ds1", "name", true, None, None), // A1 主格，在 ds1
+                        cell("ds2", "order_no", true, Some("A1"), join_on), // B1 子格，在 ds2
+                        cell("ds2", "amount", false, Some("B1"), None), // C1 跟随 B1
+                    ],
+                }],
+                loop_field: None,
+            }],
+            datasets,
+        }
+    }
+
+    #[test]
+    fn cross_dataset_child_expands_over_joined_rows_only() {
+        // 父格在 ds1、子格在 ds2：子格只展开**关联键同值**的那几行，
+        // 不是 ds2 的全部 3 行 —— 每个客户下面只挂自己的订单
+        let resp = render(RenderRequest {
+            template: cross_ds_template(Some("cust_id")),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        assert!(
+            resp.warnings.clone().unwrap_or_default().is_empty(),
+            "写了 join_on 就不该告警: {:?}",
+            resp.warnings
+        );
+        let got = cell_texts(&resp.sheets[0].rows);
+        assert_eq!(
+            got,
+            vec![
+                vec!["甲公司", "A001", "100"],
+                // 父格值只在组的第一行显示（中国式报表的常规形状），不是每行重复
+                vec!["", "A002", "200"],
+                vec!["乙公司", "B001", "50"],
+            ],
+            "{got:#?}"
+        );
+    }
+
+    #[test]
+    fn cross_dataset_without_join_on_warns_and_stays_empty() {
+        // 没写 join_on 就是没有关联依据 —— 宁可告警 + 出空，也不按行号硬凑
+        let resp = render(RenderRequest {
+            template: cross_ds_template(None),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
         let w = resp.warnings.clone().unwrap_or_default().join("\n");
-        assert!(w.contains("多个数据集"), "应告警但没告警: {w}");
-        assert!(w.contains("ds1") && w.contains("ds2"), "告警里要点名两个数据集: {w}");
+        assert!(w.contains("join_on"), "应提示补 join_on: {w}");
+        assert!(w.contains("跨数据集"), "应说明是跨数据集: {w}");
+        // 子格为空，但父格照常展开，不能整个表塌成 0 行
+        let got = cell_texts(&resp.sheets[0].rows);
+        assert_eq!(got.len(), 2, "父格仍应展开 2 行: {got:#?}");
+        assert_eq!(
+            got.iter().map(|r| r[0].clone()).collect::<Vec<_>>(),
+            vec!["甲公司", "乙公司"],
+            "父格值要照常出: {got:#?}"
+        );
+        // 关键：绝不能按行号硬凑出一个订单号来
+        let flat = got.concat().join("|");
+        assert!(!flat.contains("A00") && !flat.contains("B00"), "子格必须为空: {got:#?}");
+    }
+
+    #[test]
+    fn cross_dataset_join_key_missing_warns() {
+        // 关联键在数据集里压根没有：同样告警 + 出空，不能退回全量
+        let resp = render(RenderRequest {
+            template: cross_ds_template(Some("no_such_key")),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        let w = resp.warnings.clone().unwrap_or_default().join("\n");
+        assert!(w.contains("no_such_key"), "应点名缺失的关联键: {w}");
+        let got = cell_texts(&resp.sheets[0].rows);
+        let flat = got.concat().join("|");
+        assert!(
+            !flat.contains("A00") && !flat.contains("B00"),
+            "关联键取不到时子格应为空，而不是退回全量: {got:#?}"
+        );
+    }
+
+    #[test]
+    fn loop_field_filters_every_dataset_by_the_same_key() {
+        // 循环变量 + 多数据集：主数据集按字段分组，其它数据集按同名同值跟着筛
+        let mut tpl = cross_ds_template(Some("cust_id"));
+        tpl.sheets[0].loop_field = Some("cust_id".to_string());
+        // 另起一行放一个**不挂父格**的 ds2 合计（A2）。它看到的是「本组那一份 ds2」
+        // 的全部行，所以它的值直接暴露了「其它数据集到底有没有跟着筛」——
+        // 只靠 B1 是测不出来的，B1 本来就被 join_on 筛过一遍。
+        // （放在同一行会被「同行上下文」带偏，变成只合计当前行）
+        tpl.sheets[0].rows.push(RowTpl {
+            cells: vec![CellTpl {
+                pos: None,
+                value: None,
+                model: Some(CellModel {
+                    ds: Some("ds2".into()),
+                    field: Some("amount".into()),
+                    agg: Some(AggType::Sum),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+        });
+        let resp = render(RenderRequest {
+            template: tpl,
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        let names: Vec<String> = resp.sheets.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(names, vec!["客户订单 - 1", "客户订单 - 2"], "{names:?}");
+        // 第 2 张表只该看到 cust_id=2：ds1 的乙公司 + ds2 的 B001
+        // （ds2 也按 cust_id 跟着筛了，所以不会串进 A001/A002）
+        // 合计 50（不是 350）说明 ds2 也被按 cust_id 筛过了
+        let second = cell_texts(&resp.sheets[1].rows);
+        assert_eq!(
+            second,
+            vec![vec!["乙公司", "B001", "50"], vec!["50", "", ""]],
+            "{second:#?}"
+        );
+        // 甲公司那组 ds2 有 A001+A002 = 300；没筛的话会是 350（把 B001 也算进来）
+        let first = cell_texts(&resp.sheets[0].rows);
+        assert_eq!(
+            first,
+            vec![
+                vec!["甲公司", "A001", "100"],
+                vec!["", "A002", "200"],
+                vec!["300", "", ""],
+            ],
+            "{first:#?}"
+        );
     }
 
     #[test]
@@ -2902,6 +3196,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let build = |model: Option<CellModel>| {
@@ -3107,6 +3402,7 @@ mod tests {
                                     row_test_expr: None,
                                     col_test_expr: None,
                                     export_formula: None,
+                                    join_on: None,
                                 }),
                                 merge_across: 0,
                                 merge_down: 0,
@@ -3168,6 +3464,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let tpl = ReportTemplate {
@@ -3234,6 +3531,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let tpl = ReportTemplate {
@@ -3386,6 +3684,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
@@ -3747,6 +4046,7 @@ mod tests {
                 row_test_expr: rte.map(|s| s.to_string()),
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let c = |model| CellTpl {
@@ -4150,6 +4450,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
 
@@ -4207,6 +4508,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let sheet = SheetTpl {
@@ -4267,6 +4569,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let run = |max: Option<usize>| {
@@ -4379,6 +4682,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                join_on: None,
             })
         };
         let sheet = SheetTpl {

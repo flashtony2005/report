@@ -65,6 +65,16 @@ pub struct CellModel {
     pub expand_type: Option<ExpandType>,
     /// 行主格（父格）位置名，如 "A3"
     pub row_parent: Option<String>,
+    /// 跨数据集关联键：本格的数据集用这个字段去**匹配父格当前行的同名字段值**。
+    ///
+    /// 父子格在不同数据集时（一个 sheet 可以有多个数据集，每个数据源一条 SQL），
+    /// 光靠行下标对不上号，必须有个键。例：订单(ds1) 下挂客户(ds2)，
+    /// 本格写 `ds: "ds2"` + `join_on: "customer_id"`，就取 ds2 里
+    /// `customer_id == 父行.customer_id` 的行。
+    ///
+    /// 不写就是没有关联依据 —— 会**告警并出空**，绝不按行号硬凑
+    /// （硬凑出来的是看着正常、其实错的数据，比出空危险得多）。
+    pub join_on: Option<String>,
     /// 列主格位置名
     pub col_parent: Option<String>,
     /// 列向定位：本单元格排在目标 pos 所占列区间**之后**。
@@ -84,8 +94,9 @@ pub struct CellModel {
     /// 展开期求值，此时层次坐标尚未建立，所以只接受常量；写坏了进告警，不静默当空。
     /// 写了它则优先于 `field`，且不再要求 `ds` / `field`（见 `validateTemplate`）。
     ///
-    /// 注：上游文档里它还支持「数据集名」，我们不支持——引擎只有一个 DataSet
-    /// （`Engine::new(ds)`），没有第二个源可选，那个口径在这里无从谈起。
+    /// 注：上游文档里它还支持「数据集名」，我们不支持——一个 sheet 可以挂多个
+    /// 数据集（`Engine::new_multi`），但**展开集**只由 `field` / `expand_expr`
+    /// 决定，没有「按数据集名再筛一层」这个口径。
     pub expand_expr: Option<String>,
     /// 展开条数下限：不足时补空值（「默认留 N 个空行」）
     pub expand_min_count: Option<usize>,
@@ -214,7 +225,13 @@ pub struct CellInst {
     pub col_children: Vec<usize>,
     /// 该单元格是横向（列）展开格
     pub col_expand: bool,
-    /// 该实例覆盖的数据集行索引（受祖先分组约束）
+    /// 本实例读的是哪个数据集（`rows` 是**这个**数据集的行下标）。
+    ///
+    /// 一个 sheet 可以有多个数据集（每个数据源一条 SQL），所以光有行下标不够，
+    /// 必须记住下标属于哪一份。同数据集的父子沿用原来的「视图求交」；
+    /// 跨数据集的父子走 `CellModel::join_on`。
+    pub ds: String,
+    /// 该实例覆盖的数据集行索引（受祖先分组约束），下标属于上面的 `ds`
     pub rows: Vec<usize>,
     /// 绑定字段（聚合求值用）
     pub field: Option<String>,
@@ -274,7 +291,14 @@ pub struct CellInst {
 }
 
 impl CellInst {
-    pub fn new(pos: String, tpl_row: usize, tpl_col: usize, parent: Option<usize>, expand_index: usize) -> Self {
+    pub fn new(
+        pos: String,
+        tpl_row: usize,
+        tpl_col: usize,
+        parent: Option<usize>,
+        expand_index: usize,
+        ds: String,
+    ) -> Self {
         CellInst {
             pos,
             tpl_row,
@@ -285,6 +309,7 @@ impl CellInst {
             children: Vec::new(),
             col_children: Vec::new(),
             col_expand: false,
+            ds,
             rows: Vec::new(),
             field: None,
             agg: None,

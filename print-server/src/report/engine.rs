@@ -531,9 +531,17 @@ struct Numbers {
     sorted: Vec<f64>,
 }
 
+/// 单元格没写 `ds` 时兜底用的数据集名（构造 `Engine::new` 时也是这个名字）
+/// 格子没写 `ds` 时默认读的数据集名字
+pub const DEFAULT_DS: &str = "ds1";
+
 pub struct Engine {
     insts: Vec<CellInst>,
-    ds: DataSet,
+    /// 本 sheet 可用的数据集：一个 sheet 可以有**多个**（每个数据源一条 SQL）。
+    /// `CellInst.rows` 是**其中某一份**的行下标，具体哪一份见 `CellInst.ds`。
+    datasets: BTreeMap<String, DataSet>,
+    /// 单元格没写 `ds`（或写的名字不存在）时用哪一份
+    primary: String,
     /// 已创建实例按位置名索引
     by_pos: BTreeMap<String, Vec<usize>>,
     roots: Vec<usize>,
@@ -565,10 +573,22 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// 单数据集入口（历史签名）：等价于 `new_multi` 只放一份、名字叫 `ds1`。
+    /// 正式链路走 `new_multi`；这个入口现存的意义是 100+ 个单数据集测试不用改签名。
+    #[allow(dead_code)]
     pub fn new(ds: DataSet) -> Self {
+        let mut datasets = BTreeMap::new();
+        datasets.insert(DEFAULT_DS.to_string(), ds);
+        Self::new_multi(datasets, DEFAULT_DS.to_string())
+    }
+
+    /// 多数据集：一个 sheet 可以引用多份数据（每条 SQL 一个名字）。
+    /// `primary` 是单元格没写 `ds` 时兜底用的那份。
+    pub fn new_multi(datasets: BTreeMap<String, DataSet>, primary: String) -> Self {
         Engine {
             insts: Vec::new(),
-            ds,
+            datasets,
+            primary,
             by_pos: BTreeMap::new(),
             roots: Vec::new(),
             layout_depth: 0,
@@ -585,6 +605,69 @@ impl Engine {
         &self.warnings
     }
 
+    /// 这个格子读哪份数据：`model.ds` 写了且存在就用它，否则兜底到 primary。
+    fn cell_ds(&self, model: &CellModel) -> String {
+        match model.ds.as_deref() {
+            Some(n) if self.datasets.contains_key(n) => n.to_string(),
+            _ => self.primary.clone(),
+        }
+    }
+
+    /// 某份数据的全部行下标（无父格时的起始视图）
+    fn all_rows(&self, name: &str) -> Vec<usize> {
+        (0..self.datasets.get(name).map(|d| d.len()).unwrap_or(0)).collect()
+    }
+
+    fn ds_ref(&self, name: &str) -> Option<&DataSet> {
+        self.datasets.get(name)
+    }
+
+    /// 跨数据集的父子：用 `join_on` 把子数据集筛到「跟父行同键」的那些行。
+    ///
+    /// 这里是**唯一**允许跨数据集建视图的地方。没有 join_on 就返回空并告警
+    /// ——按行号硬凑会产出「看着正常其实错」的数据，那比出空危险得多。
+    fn join_view(
+        &mut self,
+        child_ds: &str,
+        parent_idx: usize,
+        model: &CellModel,
+        pos: &str,
+    ) -> Vec<usize> {
+        let Some(key) = model.join_on.clone() else {
+            let pds = self.insts[parent_idx].ds.clone();
+            self.warnings.push(format!(
+                "{pos} 绑的是 {child_ds}，但它的父格在 {pds}（跨数据集）。\
+                 跨数据集必须写 join_on 指定关联字段（取子数据集里与父行同值的行），\
+                 否则本格取不到值"
+            ));
+            return Vec::new();
+        };
+
+        // 父行当前的键值：父实例可能覆盖多行，取第一行（分组格下它们同键）
+        let pds_name = self.insts[parent_idx].ds.clone();
+        let p_row = self.insts[parent_idx].rows.first().copied();
+        let pv = p_row
+            .and_then(|r| self.ds_ref(&pds_name).and_then(|d| d.get(r)))
+            .and_then(|row| row.get(&key))
+            .cloned();
+        let Some(pv) = pv else {
+            self.warnings.push(format!(
+                "{pos} 的 join_on 字段「{key}」在父数据集 {pds_name} 的当前行里取不到值"
+            ));
+            return Vec::new();
+        };
+
+        match self.ds_ref(child_ds) {
+            Some(d) => d
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| row.get(&key) == Some(&pv))
+                .map(|(i, _)| i)
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// 展开一个 sheet，返回输出网格
     pub fn expand_sheet(&mut self, sheet: &SheetTpl) -> Vec<Vec<GridCell>> {
         self.insts.clear();
@@ -595,7 +678,8 @@ impl Engine {
         self.pos_index.borrow_mut().clear();
         self.deps_done.borrow_mut().clear();
 
-        let all_rows: Vec<usize> = (0..self.ds.len()).collect();
+        // 起始视图不再预先算一份：一个 sheet 可能有多份数据，行下标只在自己那份里
+        // 有效，所以改成**按格子自己的数据集**现算（见下面的 `cell_ds_name`）。
 
         // ---- 阶段 0：模板级父格解析（含缺省推断 + 规则 3 认领）----
         //
@@ -680,10 +764,21 @@ impl Engine {
                 // 每个模板格建一次，O(总行数)。
                 let row_to_cp = self.col_parent_index(&col_parents);
 
+                // 本格读哪份数据：决定 rows 下标属于谁，也决定父格能不能直接求交
+                let cell_ds_name = self.cell_ds(&model);
+
                 for parent in &row_parents {
-                    let base = match parent {
-                        Some(p) => self.insts[*p].rows.clone(),
-                        None => all_rows.clone(),
+                    let base: Vec<usize> = match parent {
+                        Some(p) => {
+                            let pds = self.insts[*p].ds.clone();
+                            if pds == cell_ds_name {
+                                self.insts[*p].rows.clone()
+                            } else {
+                                // 跨数据集：行下标对不上号，走 join_on 关联
+                                self.join_view(&cell_ds_name, *p, &model, &pos)
+                            }
+                        }
+                        None => self.all_rows(&cell_ds_name),
                     };
                     // 按列主格分桶：整个 base 只走一遍，O(|base|)。
                     //
@@ -719,7 +814,8 @@ impl Engine {
                                 v
                             }
                         };
-                        let created = self.make_insts(&pos, r, c, *parent, *col_parent, &view, cell, &model);
+                        let created =
+                            self.make_insts(&pos, r, c, *parent, *col_parent, &view, cell, &model, &cell_ds_name);
                         for (idx, inst_idx) in created.iter().enumerate() {
                             self.insts[*inst_idx].expand_index = idx;
                         }
@@ -823,10 +919,14 @@ impl Engine {
         if self.insts[idx].rows.is_empty() {
             return Some(JsonValue::Null);
         }
+        // 取**本实例那份**数据：rows 的下标只在那份里有效
+        let ds_name = self.insts[idx].ds.clone();
+        let empty: DataSet = Vec::new();
+        let ds: &DataSet = self.datasets.get(&ds_name).unwrap_or(&empty);
         let nums: Vec<f64> = self.insts[idx]
             .rows
             .iter()
-            .filter_map(|r| self.ds.get(*r))
+            .filter_map(|r| ds.get(*r))
             .filter_map(|row| row.get(&field))
             .filter_map(|v| as_number(v.clone()))
             .collect();
@@ -857,8 +957,13 @@ impl Engine {
         view: &[usize],
         cell: &CellTpl,
         model: &CellModel,
+        ds_name: &str,
     ) -> Vec<usize> {
         let mut out = Vec::new();
+        // 本格读的那份数据：`rows` 里的下标全是它的，不能用别人的。
+        // 取引用不克隆 —— 每个模板格都拷一遍数据集会退化成 O(格数 × 行数)。
+        let empty: DataSet = Vec::new();
+        let ds: &DataSet = self.datasets.get(ds_name).unwrap_or(&empty);
 
         // 行展开与列展开都是「按字段分组去重」，区别只在布局方向
         if model.is_row_expand() || model.is_col_expand() {
@@ -866,14 +971,14 @@ impl Engine {
             // 数据分组不再决定展开集（顺序和成员都由字面量说了算）。
             let mut groups: Vec<(JsonValue, Vec<usize>)> = match &model.expand_expr {
                 Some(src) => match parse_expand_list(src) {
-                    Ok(list) => group_by_list(&self.ds, view, model.field.as_deref(), &list),
+                    Ok(list) => group_by_list(ds, view, model.field.as_deref(), &list),
                     Err(msg) => {
                         self.warnings.push(format!("{pos} 的 expand_expr 无效：{msg}"));
                         Vec::new()
                     }
                 },
                 None => match &model.field {
-                    Some(f) => group_by_field(&self.ds, view, f),
+                    Some(f) => group_by_field(ds, view, f),
                     None => view.iter().map(|r| (JsonValue::Null, vec![*r])).collect(),
                 },
             };
@@ -892,7 +997,14 @@ impl Engine {
                 }
             }
             for (gval, rows) in groups {
-                let mut inst = CellInst::new(pos.to_string(), tpl_row, tpl_col, parent, out.len());
+                let mut inst = CellInst::new(
+                    pos.to_string(),
+                    tpl_row,
+                    tpl_col,
+                    parent,
+                    out.len(),
+                    ds_name.to_string(),
+                );
                 inst.rows = rows;
                 inst.field = model.field.clone();
                 inst.agg = model.agg;
@@ -917,7 +1029,8 @@ impl Engine {
                 self.insts.push(inst);
             }
         } else {
-            let mut inst = CellInst::new(pos.to_string(), tpl_row, tpl_col, parent, 0);
+            let mut inst =
+                CellInst::new(pos.to_string(), tpl_row, tpl_col, parent, 0, ds_name.to_string());
             inst.rows = view.to_vec();
             inst.field = model.field.clone();
             inst.agg = model.agg;
@@ -926,7 +1039,7 @@ impl Engine {
             inst.merge_to_end = cell.merge_to_end;
             inst.format = model.format.clone();
             inst.value = match &model.field {
-                Some(f) => view.first().and_then(|r| self.ds.get(*r)).and_then(|row| row.get(f)).cloned().unwrap_or(JsonValue::Null),
+                Some(f) => view.first().and_then(|r| ds.get(*r)).and_then(|row| row.get(f)).cloned().unwrap_or(JsonValue::Null),
                 None => cell.value.clone().unwrap_or(JsonValue::Null),
             };
             inst.expand_value = inst.value.clone();
@@ -2543,6 +2656,7 @@ mod parent_tests {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            join_on: None,
         })
     }
 

@@ -77,6 +77,14 @@ export interface CellModel {
   agg?: AggType
   expand_type?: ExpandDir
   row_parent?: string
+  /**
+   * 跨数据集关联键：本格的数据集用这个字段去**匹配父格当前行的同名字段值**。
+   *
+   * 父子格在不同数据集时（一个 sheet 可以有多个数据集，每个数据源一条 SQL），
+   * 光靠行下标对不上号，必须有个键。不写就是没有关联依据 —— 服务端会告警并出空，
+   * 绝不按行号硬凑（硬凑出来的是看着正常、其实错的数据）。
+   */
+  join_on?: string
   col_parent?: string
   /** 列向定位：本格排在目标 pos 所占列区间之后（列数随数据变化时用它，避免写死列号） */
   col_after?: string
