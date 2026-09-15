@@ -108,8 +108,8 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
     let mut dumps: Vec<String> = Vec::new();
     let mut all_pages: Vec<RenderedSheet> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
-    for sheet in tpl.sheets.iter() {
-        let (ds, ds_warns) = pick_dataset(&tpl.datasets, sheet);
+    for sheet in tpl.sheets.iter_mut() {
+        let (ds, ds_warns) = prepare_dataset(&tpl.datasets, sheet);
         for w in ds_warns {
             warnings.push(format!("[{}] {}", sheet.name, w));
         }
@@ -233,6 +233,105 @@ pub async fn render_with_sources(
 /// 行父链全建在「实例 ↔ 行下标」这一套索引上）。所以单元格上的 `ds` 只有第一个
 /// 扫到的说了算，其余的被悄悄忽略 —— 那些格子取不到自己的字段，表现为**静默出空**，
 /// 既不报错也不崩溃。这正是 warnings 要抓的东西。
+/// 把每行 `field` 上的数组摊成多行：父行字段 + 数组元素字段合并成一行。
+///
+/// 摊平后引擎看到的就是一张普通扁表，展开、层次坐标、行父链全走既有逻辑，
+/// 不用给引擎加「实例 ↔ 嵌套路径」这一层。
+///
+/// - 元素是对象：字段直接并进这一行
+/// - 元素是标量：挂到 `field` 这个名字上
+/// - 数组为空：**保留父行**（去掉数组字段），否则该实体会整个消失
+fn unnest(ds: &DataSet, field: &str) -> DataSet {
+    let mut out: DataSet = Vec::with_capacity(ds.len());
+    for row in ds {
+        match row.get(field) {
+            Some(JsonValue::Array(items)) if !items.is_empty() => {
+                for it in items {
+                    let mut r = row.clone();
+                    r.remove(field);
+                    match it {
+                        JsonValue::Object(o) => {
+                            for (k, v) in o {
+                                r.insert(k.clone(), v.clone());
+                            }
+                        }
+                        other => {
+                            r.insert(field.to_string(), other.clone());
+                        }
+                    }
+                    out.push(r);
+                }
+            }
+            Some(JsonValue::Array(_)) => {
+                // 空数组：保留父行，明细格自然出空
+                let mut r = row.clone();
+                r.remove(field);
+                out.push(r);
+            }
+            _ => out.push(row.clone()),
+        }
+    }
+    out
+}
+
+/// 准备本 sheet 的数据集：先挑数据集，再按需把嵌套数组摊平成扁平行。
+///
+/// 嵌套绑定写成 `数组名.字段名`（如 `educations.school`）—— 跟普通字段名一样是
+/// 一个字符串，不用给 CellModel 加字段，模板里也自解释。摊平后前缀会被去掉，
+/// 因为元素字段此时已经和父行字段在同一层了。
+fn prepare_dataset(datasets: &BTreeMap<String, DataSet>, sheet: &mut SheetTpl) -> (DataSet, Vec<String>) {
+    let (ds, mut warns) = pick_dataset(datasets, sheet);
+
+    // 收集模板里写成 `数组名.字段名` 的绑定，取前缀（去重、保序）
+    let mut prefixes: Vec<String> = Vec::new();
+    for row in sheet.rows.iter() {
+        for cell in row.cells.iter() {
+            let f = cell.model.as_ref().and_then(|m| m.field.as_deref());
+            if let Some((head, rest)) = f.and_then(|f| f.split_once('.')) {
+                if !head.is_empty() && !rest.is_empty() && !prefixes.iter().any(|p| p == head) {
+                    prefixes.push(head.to_string());
+                }
+            }
+        }
+    }
+    if prefixes.is_empty() {
+        return (ds, warns);
+    }
+
+    // 一个 sheet 只能摊平一个数组：多个嵌套集合并进一张扁表会变成笛卡尔积。
+    if prefixes.len() > 1 {
+        warns.push(format!(
+            "本 sheet 引用了多个嵌套数组（{}）；一个 sheet 只能摊平一个，\
+             多个嵌套集合请拆到多个 sheet。本次不摊平，这些格子会取不到值",
+            prefixes.join("、")
+        ));
+        return (ds, warns);
+    }
+
+    let head = &prefixes[0];
+    if !ds.iter().any(|r| matches!(r.get(head), Some(JsonValue::Array(_)))) {
+        warns.push(format!(
+            "绑定写了 {head}.x 的嵌套形式，但数据里 {head} 不是数组；按普通字段处理"
+        ));
+        return (ds, warns);
+    }
+
+    let ds = unnest(&ds, head);
+    // 去前缀：摊平后元素字段已经在这一层
+    for row in sheet.rows.iter_mut() {
+        for cell in row.cells.iter_mut() {
+            if let Some(m) = cell.model.as_mut() {
+                if let Some(f) = m.field.as_deref() {
+                    if let Some(rest) = f.strip_prefix(head.as_str()).and_then(|s| s.strip_prefix('.')) {
+                        m.field = Some(rest.to_string());
+                    }
+                }
+            }
+        }
+    }
+    (ds, warns)
+}
+
 fn pick_dataset(datasets: &BTreeMap<String, DataSet>, sheet: &SheetTpl) -> (DataSet, Vec<String>) {
     let mut referenced: Vec<String> = Vec::new();
     for row in sheet.rows.iter() {
@@ -2159,6 +2258,125 @@ mod tests {
         let w = resp.warnings.clone().unwrap_or_default().join("\n");
         assert!(w.contains("ds3"), "应点名不存在的数据集 ds3: {w}");
         assert!(w.contains("没有它"), "应说明数据集里没有它: {w}");
+    }
+
+    /// 嵌套数组：`数组名.字段名` 的绑定会让引擎先把数组摊平成扁平行再展开。
+    fn nested_rows() -> Vec<BTreeMap<String, JsonValue>> {
+        vec![serde_json::json!({
+            "name": "张三",
+            "educations": [
+                {"school": "清华", "year": 2000},
+                {"school": "北大", "year": 2004},
+            ],
+        })]
+        .into_iter()
+        .map(|v| {
+            v.as_object()
+                .unwrap()
+                .iter()
+                .map(|(k, x)| (k.clone(), x.clone()))
+                .collect::<BTreeMap<String, JsonValue>>()
+        })
+        .collect()
+    }
+
+    fn nested_template(fields: &[&str]) -> ReportTemplate {
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), nested_rows());
+        let bind = |field: &str, expand: bool, row_parent: Option<&str>| CellTpl {
+            pos: None,
+            value: None,
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some(field.into()),
+                agg: None,
+                expand_type: if expand { Some(ExpandType::R) } else { None },
+                row_parent: row_parent.map(|s| s.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "档案".into(),
+                page: None,
+                rows: vec![
+                    RowTpl { cells: vec![bind("name", true, None)] },
+                    RowTpl {
+                        // 第一个字段负责展开（明细行的主键），其余跟随
+                        cells: fields
+                            .iter()
+                            .enumerate()
+                            .map(|(i, f)| bind(f, i == 0, Some("A1")))
+                            .collect(),
+                    },
+                ],
+            }],
+            datasets,
+        }
+    }
+
+    #[test]
+    fn nested_array_is_unnested_before_expand() {
+        let resp = render(RenderRequest {
+            template: nested_template(&["educations.school", "educations.year"]),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        let text = lines(&resp.sheets[0].rows);
+        // 摊平前 `educations` 是一个数组值，只能分出一组，明细格会打出整段 JSON。
+        // 摊平后应该是 张三 / 清华+2000 / 北大+2004 三行。
+        assert_eq!(text.len(), 3, "{text:#?}");
+        assert!(text.iter().any(|l| l.contains("张三")), "{text:#?}");
+        assert!(text.iter().any(|l| l.contains("清华")), "{text:#?}");
+        assert!(text.iter().any(|l| l.contains("北大")), "{text:#?}");
+        assert!(
+            !text.iter().any(|l| l.contains('{')),
+            "不该把整个数组当文本打出来: {text:#?}"
+        );
+    }
+
+    #[test]
+    fn two_nested_arrays_warn_instead_of_cartesian() {
+        // 两个嵌套集合并进一张扁表会变笛卡尔积，所以不摊平，而是明确告警
+        let resp = render(RenderRequest {
+            template: nested_template(&["educations.school", "works.company"]),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        let w = resp.warnings.clone().unwrap_or_default().join("\n");
+        assert!(w.contains("多个嵌套数组"), "应告警: {w}");
+        assert!(w.contains("educations") && w.contains("works"), "要点名两个数组: {w}");
+    }
+
+    #[test]
+    fn empty_nested_array_keeps_parent_row() {
+        // 空数组不能把实体整行吃掉——明细出空，父行仍在
+        let mut tpl = nested_template(&["educations.school"]);
+        tpl.datasets.insert(
+            "ds1".to_string(),
+            vec![serde_json::json!({"name": "李四", "educations": []})]
+                .into_iter()
+                .map(|v| {
+                    v.as_object()
+                        .unwrap()
+                        .iter()
+                        .map(|(k, x)| (k.clone(), x.clone()))
+                        .collect::<BTreeMap<String, JsonValue>>()
+                })
+                .collect(),
+        );
+        let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None })
+            .unwrap();
+        let text = lines(&resp.sheets[0].rows);
+        assert!(
+            text.iter().any(|l| l.contains("李四")),
+            "空数组不该把父行吃掉: {text:#?}"
+        );
     }
 
     /// 规则 3 的验模板：B2 向下合并一格把 A2 的展开范围撑到第 3 行，
