@@ -3574,6 +3574,67 @@ mod tests {
         assert!(ok.warnings.is_none(), "{:#?}", ok.warnings);
     }
 
+    /// 引擎内部记下的「写法不受支持」告警，必须一路走到 **`render()` 的返回值**。
+    ///
+    /// 为什么单测这条：告警只有在 `RenderResponse.warnings` 里才算**可见** ——
+    /// 前端的网格报表弹窗正是读这个字段（`GridReportModal` 的
+    /// `setWarnings(data.warnings)`，渲染在 `data-testid="grid-report-warnings"`）。
+    /// 告警只停在 `engine.warnings()`、没进响应，等于白报。
+    #[test]
+    fn unsupported_combination_warning_reaches_the_response() {
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), sample_data());
+        let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            pos: None,
+            value: value.map(|v| JsonValue::from(v)),
+            model,
+            merge_across: 0,
+            merge_down: 0,
+            merge_to_end: false,
+        };
+        let m = |field: Option<&str>, expand: bool, parent: Option<&str>, expr: Option<&str>| {
+            Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: field.map(|s| s.to_string()),
+                expand_type: if expand { Some(ExpandType::R) } else { None },
+                row_parent: parent.map(|s| s.to_string()),
+                value_expr: expr.map(|s| s.to_string()),
+                ..Default::default()
+            })
+        };
+        let tpl = ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "不支持组合".into(),
+                page: None,
+                rows: vec![RowTpl {
+                    cells: vec![
+                        cell(Some("地区"), m(Some("region"), true, None, None)),
+                        cell(Some("销售员"), m(Some("salesman"), true, Some("A1"), None)),
+                        cell(Some("金额"), m(Some("amount"), false, Some("B1"), None)),
+                        // ACCSUM 接过滤表达式：不支持，但**必须报出来**而不是给一格空白
+                        cell(
+                            None,
+                            m(None, false, Some("B1"), Some("ACCSUM(C1[A1:+0]{$B1 == B1})")),
+                        ),
+                    ],
+                }],
+                loop_field: None,
+            }],
+            datasets,
+        };
+        let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None })
+            .expect("渲染不应失败");
+        let warnings = resp.warnings.clone().unwrap_or_default();
+        assert!(
+            warnings.iter().any(|w| w.contains("ACCSUM 不支持过滤表达式")),
+            "引擎记下的告警必须进 RenderResponse.warnings。实际：{warnings:#?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.starts_with("[不支持组合]")),
+            "告警要带 sheet 名，便于定位。实际：{warnings:#?}"
+        );
+    }
+
     #[test]
     fn sample_group_report_row_count() {
         let rows = grid();

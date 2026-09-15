@@ -515,6 +515,29 @@ RANK / PRODUCT / COUNTA / PROPORTION。
 裸 `$` 不在过滤里、过滤写在 `IF` 参数里、多参数含过滤、条件里含聚合、后缀写在前
 （`C1[A1:+0].sum(){cond}`）。
 
+**验证告警真的「可见」**（同一天）
+
+加了告警之后必须验它一路走到用户 —— 只停在 `engine.warnings()` 等于白报。链路：
+
+```
+engine.unsupported（RefCell<BTreeSet<String>>）
+  → expand_sheet 末尾转成 engine.warnings
+  → render() 收集并加 [sheet] 前缀（mod.rs:140）
+  → RenderResponse.warnings
+  → /api/report/render 响应
+  → GridReportModal.tsx：setWarnings(data.warnings) → data-testid="grid-report-warnings"
+（CLI 不带 --out 时也把告警打在文本表格顶部）
+```
+
+已加 render 级的 `unsupported_combination_warning_reaches_the_response` 钉住这段；
+探针（把 drain 包进 `if false`）→ 红：
+`引擎记下的告警必须进 RenderResponse.warnings。实际：[]`。
+
+**一处已知的「不可见」**：设计器的**打印预览**（`PreviewPanel`）用的是另一套
+**TS 布局引擎**（`@/core/sdk` 的 `render`，其告警是带 `code` 的结构体 `RenderWarning`），
+不是 Rust 这条链。所以 Rust 引擎的告警出现在**网格报表弹窗**与 API/CLI 里，
+**不会**出现在打印预览面板里。这是两套实现并存的既有事实，不是本次引入的。
+
 早期在这里记的三样缺口，现状：
 
 - **`$` 运算符** → ✅ 已实现（`Expr::Dollar`，条件里切回当前格上下文）
