@@ -3983,14 +3983,21 @@ mod scale {
     /// 「本组里 key 与当前行相同的那些格」，`$` 回到当前行、裸引用指候选格。
     ///
     /// **最后一列「常量条件」是判别实验，别删**：`{1 == 1}` 既没有 `$` 也不引用任何格，
-    /// 于是它只承担「依赖集枚举」那部分开销。实测 2000 行：常量条件 63 ms、
+    /// 于是它只承担「依赖集枚举」那部分开销。实测 2000 行：常量条件 64 ms、
     /// 而带 `$B1` 的三列都是 ~570 ms —— 说明这里有**两处独立**的 O(n²)：
     ///   ① 依赖枚举（`ensure_deps` 对 `Filter` 每行重枚举，`collect_deps` 把整个结果集复制进 Vec）
     ///   ② 逐候选求条件（N 格 × 每格两次 resolve + 主格定位 + `JsonValue` 克隆 + 转字符串）
     /// 少了这一列就会把两者混为一谈。
     ///
-    /// 已知未优化（2026-09-16 记）：两处都还在。`{}` 是「月份不连续」这类**小分组**
-    /// 场景的工具（组内十几行时成本可忽略），所以按现状记录、不建投机性的索引。
+    /// ⚠️ **别把这里的「O(n²)」当成总行数的平方**：本基准的数据是「N 行全在**同一个组**」
+    /// （`one_group_data` 的 `g` 恒为 `G0`），量的是「一个巨大的组」这个**极端形状**，
+    /// 不是 `{}` 的真实用途。真实成本是 **O(总行数 × 组大小)**，与总行数线性 ——
+    /// 见 `bench_filter_group_size`：同样 2000 行，每组 10 行只要 ~19 ms，
+    /// 全塞进一个组才是 ~581 ms。**成本由组大小决定，不是由报表规模决定。**
+    ///
+    /// 已知未优化（2026-09-16 记并复测确认）：两处都还在。`{}` 是「月份不连续」
+    /// 这类**小分组**场景的工具（组内十几行时成本可忽略），所以按现状记录、
+    /// **不建投机性的索引**。真要优化，先得有「单组几千行」的真实需求。
     ///
     /// 对照组同样是 `one_group_coord_sheet(None)`（D1 退化成普通字段 `amount`）。
     /// 阶梯只到 2000 行（别的基准到 8000）：这个形状是平方的，再往上单点就要好几秒。
@@ -4028,6 +4035,46 @@ mod scale {
             }
             line.push_str(&format!("  {:>8.1}ms", a));
             println!("{line}");
+        }
+        println!();
+    }
+
+    /// **判别实验**：`{}` 过滤的成本由**总行数**还是**单组行数**决定？
+    ///
+    /// `bench_per_row_filter` 用的 `one_group_data` 把 N 行全塞进**一个组**，
+    /// 量的是「一个巨大的组」这个极端形状。而 `{}` 的真实用途是「月份不连续」
+    /// 这类**小分组**场景（组内十几行）。
+    ///
+    /// 这里**固定总行数**，只改每组行数 g（组数 = 总行数 / g）：
+    /// - 耗时随 g 增长 → 成本由**组大小**决定，小分组下可忽略（不必优化）
+    /// - 耗时与 g 无关 → 成本由总行数决定，那才是真缺口
+    ///
+    /// 表达式与 `bench_per_row_filter` 相同，便于横向对照。
+    #[test]
+    #[ignore = "性能基准，手动跑：见本模块头部注释"]
+    fn bench_filter_group_size() {
+        const TOTAL: usize = 2000;
+        // 两列：带 `$`（依赖当前行，逐行结果不同） vs 不带 `$`（只依赖候选格本身）
+        let base = scaled_filter_sheet(None);
+        let dep = scaled_filter_sheet(Some("C1[A1:+0]{$B1 == B1}.sum()"));
+        let indep = scaled_filter_sheet(Some("C1[A1:+0]{C1 > 100}.sum()"));
+        println!("\n  总行数固定 {TOTAL}，只改每组行数 g");
+        println!(
+            "  {:>9}  {:>6}  {:>11}  {:>11}  {:>11}",
+            "每组行数g", "组数", "带$(ms)", "不带$(ms)", "基线(ms)"
+        );
+        for g in [10usize, 20, 40, 80, 200, 2000] {
+            let regions = TOTAL / g;
+            let ds = scaled_data(regions, g);
+            let mut a = f64::MAX;
+            let mut d = f64::MAX;
+            let mut i = f64::MAX;
+            for _ in 0..3 {
+                a = a.min(time_sheet(&base, ds.clone()).2);
+                d = d.min(time_sheet(&dep, ds.clone()).2);
+                i = i.min(time_sheet(&indep, ds.clone()).2);
+            }
+            println!("  {g:>9}  {regions:>6}  {d:>9.1}ms  {i:>9.1}ms  {a:>9.1}ms");
         }
         println!();
     }
@@ -4318,6 +4365,49 @@ mod scale {
             ds.push(row);
         }
         ds
+    }
+
+    /// `scaled_data` 版的过滤模板：A1=region（主格）、B1=month（明细主格）、
+    /// C1=amount、D1=表达式。用于量「分组**小**、组数**多**」这个真实形状。
+    fn scaled_filter_sheet(expr: Option<&str>) -> SheetTpl {
+        let m = |field: Option<&str>,
+                 expand: Option<ExpandType>,
+                 parent: Option<&str>,
+                 expr: Option<&str>| {
+            Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: field.map(|s| s.to_string()),
+                expand_type: expand,
+                row_parent: parent.map(|s| s.to_string()),
+                value_expr: expr.map(|s| s.to_string()),
+                ..Default::default()
+            })
+        };
+        let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            pos: None,
+            value: value.map(JsonValue::from),
+            model,
+            merge_across: 0,
+            merge_down: 0,
+            merge_to_end: false,
+        };
+        let d1 = match expr {
+            Some(e) => m(None, None, Some("B1"), Some(e)),
+            None => m(Some("amount"), None, Some("B1"), None),
+        };
+        SheetTpl {
+            name: "scaled_filter".to_string(),
+            page: None,
+            rows: vec![RowTpl {
+                cells: vec![
+                    cell(Some("区域"), m(Some("region"), Some(ExpandType::R), None, None)),
+                    cell(Some("月份"), m(Some("month"), Some(ExpandType::R), Some("A1"), None)),
+                    cell(Some("金额"), m(Some("amount"), None, Some("B1"), None)),
+                    cell(Some("计算"), d1),
+                ],
+            }],
+            loop_field: None,
+        }
     }
 
     fn export_formula_sheet(enable: bool) -> SheetTpl {
