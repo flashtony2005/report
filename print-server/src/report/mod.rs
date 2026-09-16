@@ -5002,6 +5002,20 @@ mod tests {
         assert_eq!(cell("SUM(FILTER(C1, x => x > 150))"), "460", "筛选后求和");
     }
 
+    /// `FLATMAP` 与**候选格上下文** —— lambda 深化之后多出来的两件事。
+    ///
+    /// 候选格上下文这条最容易写错：lambda 体里的裸 `C1` 必须是**当前候选格**的 C1，
+    /// 而不是「写这个表达式的那一格」的 C1。写错的表现很隐蔽：不报错，
+    /// 只是 4 个元素取到同一个值（下面第一个断言若退化会是 400）。
+    #[test]
+    fn flatmap_and_candidate_cell_context() {
+        let cell = |expr: &str| render_yoy(expr, None)[0][3].text.clone();
+        assert_eq!(cell("SUM(MAP(C1, x => C1))"), "710", "候选格上下文");
+        // 一个元素产出两个，摊平一层后再聚合
+        assert_eq!(cell("SUM(FLATMAP(C1, x => [x, x]))"), "1,420", "flatMap 摊平");
+        assert_eq!(cell("COUNT(FLATMAP(C1, x => [x, x]))"), "8", "元素个数 4 → 8");
+    }
+
     /// lambda 单独出现（没有套集合函数）是**表达式写错了**：出空可以，但必须告警，
     /// 否则作者只看到一格空白，不会想到自己漏了 `MAP` / `REDUCE`。
     #[test]

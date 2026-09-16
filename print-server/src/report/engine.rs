@@ -2368,10 +2368,13 @@ impl Engine {
                 Val::Set { cells: Rc::from(kept), pick }
             }
             Expr::Dollar(inner) => self.eval_ast(inner, outer, outer),
-            // 数组字面量只在展开期有意义（`expand_expr`），那里走专门的常量求值器，
-            // 不经过这里。出现在值/格式表达式里说明作者写错了，折叠成 Null 而不是
-            // 悄悄当第一个元素。
-            Expr::Array(_) => Val::Null,
+            // 数组字面量：展开期由专门的常量求值器处理（走不到这里）。
+            // 值表达式里现在也合法了 —— `FLATMAP` 的 lambda 要能「一个元素产出多个」
+            //（`x => [x, x * 2]`），所以求值成 `Val::List`。
+            // 元素也可能是表达式（`[C1, C1 * 2]`），照常求值。
+            Expr::Array(items) => Val::List(Rc::from(
+                items.iter().map(|i| self.eval_ast(i, cur, outer)).collect::<Vec<Val>>(),
+            )),
         }
     }
 
@@ -2447,13 +2450,19 @@ impl Engine {
     /// - `Set` → 每个格实例的**值**（格集是实例，遍历时取各自的值）
     /// - `List` → 已有元素
     /// - 标量 → 单元素序列：`MAP(1, x => ..)` 不该静默出空，让它照字面走一遍
-    fn elements_of(&self, v: Val) -> Vec<Val> {
+    ///
+    /// 第二个元素是**求 lambda 体时该用的 `cur`**：格集元素用它自己的实例下标，
+    /// 这就是「候选格上下文」—— lambda 体里的裸 `B2` 指候选格的 B2 主格，
+    /// 与 `{}` 过滤完全同一套语义（`eval_ast(cond, cand, cur)`）。
+    /// 有了它，lambda 才写得出「依赖兄弟格」的口径，而不只是摆弄单个值。
+    fn elements_of(&self, v: Val, fallback_cur: usize) -> Vec<(Val, usize)> {
         match v {
-            Val::Set { cells, .. } => {
-                cells.iter().map(|&i| Val::from_json(self.insts[i].value.clone())).collect()
-            }
-            Val::List(l) => l.to_vec(),
-            other => vec![other],
+            Val::Set { cells, .. } => cells
+                .iter()
+                .map(|&i| (Val::from_json(self.insts[i].value.clone()), i))
+                .collect(),
+            Val::List(l) => l.iter().map(|v| (v.clone(), fallback_cur)).collect(),
+            other => vec![(other, fallback_cur)],
         }
     }
 
@@ -2461,7 +2470,16 @@ impl Engine {
     ///
     /// 参数个数对不上、或压根不是 lambda，都返回 `None` 由调用方记告警 ——
     /// 不臆造语义（比如「缺的参数当 0」）。
-    fn apply_lambda(&self, lambda: &Expr, args: &[Val], cur: usize, outer: usize) -> Option<Val> {
+    /// `body_cur`：求 lambda 体时用的「当前格」。遍历格集时传**候选格**下标，
+    /// 于是体里的裸单元格引用以候选格为上下文（与 `{}` 一致）；`outer` 仍是
+    /// 真正写这个表达式的那个格，`$B2` 才能回到它。
+    fn apply_lambda(
+        &self,
+        lambda: &Expr,
+        args: &[Val],
+        body_cur: usize,
+        outer: usize,
+    ) -> Option<Val> {
         let (params, body) = match lambda {
             Expr::Lambda { params, body } => (params, body),
             _ => return None,
@@ -2473,7 +2491,7 @@ impl Engine {
         for (p, v) in params.iter().zip(args.iter()) {
             self.lambda_vars.borrow_mut().push((p.clone(), v.clone()));
         }
-        let out = self.eval_ast(body, cur, outer);
+        let out = self.eval_ast(body, body_cur, outer);
         // 无论求值有没有出错都要弹回去：少弹一次会污染后续格子的求值
         self.lambda_vars.borrow_mut().truncate(base);
         Some(out)
@@ -2755,12 +2773,27 @@ impl Engine {
             // 这是 NopReport 明确的取向：引擎不内置数据集知识，复杂口径由
             // map / filter / reduce 组合出来。
             "MAP" if args.len() == 2 => {
-                let items = self.elements_of(self.eval_ast(&args[0], cur, outer));
+                let items = self.elements_of(self.eval_ast(&args[0], cur, outer), cur);
                 let mut out = Vec::with_capacity(items.len());
-                for it in items {
-                    match self.apply_lambda(&args[1], &[it], cur, outer) {
+                for (it, body_cur) in items {
+                    match self.apply_lambda(&args[1], &[it], body_cur, outer) {
                         Some(v) => out.push(v),
                         None => return self.bad_lambda("MAP"),
+                    }
+                }
+                Val::List(Rc::from(out))
+            }
+            // `FLATMAP(set, x => [a, b])`：每组产出若干个，再摊平一层。
+            // 与 MAP 的区别只在「lambda 返回列表时展开、返回标量时照收」——
+            // 不静默丢掉非列表结果。
+            "FLATMAP" if args.len() == 2 => {
+                let items = self.elements_of(self.eval_ast(&args[0], cur, outer), cur);
+                let mut out: Vec<Val> = Vec::new();
+                for (it, body_cur) in items {
+                    match self.apply_lambda(&args[1], &[it], body_cur, outer) {
+                        Some(Val::List(l)) => out.extend(l.iter().cloned()),
+                        Some(v) => out.push(v),
+                        None => return self.bad_lambda("FLATMAP"),
                     }
                 }
                 Val::List(Rc::from(out))
@@ -2772,7 +2805,8 @@ impl Engine {
                     let mut kept = Vec::new();
                     for &c in cells.iter() {
                         let v = Val::from_json(self.insts[c].value.clone());
-                        match self.apply_lambda(&args[1], &[v], cur, outer) {
+                        // 候选格上下文：体里的裸 `B2` 是这个候选格的 B2
+                        match self.apply_lambda(&args[1], &[v], c, outer) {
                             Some(x) if x.truthy() => kept.push(c),
                             Some(_) => {}
                             None => return self.bad_lambda("FILTER"),
@@ -2783,8 +2817,8 @@ impl Engine {
                 }
                 other => {
                     let mut out = Vec::new();
-                    for it in self.elements_of(other) {
-                        match self.apply_lambda(&args[1], &[it.clone()], cur, outer) {
+                    for (it, body_cur) in self.elements_of(other, cur) {
+                        match self.apply_lambda(&args[1], &[it.clone()], body_cur, outer) {
                             Some(x) if x.truthy() => out.push(it),
                             Some(_) => {}
                             None => return self.bad_lambda("FILTER"),
@@ -2794,11 +2828,11 @@ impl Engine {
                 }
             },
             "REDUCE" if args.len() == 3 => {
-                let items = self.elements_of(self.eval_ast(&args[0], cur, outer));
+                let items = self.elements_of(self.eval_ast(&args[0], cur, outer), cur);
                 // 初值先求值：它是普通表达式，不受 lambda 参数影响
                 let mut acc = self.eval_ast(&args[2], cur, outer);
-                for it in items {
-                    match self.apply_lambda(&args[1], &[acc.clone(), it], cur, outer) {
+                for (it, body_cur) in items {
+                    match self.apply_lambda(&args[1], &[acc.clone(), it], body_cur, outer) {
                         Some(v) => acc = v,
                         None => return self.bad_lambda("REDUCE"),
                     }
