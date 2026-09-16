@@ -4960,5 +4960,31 @@ mod tests {
         assert_eq!(got, vec![vec![""]], "第二张表不该看到 7: {got:#?}");
     }
 
+    /// NopReport 官方函数名是 `AVERAGE`，我们内部实现叫 `AVG` —— 两个名字必须等价，
+    /// 否则照官方文档写的模板在我们这里会**静默出空**。
+    ///
+    /// 更普遍的问题：`eval_call` 最后是 `_ => Val::Null`，任何认不出的函数名
+    /// （拼错、或用了我们没实现的官方函数）都只是「格子空白」，作者只会以为没数据。
+    /// 出空可以，但**必须可见** —— 与 `ACCSUM` 的「不支持就记一笔」同一套规矩。
+    #[test]
+    fn average_aliases_avg_and_unknown_func_warns() {
+        let avg = render_yoy("AVG(C1)", None);
+        let average = render_yoy("AVERAGE(C1)", None);
+        assert_eq!(avg[0][3].text, "177.50", "AVG 基准值");
+        assert_eq!(
+            average[0][3].text, avg[0][3].text,
+            "AVERAGE 是官方名，应与 AVG 等价；实际出空说明它落进了未知函数分支"
+        );
+
+        let resp = render(RenderRequest {
+            template: yoy_template("BOGUSFUNC(C1)", None),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        let w = resp.warnings.clone().unwrap_or_default().join("\n");
+        assert!(w.contains("BOGUSFUNC"), "认不出的函数名应告警，实际: {w:?}");
+    }
 }
 

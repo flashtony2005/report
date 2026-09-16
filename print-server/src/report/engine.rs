@@ -2501,10 +2501,12 @@ impl Engine {
                     None => Val::Null,
                 }
             }
-            "SUM" | "COUNT" | "AVG" | "MIN" | "MAX" => {
+            "SUM" | "COUNT" | "AVG" | "AVERAGE" | "MIN" | "MAX" => {
                 let f = match name {
                     "COUNT" => "count",
-                    "AVG" => "avg",
+                    // `AVERAGE` 是 NopReport 官方名，我们内部叫 `AVG`。
+                    // 两个都得认，否则照官方文档写的模板在这里会静默出空。
+                    "AVG" | "AVERAGE" => "avg",
                     "MIN" => "min",
                     "MAX" => "max",
                     _ => "sum",
@@ -2648,7 +2650,17 @@ impl Engine {
                     Val::Null
                 }
             },
-            _ => Val::Null,
+            // 认不出的函数名：拼错、或用了官方函数集里我们还没实现的。
+            // 出空可以，但**不能静默** —— 出表就是一格空白，作者只会以为「没数据」，
+            // 而不会想到「这个函数我不认」。与上面 ACCSUM 那条同一套规矩。
+            other => {
+                self.unsupported.borrow_mut().insert(format!(
+                    "不支持的函数 `{other}`（参数 {} 个）：该格按空值输出。\
+                     可能是拼写错误，或用了官方函数集里尚未实现的函数。",
+                    args.len()
+                ));
+                Val::Null
+            }
         }
     }
 
