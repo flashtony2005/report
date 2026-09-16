@@ -91,6 +91,23 @@ def main() -> int:
     print(f"thin 边框   : {len(thin)} 个定义")
     print(f"单元格格式  : 用到 {sorted(used)}，全部带边框 = {not any('边框' in e for e in errors)}")
     print(f"重复表头    : {titles or '（无）'}")
+
+    # ---- 4. 缩放：列多时否则会溢出到右侧多出半页 ----
+    for name in z.namelist():
+        if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+            sh = z.read(name).decode("utf8", "ignore")
+            # 注意 `fitToWidth="1"` 是 XML 的**默认值**，写文件时会被省掉 ——
+            # 所以不能断言这个属性存在，真正要看的是 `pageSetUpPr fitToPage="1"`
+            #（它是 fit-to-page 模式的开关）和 `fitToHeight="0"`（纵向不限页数）。
+            ps = re.search(r"<pageSetup\b[^>]*>", sh)
+            fit = re.search(r'<pageSetUpPr fitToPage="1"/>', sh)
+            if not fit:
+                errors.append(f"{name}: 缺 pageSetUpPr fitToPage=1 —— 宽表会打印溢出")
+            if not ps or 'fitToHeight="0"' not in ps.group(0):
+                errors.append(f"{name}: pageSetup 缺 fitToHeight=0（纵向会被压成一页）")
+            w = re.search(r'fitToWidth="(\d+)"', ps.group(0)) if ps else None
+            if w and w.group(1) != "1":
+                errors.append(f"{name}: fitToWidth={w.group(1)}，期望 1（缩放到一页宽）")
     if errors:
         print("\n✗ 不通过：")
         for e in errors:

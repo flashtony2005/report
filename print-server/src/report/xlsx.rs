@@ -107,6 +107,14 @@ pub fn to_xlsx(sheets: &[RenderedSheet], repeat_rows: usize) -> Result<Vec<u8>, 
 
         // 打印时表头跨页重复 —— 多页报表没它就是「第 2 页起不知道每列是什么」
         ws.set_repeat_rows(0, head_n as u32 - 1).map_err(|e| e.to_string())?;
+        // 缩放到「一页宽」：列多的时候否则会溢出到右侧多出半页，
+        // 那半页既没有表头、也看不出属于哪一行。
+        // 高度给 0 = 不限页数，纵向该几页就几页。
+        // 这个调用会把 print_scale 固定成 100，所以**只会缩小、不会放大**。
+        //
+        // 纸张大小与方向**刻意不设**：用什么纸取决于现场打印机
+        //（A4 / 241 连续纸 / 标签纸都可能），写死反而可能不对。
+        ws.set_print_fit_to_pages(1, 0);
     }
 
     wb.save_to_buffer().map_err(|e| e.to_string())
