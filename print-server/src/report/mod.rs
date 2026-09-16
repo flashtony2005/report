@@ -623,11 +623,20 @@ pub async fn xlsx_handler(
     State(state): State<AppState>,
     Json(req): Json<RenderRequest>,
 ) -> Result<HttpResponse<axum::body::Body>, (StatusCode, String)> {
+    // 表头行数：模板分页配置里的 `repeat_header_rows`（与分页渲染用的是同一个值），
+    // 没配分页就 1。它同时决定「前几行用表头样式」和「打印时表头跨页重复」。
+    // 必须在 `render_with_sources` 之前取 —— 它会把 `req` 整个吃掉。
+    let head = req
+        .template
+        .sheets
+        .first()
+        .and_then(|s| s.page.as_ref())
+        .map_or(1, |p| p.repeat_header_rows.max(1));
     let resp = render_with_sources(&state, req).await.map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     // 模板配了分页时按页导出（每页一个 sheet），否则导出整表。
     // 文件名始终取未分页的 sheet 名，避免带上「 (1/3)」这类页码后缀。
     let sheets = resp.pages.as_ref().unwrap_or(&resp.sheets);
-    let buf = xlsx::to_xlsx(sheets).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let buf = xlsx::to_xlsx(sheets, head).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let filename = match resp.sheets.first() {
         Some(s) if !s.name.trim().is_empty() => format!("{}.xlsx", s.name),
         _ => "report.xlsx".to_string(),
@@ -751,11 +760,22 @@ pub async fn reports_xlsx_handler(
     let dir = reports_dir_of(&state);
     let def = store::load(&dir, &id).map_err(|e| (StatusCode::NOT_FOUND, e))?;
     let name = if def.name.trim().is_empty() { def.id.clone() } else { def.name.clone() };
+    // 存盘的模板是**未套分页**的原样，所以先看模板里的分页配置，
+    // 再退回 options 里的 repeat_header_rows。
+    let head = def
+        .template
+        .sheets
+        .first()
+        .and_then(|s| s.page.as_ref())
+        .map(|p| p.repeat_header_rows)
+        .or_else(|| def.options.repeat_header_rows.map(|v| v as usize))
+        .filter(|n| *n > 0)
+        .unwrap_or(1);
     let resp = run_def(&state, def, body.map(|b| b.0).unwrap_or_default())
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let sheets = resp.pages.as_ref().unwrap_or(&resp.sheets);
-    let buf = xlsx::to_xlsx(sheets).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let buf = xlsx::to_xlsx(sheets, head).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     HttpResponse::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -822,6 +842,15 @@ pub async fn run_report_cli(
 ) -> Result<String, String> {
     let dir = store::reports_dir(state.config_path.as_ref());
     let def = store::load(&dir, id)?;
+    let head = def
+        .template
+        .sheets
+        .first()
+        .and_then(|s| s.page.as_ref())
+        .map(|p| p.repeat_header_rows)
+        .or_else(|| def.options.repeat_header_rows.map(|v| v as usize))
+        .filter(|n| *n > 0)
+        .unwrap_or(1);
     let title = if def.name.trim().is_empty() {
         def.id.clone()
     } else {
@@ -839,7 +868,7 @@ pub async fn run_report_cli(
 
     if let Some(path) = out {
         let sheets = resp.pages.as_ref().unwrap_or(&resp.sheets);
-        let buf = xlsx::to_xlsx(sheets)?;
+        let buf = xlsx::to_xlsx(sheets, head)?;
         std::fs::write(path, buf).map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
         return Ok(format!(
             "已导出 {} → {}（{} 字节）",
@@ -918,7 +947,7 @@ pub async fn sample_xlsx_handler() -> Result<HttpResponse<axum::body::Body>, (St
     let tpl = sample_template();
     let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None })
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let buf = xlsx::to_xlsx(&resp.sheets).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let buf = xlsx::to_xlsx(&resp.sheets, 1).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     HttpResponse::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -4442,7 +4471,8 @@ mod tests {
         // 与 xlsx_handler 一致的取数方式：有 pages 时按页导出
         let sheets = resp.pages.as_ref().unwrap_or(&resp.sheets);
         assert_eq!(sheets.len(), pages.len());
-        assert!(crate::report::xlsx::to_xlsx(sheets).is_ok(), "分页结果应能导出 xlsx");
+        // 该模板配的是 repeat_header_rows: 2，导出时表头行数就按它来
+        assert!(crate::report::xlsx::to_xlsx(sheets, 2).is_ok(), "分页结果应能导出 xlsx");
 
         // 未分页模板不返回 pages，导出仍走 sheets
         let plain = render(RenderRequest {
