@@ -1720,6 +1720,33 @@ export function withExportFormula(tpl: ReportTemplate, on = true): ReportTemplat
 }
 
 /**
+ * 分页配置：写进**每张** sheet 的 `page`。
+ *
+ * 与服务端 `store::apply_options` 里那段逐字对应（「分页：写进每个 sheet 的 page」）——
+ * 打开已保存报表时服务端按 `options.rowsPerPage` 套一次，实时渲染这条路
+ * 必须在这里套一次，否则同一个开关「存下来执行」生效、「直接渲染」不生效。
+ *
+ * 做成后处理而不是改三个构造器：`GroupTemplateOptions.page` /
+ * `CrossTemplateOptions.page` 都声明了却没人用，交叉表那条路还把 `page`
+ * 传进来又被构造器丢掉。收敛到一个函数里语义只有一处，Rust 侧改了这边不会漂。
+ * 另外构造器在后处理**之前**跑，`page` 也就不会混进 `rawTemplate` 存盘 ——
+ * 存盘只存开关（`options.rowsPerPage`），由服务端再套，与
+ * `withExportFormula` / `withExpandControl` 同一套约定。
+ *
+ * `rows_per_page` 兜底为 1：服务端的 `is_paginated` 要求它 > 0，
+ * 给 0 会静默退化成「不分页」，开关看着像没生效。
+ */
+export function withPage(tpl: ReportTemplate, page?: PageConfig | null): ReportTemplate {
+  if (!page) return tpl
+  const cfg: PageConfig = {
+    rows_per_page: Math.max(1, Math.floor(page.rows_per_page ?? 1)),
+    repeat_header_rows: Math.max(0, Math.floor(page.repeat_header_rows ?? 0)),
+    repeat_footer_rows: Math.max(0, Math.floor(page.repeat_footer_rows ?? 0)),
+  }
+  return { ...tpl, sheets: tpl.sheets.map((s) => ({ ...s, page: cfg })) }
+}
+
+/**
  * 循环变量：按该字段的**不同取值**把 sheet 复制成 N 张（一个客户一张表）。
  *
  * 空值 / 空串 / 全空白表示不开循环 —— **原样返回，不写字段**，

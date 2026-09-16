@@ -45,6 +45,7 @@ import {
   withExpandControl,
   withExportFormula,
   withLoopField,
+  withPage,
   type CellTpl,
   type RenderedSheet,
   type RenderResponse,
@@ -1755,5 +1756,86 @@ describe('withLoopField：循环变量出 N 张表', () => {
     expect(out.sheets[0].rows).toBe(src.sheets[0].rows)
     expect(out.sheets[0].name).toBe('A')
     expect(out.sheets[1].rows).toBe(src.sheets[1].rows)
+  })
+})
+
+/**
+ * 分页是**后处理**，构造器不负责它。
+ *
+ * 这里盯的是一个真实踩过的坑：`GroupTemplateOptions.page` /
+ * `CrossTemplateOptions.page` 都声明了却没人用，交叉表那条路还把 `page`
+ * 传进构造器又被丢掉 —— 于是「分页」开关在实时渲染这条路上**静默失效**：
+ * 服务端收不到 `page`，返回里就没有 `pages`，预览区永远只有一张完整表。
+ * 所以下面的用例要**正面断言 page 真的落到了 sheet 上**，而不是只断言「没抛错」。
+ */
+describe('withPage：分页配置落到每张 sheet 上', () => {
+  const mk = (value: string | null): CellTpl => ({ value })
+  const tpl = (): ReportTemplate => ({
+    sheets: [
+      { name: 'A', rows: [{ cells: [mk('x')] }] },
+      { name: 'B', rows: [{ cells: [mk('y')] }] },
+    ],
+  })
+
+  it('每张 sheet 都写上 page —— 服务端只认 sheet.page，不认请求级的 options', () => {
+    const out = withPage(tpl(), { rows_per_page: 3, repeat_header_rows: 1, repeat_footer_rows: 0 })
+    expect(out.sheets.map((s) => s.page)).toEqual([
+      { rows_per_page: 3, repeat_header_rows: 1, repeat_footer_rows: 0 },
+      { rows_per_page: 3, repeat_header_rows: 1, repeat_footer_rows: 0 },
+    ])
+  })
+
+  it('没开分页时原样返回，不写 page', () => {
+    const src = tpl()
+    expect(withPage(src, undefined)).toBe(src)
+    expect(withPage(src, null)).toBe(src)
+    expect(src.sheets[0].page).toBeUndefined()
+  })
+
+  it('rows_per_page 给 0 / 负数兜底为 1 —— 给 0 服务端会静默退化成一页', () => {
+    // 服务端 `is_paginated` 要求 rows_per_page > 0。给 0 时返回里没有 pages，
+    // 开关看着像没生效，且**不报任何错**。兜底必须钉住。
+    expect(withPage(tpl(), { rows_per_page: 0 }).sheets[0]!.page?.rows_per_page).toBe(1)
+    expect(withPage(tpl(), { rows_per_page: -5 }).sheets[0]!.page?.rows_per_page).toBe(1)
+  })
+
+  it('缺省 / 负数的重复表头表尾行收敛成 0', () => {
+    const p = withPage(tpl(), { rows_per_page: 5 }).sheets[0]!.page
+    expect(p?.repeat_header_rows).toBe(0)
+    expect(p?.repeat_footer_rows).toBe(0)
+    const q = withPage(tpl(), { rows_per_page: 5, repeat_header_rows: -2, repeat_footer_rows: -7 })
+      .sheets[0]!.page
+    expect(q?.repeat_header_rows).toBe(0)
+    expect(q?.repeat_footer_rows).toBe(0)
+  })
+
+  it('小数向下取整 —— 服务端字段是 usize', () => {
+    const p = withPage(tpl(), { rows_per_page: 2.9, repeat_header_rows: 1.7 }).sheets[0]!.page
+    expect(p?.rows_per_page).toBe(2)
+    expect(p?.repeat_header_rows).toBe(1)
+  })
+
+  it('只动 page，rows 和格子原样不动', () => {
+    const src = tpl()
+    const out = withPage(src, { rows_per_page: 4 })
+    expect(out.sheets[0]!.rows).toBe(src.sheets[0]!.rows)
+    expect(out.sheets[0]!.name).toBe('A')
+    expect(out.sheets[1]!.rows).toBe(src.sheets[1]!.rows)
+  })
+
+  it('三个构造器都不自己写 page —— 分页只有 withPage 一个入口', () => {
+    // **契约**用例：哪天有人「顺手」把 page 接回构造器，这条会红，
+    // 提醒他先看 withPage 的注释（存盘只存开关，服务端 apply_options 再套一次）。
+    const g = buildGroupTemplate({ groupFields: ['city'], valueField: 'amount' })
+    const c = buildCrossTemplate({
+      rowFields: ['city'],
+      colFields: ['month'],
+      valueFields: ['amount'],
+    })
+    const d = buildDetailTemplate({ columns: [{ field: 'city' }] })
+    expect(g.sheets[0]!.page ?? null).toBeNull()
+    expect(c.sheets[0]!.page ?? null).toBeNull()
+    // 明细模板是唯一把 opts.page 透传的，但它自己不会凭空造 page
+    expect(d.sheets[0]!.page ?? null).toBeNull()
   })
 })

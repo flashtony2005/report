@@ -77,6 +77,7 @@ import {
   withExportFormula,
   withExpandControl,
   withLoopField,
+  withPage,
   type AggType,
   type CellFormatSpec,
   type CellModel,
@@ -1145,7 +1146,9 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         agg: crossAgg,
         aliases,
         valueFormats,
-        page,
+        // 这里**不再传 page**：构造器会把它丢掉（`buildCrossTemplate` 的返回值
+        // 没有 `page` 字段），传了反而让人以为分页已经接上了。
+        // 分页统一由下面的 `withPage(template, page)` 后处理，见该函数注释。
         title: `${rowFields.join('/')} × ${colFields.join('/')}`,
       })
     } else {
@@ -1187,6 +1190,9 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       maxCount: expandMax,
       keepEmpty: keepExpandEmpty,
     })
+    // 分页：同样是后处理。**必须在 rawTemplate 之后**——存盘只存开关，
+    // 打开报表时由服务端 `apply_options` 再套一次，两条路才等价。
+    template = withPage(template, page)
 
     const { database, table, engine } = dbSelection
     if (!database || !table) return { kind: 'error', message: '请先在数据源里选择库和表' }
@@ -2138,16 +2144,24 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         {showQuery && (
           <>
             <Space wrap size="small">
-              <Space size={4}>
-                <Switch
-                  size="small"
-                  checked={paging}
-                  onChange={(v: boolean) => setPaging(v)}
-                  data-testid="grid-report-paging"
-                />
-                <Typography.Text style={{ fontSize: 12 }}>分页</Typography.Text>
-              </Space>
-              {paging && (
+              {/*
+                自由模板不显示分页：free 分支的 `options` 只存导出公式 / 调试两项，
+                分页开关既进不了存盘文件、也进不了渲染请求；而且自由模板的预览区
+                装的是**模板本身**而不是展开结果，翻页在那里没有意义。
+                与下面「最少行数」那三个同一套理由：不生效的开关就不显示。
+              */}
+              {mode !== 'free' && (
+                <Space size={4}>
+                  <Switch
+                    size="small"
+                    checked={paging}
+                    onChange={(v: boolean) => setPaging(v)}
+                    data-testid="grid-report-paging"
+                  />
+                  <Typography.Text style={{ fontSize: 12 }}>分页</Typography.Text>
+                </Space>
+              )}
+              {paging && mode !== 'free' && (
                 <>
                   <Space size={4}>
                     <Typography.Text style={{ fontSize: 12 }}>每页数据行</Typography.Text>
@@ -2291,8 +2305,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
               )}
             </Space>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              分页按「数据行」计数，不含每页重复的表头/表尾。预览区始终展示未分页的完整表；
-              「导出 xlsx」按页出 sheet（每页一个）。
+              分页按「数据行」计数，不含每页重复的表头/表尾。预览区可翻页（「预览页」上一页 /
+              下一页，翻页只重画画布、不重新查库）；「导出 xlsx」按页出 sheet（每页一个）。
               {exportFormula && (
                 <>
                   {' '}
