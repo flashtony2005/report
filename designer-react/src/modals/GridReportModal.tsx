@@ -59,6 +59,7 @@ import {
   parentChainOf,
   parentPosOf,
   parentTreeOf,
+  pickPreviewSheet,
   semanticBgOf,
   isValidReportId,
   parseParams,
@@ -84,6 +85,7 @@ import {
   type MergeRect,
   type RenderRequest,
   type RenderResponse,
+  type RenderedSheet,
   type ReportDef,
   type ReportOptions,
   type ReportSource,
@@ -856,6 +858,52 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const [repeatHeader, setRepeatHeader] = useState(1)
   const [repeatFooter, setRepeatFooter] = useState(0)
   /**
+   * 服务端返回的**分页结果**（`RenderResponse.pages`）。
+   * 这里曾被整个忽略：开了分页、每页 20 行，预览仍渲染 `sheets[0]`（完整不分页的表），
+   * 于是「分页长什么样」只能导出 xlsx 才看得见。
+   */
+  const [pages, setPages] = useState<RenderedSheet[]>([])
+  /** 当前预览第几页（0 基）。只在 `pages` 非空时有意义 */
+  const [pageIndex, setPageIndex] = useState(0)
+
+  /**
+   * 最近一次渲染结果。切页时**不再请求服务端** —— 服务端一次就把所有页都回了，
+   * 只是以前没人用它。
+   *
+   * 必须声明在 `runReport` / `doRender` **之前**：它们把它和 `paintSheet` 写进了
+   * `useCallback` 的依赖数组，那是渲染期就会求值的引用 —— 放到后面会踩 TDZ
+   *（`Block-scoped variable 'paintSheet' used before its declaration`）。
+   */
+  const lastRenderRef = useRef<{ data: RenderResponse; headerRows: number } | null>(null)
+  /** 已经画到画布上的页码。用来防止「重新渲染」与「切页」两个 effect 重复重画 */
+  const paintedIndexRef = useRef(-1)
+
+  /**
+   * 把「要显示的那张表」画进 Univer。
+   *
+   * 分页生效时画 `pages[idx]`（当前页），否则画 `sheets[0]`（完整表）。
+   * 页码由**参数**传入而不是从闭包里读，避免 useCallback 捕获到旧的 `pageIndex`。
+   */
+  const paintSheet = useCallback((idx: number) => {
+    const last = lastRenderRef.current
+    if (!last || !containerRef.current) return
+    const sheet = pickPreviewSheet(last.data, idx)
+    if (!sheet) return
+    try {
+      // 重建前先销毁上一个实例，否则多份 Univer 会叠在同一容器里
+      univerRef.current?.dispose()
+      univerRef.current = null
+      const { univerAPI } = createFormulaFreeUniver(containerRef.current)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(univerAPI as any).createWorkbook(toWorkbookData(sheet, { headerRows: last.headerRows }))
+      univerRef.current = univerAPI as unknown as { dispose: () => void }
+      paintedIndexRef.current = idx
+    } catch (e) {
+      setError(`Univer 初始化失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }, [])
+
+  /**
    * 循环变量：按该字段的不同取值把本表复制成 N 张（一个客户一张表）。
    * 空串 = 不开循环。它打在 `SheetTpl.loop_field` 上（**不是** options），
    * 所以会跟着模板一起存盘。
@@ -1386,24 +1434,20 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       const data = JSON.parse(text) as RenderResponse
       setWarnings(data.warnings ?? [])
       setDumpText(data.dump ?? '')
-      setFallbackHtml(data.html || '')
+      lastRenderRef.current = { data, headerRows: rows }
+      const pageList = data.pages ?? []
+      setPages(pageList)
+      setPageIndex(0)
+      setFallbackHtml(pageList.length ? (data.pages_html?.[0] ?? data.html ?? '') : data.html || '')
       // 先清上一次的错误，再 init —— 反过来的话 init 报的错会被这次清空盖掉
       setError('')
-      try {
-        univerRef.current?.dispose()
-        univerRef.current = null
-        const { univerAPI } = createFormulaFreeUniver(containerRef.current!)
-        ;(univerAPI as any).createWorkbook(toWorkbookData(data.sheets[0], { headerRows: rows }))
-        univerRef.current = univerAPI as unknown as { dispose: () => void }
-      } catch (e) {
-        setError(`Univer 初始化失败：${e instanceof Error ? e.message : String(e)}`)
-      }
+      paintSheet(0)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setFileBusy(false)
     }
-  }, [])
+  }, [paintSheet])
 
   /**
    * 渲染。`silent` 用于「参数变化触发的自动刷新」：
@@ -1605,6 +1649,14 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     }
   }, [open, mode, canvasKey, lightParentChain])
 
+  /** 切页：只重画画布，不重新请求（服务端已经把所有页都给了） */
+  useEffect(() => {
+    if (!open || mode === 'free') return
+    if (!lastRenderRef.current) return
+    if (paintedIndexRef.current === pageIndex) return
+    paintSheet(pageIndex)
+  }, [open, mode, pageIndex, paintSheet])
+
   useEffect(() => {
     if (!open) return
     if (mode === 'free') return // 自由模板由上面的 effect 接管容器
@@ -1614,18 +1666,13 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         const out = await doRender(true)
         if (!out || disposed || !containerRef.current) return
         const { data, headerRows } = out
-        setFallbackHtml(data.html || '')
-        try {
-          // 重建前先销毁上一个实例，否则多份 Univer 会叠在同一容器里
-          univerRef.current?.dispose()
-          univerRef.current = null
-          const { univerAPI } = createFormulaFreeUniver(containerRef.current)
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ;(univerAPI as any).createWorkbook(toWorkbookData(data.sheets[0], { headerRows }))
-          univerRef.current = univerAPI as unknown as { dispose: () => void }
-        } catch (e) {
-          if (!disposed) setError(`Univer 初始化失败：${e instanceof Error ? e.message : String(e)}`)
-        }
+        lastRenderRef.current = { data, headerRows }
+        const pageList = data.pages ?? []
+        setPages(pageList)
+        setPageIndex(0)
+        setFallbackHtml(pageList.length ? (data.pages_html?.[0] ?? data.html ?? '') : data.html || '')
+        // paintSheet 内部已经 try/catch 并 setError，这里不再重复包一层
+        paintSheet(0)
       })()
     }, 400)
 
@@ -1633,7 +1680,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       disposed = true
       clearTimeout(timer)
     }
-  }, [open, mode, doRender])
+  }, [open, mode, doRender, paintSheet])
 
   /** 关闭时才销毁实例（弹窗 destroyOnHidden，容器随之卸载） */
   useEffect(() => {
@@ -2139,6 +2186,33 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
                     />
                   </Space>
                 </>
+              )}
+              {pages.length > 0 && mode !== 'free' && (
+                <Space size={4}>
+                  <Typography.Text style={{ fontSize: 12 }}>预览页</Typography.Text>
+                  <Button
+                    size="small"
+                    disabled={pageIndex <= 0}
+                    onClick={() => setPageIndex((i) => Math.max(0, i - 1))}
+                    data-testid="grid-report-prev-page"
+                  >
+                    上一页
+                  </Button>
+                  <Typography.Text
+                    style={{ fontSize: 12 }}
+                    data-testid="grid-report-page-indicator"
+                  >
+                    {pageIndex + 1} / {pages.length}
+                  </Typography.Text>
+                  <Button
+                    size="small"
+                    disabled={pageIndex >= pages.length - 1}
+                    onClick={() => setPageIndex((i) => Math.min(pages.length - 1, i + 1))}
+                    data-testid="grid-report-next-page"
+                  >
+                    下一页
+                  </Button>
+                </Space>
               )}
               <Space size={4}>
                 <Typography.Text

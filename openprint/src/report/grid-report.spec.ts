@@ -11,6 +11,7 @@ import {
   headerRowCount,
   labelOf,
   parseParams,
+  pickPreviewSheet,
   applyCellText,
   colIndex,
   clearGridMerge,
@@ -45,6 +46,8 @@ import {
   withExportFormula,
   withLoopField,
   type CellTpl,
+  type RenderedSheet,
+  type RenderResponse,
   type ReportTemplate,
   type TplNode,
 } from './grid-report'
@@ -368,6 +371,45 @@ describe('交叉表模板', () => {
     expect(() => buildCrossTemplate({ rowFields: [], colFields: ['m'], valueFields: ['v'] })).toThrow()
     expect(() => buildCrossTemplate({ rowFields: ['r'], colFields: [], valueFields: ['v'] })).toThrow()
     expect(() => buildCrossTemplate({ rowFields: ['r'], colFields: ['m'], valueFields: [] })).toThrow()
+  })
+})
+
+describe('预览取哪一页（分页结果）', () => {
+  const sheet = (name: string): RenderedSheet => ({ name, rows: [] })
+  const resp = (
+    pages: RenderedSheet[] | null | undefined,
+  ): Pick<RenderResponse, 'sheets' | 'pages'> => ({
+    sheets: [sheet('完整表')],
+    pages,
+  })
+
+  it('没有分页结果时回落完整表（pages 为 null / 空数组 / 缺省）', () => {
+    expect(pickPreviewSheet(resp(null), 0)?.name).toBe('完整表')
+    expect(pickPreviewSheet(resp([]), 0)?.name).toBe('完整表')
+    expect(pickPreviewSheet(resp(undefined), 0)?.name).toBe('完整表')
+  })
+
+  it('有分页结果时取当前页 —— 这正是修之前永远做不到的一条', () => {
+    const r = resp([sheet('表 (1/3)'), sheet('表 (2/3)'), sheet('表 (3/3)')])
+    // 修之前这里恒为「完整表」：预览只读 sheets[0]，pages 被整个忽略
+    expect(pickPreviewSheet(r, 0)?.name).toBe('表 (1/3)')
+    expect(pickPreviewSheet(r, 1)?.name).toBe('表 (2/3)')
+    expect(pickPreviewSheet(r, 2)?.name).toBe('表 (3/3)')
+  })
+
+  it('页码越界夹到最后一页，不返回 undefined', () => {
+    const r = resp([sheet('表 (1/2)'), sheet('表 (2/2)')])
+    // 重新渲染后页数可能变少，而 pageIndex 还停在旧值上 —— 夹住，别炸
+    expect(pickPreviewSheet(r, 9)?.name).toBe('表 (2/2)')
+    expect(pickPreviewSheet(r, -3)?.name).toBe('表 (1/2)')
+    expect(pickPreviewSheet(r, 1.9)?.name).toBe('表 (2/2)')
+  })
+
+  it('分页时取到的必须**不是**完整表（否则等于没修）', () => {
+    const r = resp([sheet('表 (1/2)'), sheet('表 (2/2)')])
+    for (const i of [0, 1]) {
+      expect(pickPreviewSheet(r, i)?.name).not.toBe(r.sheets[0].name)
+    }
   })
 })
 

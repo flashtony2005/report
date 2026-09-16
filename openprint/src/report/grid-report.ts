@@ -781,6 +781,27 @@ export function headerRowCount(tpl: ReportTemplate): number {
 }
 
 /**
+ * 预览要渲染哪一张表：分页结果非空时取**当前页**，否则取完整表（`sheets[0]`）。
+ *
+ * 抽成纯函数，是因为这里出过一个「预览永远只有完整表」的 bug：
+ * 服务端 `RenderResponse.pages` 一直是有值的，但预览只读 `sheets[0]`，
+ * 于是「每页 N 行」这类分页设置只能导出 xlsx 才看得见。
+ * 判据（取哪一页、越界怎么办）放进纯函数才钉得住 —— 不必为了测它
+ * 拉起整个 Univer + fetch。
+ *
+ * 越界一律夹到最后一页：重新渲染后页数可能变少，而 `pageIndex` 还停在旧值上。
+ */
+export function pickPreviewSheet(
+  data: Pick<RenderResponse, 'sheets' | 'pages'>,
+  pageIndex: number,
+): RenderedSheet | undefined {
+  const pages = data.pages ?? []
+  if (!pages.length) return data.sheets[0]
+  const i = Math.min(Math.max(0, Math.floor(pageIndex)), pages.length - 1)
+  return pages[i]
+}
+
+/**
  * 展开结果 → Univer 工作簿数据（rowspan/colspan 转 mergeData）。
  *
  * `opts.headerRows` 指定的行会套上表头样式（加粗/居中/底色），用于「多级表头美化」。

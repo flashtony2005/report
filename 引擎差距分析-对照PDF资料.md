@@ -716,7 +716,7 @@ Pass 3  原来的实例创建循环，读前两遍的结果
 * 配置：`{ rows_per_page, repeat_header_rows, repeat_footer_rows }`
 * 输出：`RenderResponse.pages`（每页一个 sheet，名字带 ` (i/n)`）+ `pages_html`
 * 测试：`mod.rs:2056` 起，10 行 / 每页 4 → 3 页（4/4/2）
-* 分页按「数据行」计数，不含每页重复的表头/表尾；预览区始终展示未分页的完整表
+* 分页按「数据行」计数，不含每页重复的表头/表尾；预览区**可翻页**（`pickPreviewSheet`）
 
 **已知的自我限制**（代码里主动做的取舍，不是遗漏）：公式是按**整表**行列位置生成的，
 逐页复制后行号对不上（第 2 页的 `SUM(C2:C5)` 只会算到本页那几行）。
@@ -1308,8 +1308,22 @@ UI 上没入口。现已补上分页、调试、告警三块（`designer-react/s
 文件名仍取未分页的 sheet 名（避免带上「 (1/3)」后缀）。  
 新增测试 `paginated_template_exports_pages_as_sheets` 覆盖该分支（**Rust 62 测试全绿**）。
 
-**仍未做**：预览区始终展示未分页的完整表（要看分页效果得导出 xlsx）；  
-`expand_min_count` / `expand_max_count` / `keep_expand_empty` 是单元格级属性，  
+**预览区分页（2026-09-16 补上）**：以前预览只读 `RenderResponse.sheets[0]`（完整不分页的表），
+`pages` 被**整个忽略** —— 开了分页也看不见效果，只能导出 xlsx 才知道切得对不对。现在：
+
+- 取哪一页的逻辑抽成纯函数 `pickPreviewSheet(data, pageIndex)`
+  （在共享镜像 `openprint/src/report/grid-report.ts`）：分页非空取当前页、
+  否则回落完整表、**越界夹到最后一页**（重新渲染后页数可能变少，而 `pageIndex`
+  还停在旧值上）。
+- 弹窗加了「上一页 / 下一页」+ `i / n` 指示器（仅 `pages` 非空时出现）。
+- **切页不重新请求服务端**：一次渲染服务端就把所有页都回了，只是以前没人用它。
+  用 `lastRenderRef` 存最近一次结果，切页只重画画布。
+- 抽成纯函数是为了**可测**：不必为测它拉起 Univer + fetch。新增 4 条测试，
+  其中一条是反空转断言（「分页时取到的必须**不是**完整表」）。
+- 探针：把实现换回「永远取完整表」→ **3 条红**
+  （`expected '完整表' to be '表 (1/3)'`），回落那一条正确地保持绿。
+
+**仍未做**：`expand_min_count` / `expand_max_count` / `keep_expand_empty` 是单元格级属性，
 需要按格配置，没有合适的全局 UI 位置，暂未暴露。
 
 ---
