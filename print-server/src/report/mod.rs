@@ -4986,5 +4986,36 @@ mod tests {
         let w = resp.warnings.clone().unwrap_or_default().join("\n");
         assert!(w.contains("BOGUSFUNC"), "认不出的函数名应告警，实际: {w:?}");
     }
+
+    /// 集合函数 + lambda —— 把「怎么遍历」的复杂度从引擎挪到表达式层。
+    ///
+    /// 明细是 100 / 200 / 150 / 260（合计 710）。三条各走一条不同的路径：
+    /// `MAP` 产出**值列表**、`FILTER` 保留**格实例**（所以 `.sum()` 还能用格集口径）、
+    /// `REDUCE` 折叠成标量。
+    #[test]
+    fn collection_funcs_with_lambda() {
+        let cell = |expr: &str| render_yoy(expr, None)[0][3].text.clone();
+        assert_eq!(cell("REDUCE(C1, (acc, x) => acc + x, 0)"), "710", "求和");
+        // 列表要能被聚合函数接着吃，否则 MAP 出来就没法用
+        assert_eq!(cell("SUM(MAP(C1, x => x * 2))"), "1,420", "2 倍后求和");
+        // >150 的只有 200 与 260
+        assert_eq!(cell("SUM(FILTER(C1, x => x > 150))"), "460", "筛选后求和");
+    }
+
+    /// lambda 单独出现（没有套集合函数）是**表达式写错了**：出空可以，但必须告警，
+    /// 否则作者只看到一格空白，不会想到自己漏了 `MAP` / `REDUCE`。
+    #[test]
+    fn standalone_lambda_warns_instead_of_silently_blank() {
+        let resp = render(RenderRequest {
+            template: yoy_template("x => x * 2", None),
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap();
+        assert_eq!(resp.sheets[0].rows[0][3].text, "", "lambda 单独写应出空");
+        let w = resp.warnings.clone().unwrap_or_default().join("\n");
+        assert!(w.contains("lambda"), "应告警，实际: {w:?}");
+    }
 }
 

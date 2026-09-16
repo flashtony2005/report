@@ -106,6 +106,16 @@ pub enum Expr {
     /// 只在**展开期**求值，此时层次坐标尚未建立，所以元素只允许是常量
     /// （`Num` / `Str`）。出现格引用或函数调用一律报错，不静默当空数组。
     Array(Vec<Expr>),
+    /// Lambda：`x => 表达式` / `(acc, x) => 表达式`。
+    ///
+    /// 把「怎么遍历」这件事从引擎挪到表达式层 —— 这是 NopReport 明确的取向：
+    /// 引擎不内置任何数据集知识，复杂口径由 `map/filter/reduce` + Lambda 组合出来。
+    /// 只作为集合函数（`MAP` / `FILTER` / `REDUCE`）的参数出现；单独写没有意义，
+    /// 求值时记一笔告警并出空（不是静默当 0）。
+    ///
+    /// 参数名**不能长得像格子名**（`is_cell_name` 判据：字母+数字，如 `x1`）——
+    /// 否则 `Expr::Var` 会把它当格子引用，绑定不上。解析期就报错。
+    Lambda { params: Vec<String>, body: Box<Expr> },
 }
 
 #[derive(Debug, Clone)]
@@ -280,6 +290,10 @@ impl<'a> Parser<'a> {
         let c = self.peek().unwrap();
 
         if self.eat(b'(') {
+            // 可能是 lambda 参数表 `(acc, x) => …`。不像就退回，走下面的括号分组。
+            if let Some(l) = self.try_parse_lambda_after_paren()? {
+                return Ok(l);
+            }
             let e = self.parse_cmp()?;
             self.ws();
             if !self.eat(b')') {
@@ -329,6 +343,51 @@ impl<'a> Parser<'a> {
         self.err(format!("无法识别的字符 {:?}", c as char))
     }
 
+    /// 已经吃掉 `(` 之后，试探 `(a, b) => 表达式` 这种多参数 lambda。
+    ///
+    /// 不像就把游标**原样退回**，交给调用方的「括号分组」那条路 —— 这里是试探，
+    /// 绝不能因为 `(B2 + 1) * 2` 里的 `B2` 长得像参数名就报错。
+    /// 所以参数名**像格子名时直接判为「不是 lambda」**，而不是报错。
+    fn try_parse_lambda_after_paren(&mut self) -> Result<Option<Expr>, String> {
+        let save = self.i;
+        let mut params = Vec::new();
+        loop {
+            self.ws();
+            let start = self.i;
+            while self.peek().map_or(false, |c| c.is_ascii_alphanumeric() || c == b'_') {
+                self.i += 1;
+            }
+            if self.i == start {
+                self.i = save;
+                return Ok(None);
+            }
+            let p = std::str::from_utf8(&self.s[start..self.i]).unwrap_or("").to_string();
+            if is_cell_name(&p) {
+                self.i = save;
+                return Ok(None);
+            }
+            params.push(p);
+            self.ws();
+            if self.eat(b',') {
+                continue;
+            }
+            break;
+        }
+        self.ws();
+        if !self.eat(b')') {
+            self.i = save;
+            return Ok(None);
+        }
+        self.ws();
+        if self.peek() != Some(b'=') || self.s.get(self.i + 1) != Some(&b'>') {
+            self.i = save;
+            return Ok(None);
+        }
+        self.i += 2;
+        let body = self.parse_cmp()?;
+        Ok(Some(Expr::Lambda { params, body: Box::new(body) }))
+    }
+
     fn parse_number(&mut self) -> Result<Expr, String> {
         let start = self.i;
         while self.peek().map_or(false, |c| c.is_ascii_digit()) {
@@ -367,6 +426,21 @@ impl<'a> Parser<'a> {
         let name = std::str::from_utf8(&self.s[start..self.i]).unwrap_or("").to_string();
 
         self.ws();
+        // Lambda 单参数：`x => 表达式`。
+        // 用 peek 而不是 eat —— `=` 后面不是 `>` 时不能吃掉字符（那是错的表达式，
+        // 该由后面的语法检查去报，而不是被这里悄悄吞掉）。
+        // 与 `>=` / `==` 不冲突：`=>` 以 `=` 开头，另两个分别以 `>` 和 `==` 开头。
+        if self.peek() == Some(b'=') && self.s.get(self.i + 1) == Some(&b'>') {
+            // 长得像格子名的参数绑不上（会被 `Expr::Var` 当单元格引用），早报错
+            if is_cell_name(&name) {
+                return self.err(format!(
+                    "lambda 参数 `{name}` 长得像格子名（字母+数字），会被当成单元格引用；换个名字"
+                ));
+            }
+            self.i += 2;
+            let body = self.parse_cmp()?;
+            return Ok(Expr::Lambda { params: vec![name], body: Box::new(body) });
+        }
         // 函数调用：IF(...) / SUM(...) / NVL(...)
         if self.peek() == Some(b'(') {
             self.i += 1;
@@ -541,6 +615,44 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// lambda 的解析：**关键是不该把别的东西误认成 lambda**。
+    ///
+    /// `(B2 + 1) * 2` 里的 `B2` 长得就像参数名（字母+数字），试探解析若在这里
+    /// 不退回，普通括号分组会整个坏掉 —— 这是最容易踩的一处。
+    #[test]
+    fn parses_lambda_and_leaves_parens_alone() {
+        // 单参数
+        match parse("x => x * 2").unwrap() {
+            Expr::Lambda { params, body } => {
+                assert_eq!(params, vec!["x".to_string()]);
+                assert!(matches!(*body, Expr::Binary { .. }));
+            }
+            other => panic!("{other:?}"),
+        }
+        // 多参数
+        match parse("(acc, x) => acc + x").unwrap() {
+            Expr::Lambda { params, .. } => {
+                assert_eq!(params, vec!["acc".to_string(), "x".to_string()]);
+            }
+            other => panic!("{other:?}"),
+        }
+        // 作为集合函数参数
+        match parse("MAP(C1, x => x * 2)").unwrap() {
+            Expr::Call { name, args } => {
+                assert_eq!(name, "MAP");
+                assert!(matches!(args[1], Expr::Lambda { .. }));
+            }
+            other => panic!("{other:?}"),
+        }
+        // 回归：括号分组不能被误判成 lambda
+        assert!(parse("(B2 + 1) * 2").is_ok(), "`(B2 + 1)` 不是 lambda");
+        assert!(parse("(B2)").is_ok());
+        // `>=` 不能被 `=>` 抢走
+        assert!(matches!(parse("C1 >= 5").unwrap(), Expr::Cmp { .. }));
+        // 像格子名的参数名要早报错，而不是绑不上再静默出空
+        assert!(parse("x1 => x1 * 2").is_err(), "`x1` 长得像格子名");
     }
 
     #[test]

@@ -427,7 +427,13 @@ enum Val {
     /// 写 `B2 / B2[A2:-1]` 时，裸 `B2` 必须是**当前行**的 B2，而不是全局第一个 B2。
     /// 在构造处就算好：留到 `scalar` 里再判成员，等于每行多扫一遍整列。
     Set { cells: Rc<[usize]>, pick: Option<usize> },
+    /// `MAP(...)` 的结果：一组**已算出来**的值（不再是格实例，所以不能取层次坐标）。
+    ///
+    /// 用 `Rc` 是为了让 `MAP` / `FILTER` / `REDUCE` 串起来时不逐层深拷贝。
+    /// 与 `Set` 的分工：`Set` 是「模板里的那些格」，`List` 是「算出来的那些值」。
+    List(Rc<[Val]>),
 }
+
 
 impl Val {
     fn from_json(v: JsonValue) -> Self {
@@ -445,6 +451,12 @@ impl Val {
         match self {
             Val::Set { pick, .. } => match pick {
                 Some(i) => Val::from_json(e.insts[i].value.clone()),
+                None => Val::Null,
+            },
+            // 列表参与四则运算没有公认语义，取首元素（与「格集取可见格」同一思路）：
+            // 真要聚合就显式写 `SUM(MAP(...))`。
+            Val::List(l) => match l.first() {
+                Some(v) => v.clone().scalar(e),
                 None => Val::Null,
             },
             other => other,
@@ -466,6 +478,7 @@ impl Val {
             Val::Num(n) => *n != 0.0,
             Val::Str(s) => !s.is_empty(),
             Val::Set { cells, .. } => !cells.is_empty(),
+            Val::List(l) => !l.is_empty(),
             Val::Null => false,
         }
     }
@@ -479,6 +492,8 @@ impl Val {
             Val::Bool(b) => b.to_string(),
             Val::Null => String::new(),
             Val::Set { .. } => String::new(),
+            // 列表没有单一文本表示；要显示就自己 `REDUCE` 成标量
+            Val::List(..) => String::new(),
         }
     }
 
@@ -650,6 +665,12 @@ pub struct Engine {
     /// 用 RefCell 是因为求值是 `&self`（`eval_call` 也是），而赋值要改状态 ——
     /// 跟上面几个缓存同一个套路。
     vars: RefCell<BTreeMap<String, JsonValue>>,
+    /// lambda 参数绑定栈（`MAP` / `FILTER` / `REDUCE` 用）。
+    ///
+    /// 用**栈**而不是 map：同一表达式里可能出现嵌套 lambda，同名参数必须内层遮蔽外层；
+    /// 每次调用都 `truncate` 回进入时的长度，保证用完弹干净 ——
+    /// 少弹一次就会污染后续单元格的求值（同一个 Engine 要算成百上千个格子）。
+    lambda_vars: RefCell<Vec<(String, Val)>>,
     /// 引用过但从来没被赋值的变量名。**渲染结束后会变成告警**：
     /// 变量名写错却静默当 0 用，是本项目一直在抓的那类静默失败。
     var_misses: RefCell<BTreeSet<String>>,
@@ -691,6 +712,7 @@ impl Engine {
             coord_nums_cache: RefCell::new(HashMap::new()),
             coord_prefix_cache: RefCell::new(HashMap::new()),
             vars: RefCell::new(BTreeMap::new()),
+            lambda_vars: RefCell::new(Vec::new()),
             var_misses: RefCell::new(BTreeSet::new()),
             unsupported: RefCell::new(BTreeSet::new()),
         }
@@ -1234,6 +1256,8 @@ impl Engine {
     fn excel_of(&self, e: &Expr, cur: usize) -> Option<String> {
         Some(match e {
             Expr::Num(n) => format!("{n}"),
+            // lambda 翻不成 Excel 公式：`export_formula` 那条路会据此回落写值并告警
+            Expr::Lambda { .. } => return None,
             // 双引号要转义成两个，否则公式断掉
             Expr::Str(s) => format!("\"{}\"", s.replace('"', "\"\"")),
             Expr::Cell { target, coord, prop } => {
@@ -1770,6 +1794,8 @@ impl Engine {
     /// 按与 `collect_deps` 相同的顺序走查，收集每个带坐标格的 anchor。
     fn collect_coord_anchors(&self, e: &Expr, cur: usize, out: &mut Vec<usize>) -> Option<()> {
         match e {
+            // lambda 的 anchor 无从静态判定，按「不缓存」处理（与 Filter / Var 同）
+            Expr::Lambda { .. } => None,
             Expr::Cell { coord: Some(cd), .. } => {
                 out.push(self.find_anchor(cd, cur)?);
                 Some(())
@@ -1800,6 +1826,9 @@ impl Engine {
 
     fn collect_deps(&self, e: &Expr, cur: usize, out: &mut Vec<usize>) {
         match e {
+            // 体里的格引用同样是依赖。参数名不可能长得像格子（解析期判据），
+            // 所以这里不需要排除参数。
+            Expr::Lambda { body, .. } => self.collect_deps(body, cur, out),
             Expr::Cell { target, coord, .. } => {
                 out.extend(self.resolve(target, coord.as_ref(), cur).iter().copied())
             }
@@ -2239,19 +2268,42 @@ impl Engine {
             }
             Expr::Binary { op, lhs, rhs } => self.eval_binary(*op, lhs, rhs, cur, outer),
             Expr::Cmp { op, lhs, rhs } => self.eval_cmp(*op, lhs, rhs, cur, outer),
+            // lambda 只在集合函数的参数位上有意义。单独出现说明表达式写错了 ——
+            // 出空可以，但不能静默，否则作者只看到一格空白，不知道自己漏了函数。
+            Expr::Lambda { .. } => {
+                self.unsupported.borrow_mut().insert(
+                    "lambda（`x => …`）只能作为 MAP / FILTER / REDUCE 的参数使用；\
+                     单独写没有意义，该格按空值输出。"
+                        .to_string(),
+                );
+                Val::Null
+            }
             Expr::Call { name, args } => self.eval_call(name, args, cur, outer),
             // 本格自身的值。value_expr 里出现会自引用：此时 evaluating=true、
             // value 还是 Null，取出来就是 Null，不会递归下去。
             Expr::SelfValue => Val::from_json(self.insts[cur].value.clone()),
 
             // 命名变量：取 assign 绑上去的那个值。没绑过就记一笔 miss（渲染完变告警）
-            Expr::Var { name } => match self.vars.borrow().get(name) {
-                Some(v) => Val::from_json(v.clone()),
-                None => {
-                    self.var_misses.borrow_mut().insert(name.clone());
-                    Val::Null
+            Expr::Var { name } => {
+                // lambda 参数**优先于** `assign` 的命名变量：同名时内层遮蔽外层
+                let bound = self
+                    .lambda_vars
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| v.clone());
+                if let Some(v) = bound {
+                    return v;
                 }
-            },
+                self.vars.borrow().get(name).map_or_else(
+                    || {
+                        self.var_misses.borrow_mut().insert(name.clone());
+                        Val::Null
+                    },
+                    |v| Val::from_json(v.clone()),
+                )
+            }
 
             // 格集过滤：条件以**候选格**为上下文求值（裸 B2 = 候选格的主格），
             // 于是 `outer` 传当前格，`$B2` 才能回到当前格的主格。
@@ -2376,6 +2428,10 @@ impl Engine {
                 Val::Set { cells, .. } => {
                     out.extend(cells.iter().filter_map(|i| as_number(self.insts[*i].value.clone())))
                 }
+                // `SUM(MAP(C1, x => x * 2))`：列表里已经是算好的值
+                Val::List(l) => {
+                    out.extend(l.iter().filter_map(|v| v.clone().scalar(self).as_num()))
+                }
                 v => {
                     if let Some(n) = v.scalar(self).as_num() {
                         out.push(n)
@@ -2384,6 +2440,51 @@ impl Engine {
             }
         }
         out
+    }
+
+    /// 摊平成「元素序列」供集合函数遍历。
+    ///
+    /// - `Set` → 每个格实例的**值**（格集是实例，遍历时取各自的值）
+    /// - `List` → 已有元素
+    /// - 标量 → 单元素序列：`MAP(1, x => ..)` 不该静默出空，让它照字面走一遍
+    fn elements_of(&self, v: Val) -> Vec<Val> {
+        match v {
+            Val::Set { cells, .. } => {
+                cells.iter().map(|&i| Val::from_json(self.insts[i].value.clone())).collect()
+            }
+            Val::List(l) => l.to_vec(),
+            other => vec![other],
+        }
+    }
+
+    /// 绑定 lambda 参数 → 求体 → **恢复绑定**。
+    ///
+    /// 参数个数对不上、或压根不是 lambda，都返回 `None` 由调用方记告警 ——
+    /// 不臆造语义（比如「缺的参数当 0」）。
+    fn apply_lambda(&self, lambda: &Expr, args: &[Val], cur: usize, outer: usize) -> Option<Val> {
+        let (params, body) = match lambda {
+            Expr::Lambda { params, body } => (params, body),
+            _ => return None,
+        };
+        if params.len() != args.len() {
+            return None;
+        }
+        let base = self.lambda_vars.borrow().len();
+        for (p, v) in params.iter().zip(args.iter()) {
+            self.lambda_vars.borrow_mut().push((p.clone(), v.clone()));
+        }
+        let out = self.eval_ast(body, cur, outer);
+        // 无论求值有没有出错都要弹回去：少弹一次会污染后续格子的求值
+        self.lambda_vars.borrow_mut().truncate(base);
+        Some(out)
+    }
+
+    fn bad_lambda(&self, func: &str) -> Val {
+        self.unsupported.borrow_mut().insert(format!(
+            "`{func}` 的 lambda 参数不对：要么不是 `x => …` 形式，\
+             要么参数个数与它要求的不一致。该格按空值输出。"
+        ));
+        Val::Null
     }
 
     fn aggregate_cells(&self, cells: &[usize], func: &str) -> f64 {
@@ -2650,6 +2751,60 @@ impl Engine {
                     Val::Null
                 }
             },
+            // ---- 集合函数 + lambda：把「怎么遍历」的复杂度挪到表达式层 ----
+            // 这是 NopReport 明确的取向：引擎不内置数据集知识，复杂口径由
+            // map / filter / reduce 组合出来。
+            "MAP" if args.len() == 2 => {
+                let items = self.elements_of(self.eval_ast(&args[0], cur, outer));
+                let mut out = Vec::with_capacity(items.len());
+                for it in items {
+                    match self.apply_lambda(&args[1], &[it], cur, outer) {
+                        Some(v) => out.push(v),
+                        None => return self.bad_lambda("MAP"),
+                    }
+                }
+                Val::List(Rc::from(out))
+            }
+            "FILTER" if args.len() == 2 => match self.eval_ast(&args[0], cur, outer) {
+                // 输入是格集时**保留格实例**：这样 `FILTER(C1[A1:+0], x => x > 100).sum()`
+                // 还能接着用格集那套聚合口径，而不是退化成先取值再求和。
+                Val::Set { cells, .. } => {
+                    let mut kept = Vec::new();
+                    for &c in cells.iter() {
+                        let v = Val::from_json(self.insts[c].value.clone());
+                        match self.apply_lambda(&args[1], &[v], cur, outer) {
+                            Some(x) if x.truthy() => kept.push(c),
+                            Some(_) => {}
+                            None => return self.bad_lambda("FILTER"),
+                        }
+                    }
+                    let pick = kept.first().copied();
+                    Val::Set { cells: Rc::from(kept), pick }
+                }
+                other => {
+                    let mut out = Vec::new();
+                    for it in self.elements_of(other) {
+                        match self.apply_lambda(&args[1], &[it.clone()], cur, outer) {
+                            Some(x) if x.truthy() => out.push(it),
+                            Some(_) => {}
+                            None => return self.bad_lambda("FILTER"),
+                        }
+                    }
+                    Val::List(Rc::from(out))
+                }
+            },
+            "REDUCE" if args.len() == 3 => {
+                let items = self.elements_of(self.eval_ast(&args[0], cur, outer));
+                // 初值先求值：它是普通表达式，不受 lambda 参数影响
+                let mut acc = self.eval_ast(&args[2], cur, outer);
+                for it in items {
+                    match self.apply_lambda(&args[1], &[acc.clone(), it], cur, outer) {
+                        Some(v) => acc = v,
+                        None => return self.bad_lambda("REDUCE"),
+                    }
+                }
+                acc
+            }
             // 认不出的函数名：拼错、或用了官方函数集里我们还没实现的。
             // 出空可以，但**不能静默** —— 出表就是一格空白，作者只会以为「没数据」，
             // 而不会想到「这个函数我不认」。与上面 ACCSUM 那条同一套规矩。
@@ -2938,6 +3093,7 @@ fn expr_is_cur_independent(e: &Expr) -> bool {
             expr_is_cur_independent(lhs) && expr_is_cur_independent(rhs)
         }
         Expr::Neg(inner) | Expr::Dollar(inner) => expr_is_cur_independent(inner),
+        Expr::Lambda { body, .. } => expr_is_cur_independent(body),
         // 变量的值可能来自「某一行的 assign」，跨行复用依赖集不安全 → 保守按「有关」
         Expr::Num(_) | Expr::Str(_) | Expr::SelfValue => true,
         Expr::Var { .. } => false,
@@ -2955,6 +3111,9 @@ fn val_to_json(v: &Val) -> JsonValue {
         Val::Bool(b) => JsonValue::Bool(*b),
         Val::Null => JsonValue::Null,
         Val::Set { .. } => JsonValue::Null,
+        // 列表存不进变量表（assign 的取值是 JSON），落 Null；
+        // 要存就先 `REDUCE` 成标量
+        Val::List(..) => JsonValue::Null,
     }
 }
 
