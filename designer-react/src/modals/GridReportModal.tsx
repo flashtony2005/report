@@ -39,9 +39,6 @@ import { createFormulaFreeUniver } from '../report/univerFormulaFree'
 // 相应的 CSS 也不再需要（preset-sheets-core 自带的 chrome 样式都给关了）。
 
 import {
-  buildCrossTemplate,
-  buildDetailTemplate,
-  buildGroupTemplate,
   cellPos,
   clearGridMerge,
   DEFAULT_FIELD_LABELS,
@@ -62,7 +59,6 @@ import {
   pickPreviewSheet,
   semanticBgOf,
   isValidReportId,
-  parseParams,
   parsePos,
   REPORT_FORMAT,
   REPORT_VERSION,
@@ -74,17 +70,12 @@ import {
   templateToGrid,
   toWorkbookData,
   validateTemplate,
-  withExportFormula,
-  withExpandControl,
-  withLoopField,
-  withPage,
   type AggType,
   type CellFormatSpec,
   type CellModel,
   type CellTpl,
   type ExpandDir,
   type MergeRect,
-  type RenderRequest,
   type RenderResponse,
   type RenderedSheet,
   type ReportDef,
@@ -95,34 +86,16 @@ import {
   type ReportTemplate,
   type TemplateGrid,
 } from '@/report/grid-report'
+import {
+  buildRenderRequest,
+  type BuildResult,
+  type CanvasTableLike,
+  type TemplateMode,
+} from './grid-report-request'
 import { useDataSourceStore } from '../stores/dataSource'
 import { useDesignerStore } from '../stores/designer'
 
 export const REPORT_SERVER = 'http://127.0.0.1:18888'
-
-type TemplateMode = 'sample' | 'group' | 'cross' | 'canvas' | 'free'
-
-/** 模板构建的三种结果：内置样例 / 可提交请求 / 校验错误 */
-type BuildResult =
-  | { kind: 'sample' }
-  | {
-      kind: 'request'
-      req: RenderRequest
-      headerRows: number
-      /**
-       * 未经后处理的原始模板 + 选项。
-       * 保存报表文件时用这一对：存开关本身，而不是存「开关已经套上去」的模板——
-       * 否则打开时再套一次就重复了，而且用户改不了开关。
-       */
-      rawTemplate: ReportTemplate
-      options: ReportOptions
-    }
-  | { kind: 'error'; message: string }
-
-interface CanvasTableLike {
-  type: string
-  columns?: Array<{ title?: string; field?: string }>
-}
 
 /**
  * 字段别名编辑器：只给已选中的字段提供输入框。
@@ -1071,173 +1044,63 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   )
 
   /**
-   * 组装渲染请求：模板 + 数据源声明
-   * - sample：用服务端内置样例
-   * - error：校验不通过，带错误信息
-   * - request：可提交给 /api/report/render 的完整请求
+   * 组装渲染请求。逻辑搬到了 `grid-report-request.ts`（纯函数，可单测）——
+   * 这里只做「把 state 摊成入参」这一件事。
+   *
+   * 依赖数组与搬家前**逐项一致**：预览有一层 400ms 去抖，靠 `doRender` 的
+   * 身份变化触发，改 deps 就会改去抖节奏。
    */
-  const buildRequest = useCallback((): BuildResult => {
-    if (mode === 'sample') return { kind: 'sample' }
-
-    const dsName = 'ds1'
-    let template: ReportTemplate
-    if (mode === 'free') {
-      const tpl = { sheets: [gridToSheet(grid, '自由模板')] }
-      if (tpl.sheets[0].rows.length === 0) {
-        return { kind: 'error', message: '模板是空的：先在格子里填内容或绑定字段' }
-      }
-      // 只套导出公式。
-      // **不套 withExpandControl**：那个函数按「最内/最外层」猜层级，
-      // 而自由模板的主格层级是用户一格一格定好的，让它再猜一遍会覆盖用户意图。
-      // 循环变量是**模板的一部分**（不在 options 里），所以必须进 rawTemplate 才存得住
-      const looped = withLoopField(tpl, loopField)
-      template = withExportFormula(looped, exportFormula)
-      const rawTemplate = looped
-      const opts: ReportOptions = {
-        exportFormula: exportFormula || undefined,
-        dump: dump || undefined,
-      }
-      const { database: db1, table: tb1, engine: eg1 } = dbSelection
-      if (!db1 || !tb1) return { kind: 'error', message: '请先在数据源里选择库和表' }
-      const p1 = parseParams(paramText)
-      if (!p1.ok) return { kind: 'error', message: p1.message ?? '参数不合法' }
-      return {
-        kind: 'request',
-        req: {
-          template,
-          dump: dump ? true : undefined,
-          sources: [
-            {
-              name: dsName,
-              database: db1,
-              engine: eg1,
-              table: tb1,
-              where: where.trim() || undefined,
-              params: p1.params?.length ? p1.params : undefined,
-            },
-          ],
-        },
-        headerRows: 0,
-        rawTemplate,
-        options: opts,
-      }
-    } else if (mode === 'canvas') {
-      if (!canvasTable?.columns?.length) {
-        return { kind: 'error', message: '请先在画布里选中一个带字段列的表格控件' }
-      }
-      template = buildDetailTemplate({
-        sheetName: '画布明细表',
-        ds: dsName,
-        columns: canvasTable.columns,
-        aliases,
-        valueFormats,
-        title: '画布表格明细',
-      })
-    } else if (mode === 'cross') {
-      if (rowFields.length === 0 || colFields.length === 0 || crossValueFields.length === 0) {
-        return { kind: 'error', message: '交叉表需要至少一个行字段、一个列字段和一个数值字段' }
-      }
-      template = buildCrossTemplate({
-        sheetName: '交叉表',
-        ds: dsName,
-        rowFields,
-        colFields,
-        valueFields: crossValueFields,
-        agg: crossAgg,
-        aliases,
-        valueFormats,
-        // 这里**不再传 page**：构造器会把它丢掉（`buildCrossTemplate` 的返回值
-        // 没有 `page` 字段），传了反而让人以为分页已经接上了。
-        // 分页统一由下面的 `withPage(template, page)` 后处理，见该函数注释。
-        title: `${rowFields.join('/')} × ${colFields.join('/')}`,
-      })
-    } else {
-      if (groupFields.length === 0 || !valueField) {
-        return { kind: 'error', message: '请选择至少一个分组字段和一个数值字段' }
-      }
-      template = buildGroupTemplate({
-        sheetName: '分组汇总',
-        ds: dsName,
+  const buildRequest = useCallback(
+    (): BuildResult =>
+      buildRenderRequest({
+        mode,
+        canvasTable,
         groupFields,
         valueField,
-        agg: groupAgg,
+        groupAgg,
+        rowFields,
+        colFields,
+        crossValueFields,
+        crossAgg,
         aliases,
         valueFormats,
-        title: `${groupFields.join(' / ')} · ${valueField} 汇总`,
-      })
-    }
-
-    // 循环变量是**模板的一部分**（不在 options 里），必须落在 rawTemplate 里才存得住
-    template = withLoopField(template, loopField)
-
-    // 存原样：打开报表时由服务端按 options 再套一次
-    const rawTemplate = template
-    const opts: ReportOptions = {
-      rowsPerPage: paging ? Math.max(1, rowsPerPage) : undefined,
-      repeatHeaderRows: paging ? Math.max(0, repeatHeader) : undefined,
-      repeatFooterRows: paging ? Math.max(0, repeatFooter) : undefined,
-      exportFormula: exportFormula || undefined,
-      expandMinCount: expandMin || undefined,
-      expandMaxCount: expandMax || undefined,
-      keepExpandEmpty: keepExpandEmpty || undefined,
-      dump: dump || undefined,
-    }
-
-    // 导出公式 / 展开控制：统一后处理，不动三个构造器的签名
-    template = withExportFormula(template, exportFormula)
-    template = withExpandControl(template, {
-      minCount: expandMin,
-      maxCount: expandMax,
-      keepEmpty: keepExpandEmpty,
-    })
-    // 分页：同样是后处理。**必须在 rawTemplate 之后**——存盘只存开关，
-    // 打开报表时由服务端 `apply_options` 再套一次，两条路才等价。
-    template = withPage(template, page)
-
-    const { database, table, engine } = dbSelection
-    if (!database || !table) return { kind: 'error', message: '请先在数据源里选择库和表' }
-
-    // 参数框是 JSON 数组；空串按「无参数」处理
-    const parsed = parseParams(paramText)
-    if (!parsed.ok) return { kind: 'error', message: parsed.message ?? '参数不合法' }
-    const params = parsed.params?.length ? parsed.params : undefined
-    const whereClause = where.trim() ? where.trim() : undefined
-
-    return {
-      kind: 'request',
-      req: {
-        template,
-        dump: dump ? true : undefined,
-        sources: [{ name: dsName, database, engine, table, where: whereClause, params }],
-      },
-      headerRows: headerRowCount(template),
-      rawTemplate,
-      options: opts,
-    }
-  }, [
-    mode,
-    canvasTable,
-    groupFields,
-    valueField,
-    groupAgg,
-    rowFields,
-    colFields,
-    crossValueFields,
-    crossAgg,
-    aliases,
-    valueFormats,
-    where,
-    paramText,
-    page,
-    exportFormula,
-    expandMin,
-    expandMax,
-    keepExpandEmpty,
-    dump,
-    loopField,
-    dbSelection,
-    grid,
-  ])
+        where,
+        paramText,
+        page,
+        exportFormula,
+        expandMin,
+        expandMax,
+        keepExpandEmpty,
+        dump,
+        loopField,
+        dbSelection,
+        grid,
+      }),
+    [
+      mode,
+      canvasTable,
+      groupFields,
+      valueField,
+      groupAgg,
+      rowFields,
+      colFields,
+      crossValueFields,
+      crossAgg,
+      aliases,
+      valueFormats,
+      where,
+      paramText,
+      page,
+      exportFormula,
+      expandMin,
+      expandMax,
+      keepExpandEmpty,
+      dump,
+      loopField,
+      dbSelection,
+      grid,
+    ],
+  )
 
   /* ------------------------- 报表文件：存 / 开 / 跑 ------------------------- */
 
