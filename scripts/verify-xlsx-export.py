@@ -30,7 +30,22 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("xlsx")
     ap.add_argument("--expect-repeat", type=int, default=None)
+    ap.add_argument(
+        "--expect-height-rows",
+        type=int,
+        default=None,
+        help="断言写了自定义行高的行数（普通报表应为 0）",
+    )
+    ap.add_argument(
+        "--expect-wrap",
+        type=str,
+        default=None,
+        choices=["yes", "no"],
+        help="断言文件里有没有 wrapText 样式（超长文本必须 yes）",
+    )
     args = ap.parse_args()
+    if args.expect_wrap is not None:
+        args.expect_wrap = args.expect_wrap == "yes"
 
     try:
         z = zipfile.ZipFile(args.xlsx)
@@ -87,10 +102,35 @@ def main() -> int:
         if bad:
             errors.append(f"重复表头行数不对：期望 {want}，实际 {bad}")
 
+    # ---- 3b. 按需换行 + 行高 ----
+    # 超长文本在 Excel 里是**被裁掉**而不是溢出，所以装不下的格子要开 wrapText
+    # 并把整行撑高。反过来也要守：**普通报表不该有任何自定义行高** ——
+    # 一旦所有行都被写死高度，行列对齐就跟 Excel 自动行高对不上了。
+    height_rows: list[tuple[str, str]] = []
+    wrap_ids = [i for i, x in enumerate(entries) if 'wrapText="1"' in x]
+    for name in z.namelist():
+        if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+            sh = z.read(name).decode("utf8", "ignore")
+            for m in re.finditer(r'<row r="(\d+)"([^>]*)>', sh):
+                if 'customHeight="1"' in m.group(2):
+                    ht = re.search(r'ht="([\d.]+)"', m.group(2))
+                    height_rows.append((name.rsplit("/", 1)[-1], m.group(1)))
+    if args.expect_height_rows is not None:
+        if len(height_rows) != args.expect_height_rows:
+            errors.append(
+                f"自定义行高的行数不对：期望 {args.expect_height_rows}，实际 {len(height_rows)} {height_rows}"
+            )
+    if args.expect_wrap is not None:
+        got = bool(wrap_ids)
+        if got != args.expect_wrap:
+            errors.append(f"换行样式（wrapText）：期望 {args.expect_wrap}，实际 {got}")
+
     print(f"文件        : {args.xlsx}")
     print(f"thin 边框   : {len(thin)} 个定义")
     print(f"单元格格式  : 用到 {sorted(used)}，全部带边框 = {not any('边框' in e for e in errors)}")
     print(f"重复表头    : {titles or '（无）'}")
+    print(f"自定义行高  : {len(height_rows)} 行 {height_rows or ''}")
+    print(f"换行样式    : {'有 wrapText（xf ' + str(wrap_ids) + '）' if wrap_ids else '无'}")
 
     # ---- 4. 缩放：列多时否则会溢出到右侧多出半页 ----
     for name in z.namelist():

@@ -27,6 +27,12 @@ pub fn to_xlsx(sheets: &[RenderedSheet], repeat_rows: usize) -> Result<Vec<u8>, 
     let header_center = header.clone().set_align(FormatAlign::Center);
     let body = Format::new().set_border(thin);
     let body_center = body.clone().set_align(FormatAlign::Center);
+    // 装不下的文本改成换行（配行高一起用），否则 Excel 会把它**裁掉**。
+    // 只有确实需要换行的格子才用这一套 —— 普通单行格保持原样。
+    let header_wrap = header.clone().set_text_wrap();
+    let header_center_wrap = header_center.clone().set_text_wrap();
+    let body_wrap = body.clone().set_text_wrap();
+    let body_center_wrap = body_center.clone().set_text_wrap();
 
     for (si, sheet) in sheets.iter().enumerate() {
         let ws = wb.add_worksheet();
@@ -36,8 +42,43 @@ pub fn to_xlsx(sheets: &[RenderedSheet], repeat_rows: usize) -> Result<Vec<u8>, 
         // 表头行数：至少 1，也不能超过总行数（`set_repeat_rows` 越界会报错）
         let head_n = repeat_rows.clamp(1, sheet.rows.len().max(1));
 
-        for (c, w) in column_widths(&sheet.rows).iter().enumerate() {
+        let widths = column_widths(&sheet.rows);
+        for (c, w) in widths.iter().enumerate() {
             ws.set_column_width(c as u16, f64::from(*w)).map_err(|e| e.to_string())?;
+        }
+
+        // 每个格子需要几行 —— 超过列宽的文本在 Excel 里是**被裁掉**而不是溢出，
+        // 所以要么放宽列（有上限，见 MAX_COL_WIDTH）、要么换行 + 撑高行高。
+        //
+        // 先算一遍再写，是因为行高按「整行最高」定，而写格子是逐格进行的。
+        let cell_lines: Vec<Vec<usize>> = sheet
+            .rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .enumerate()
+                    .map(|(c, cell)| {
+                        // 合并格能用上跨过去那几列的宽度，不然长标题会被误判成要换行
+                        let avail: u16 = widths
+                            .iter()
+                            .skip(c)
+                            .take(cell.colspan.max(1))
+                            .sum::<u16>()
+                            .max(MIN_COL_WIDTH);
+                        lines_needed(&cell.text, avail)
+                    })
+                    .collect()
+            })
+            .collect();
+
+        // 只有真的要多于一行的行才写行高；其余行不写，保持 Excel 的默认高度。
+        // 这样「普通报表」导出的行高跟以前一模一样，改动只落在需要的行上。
+        for (r, lines) in cell_lines.iter().enumerate() {
+            let max_lines = lines.iter().copied().max().unwrap_or(1).max(1);
+            if max_lines > 1 {
+                ws.set_row_height(r as u32, max_lines as f64 * LINE_HEIGHT)
+                    .map_err(|e| e.to_string())?;
+            }
         }
 
         // 已被合并区覆盖的格子：合并区内部**不能**再单独写值，否则会把合并冲掉。
@@ -55,11 +96,17 @@ pub fn to_xlsx(sheets: &[RenderedSheet], repeat_rows: usize) -> Result<Vec<u8>, 
                 let rs = cell.rowspan.max(1);
                 let cs = cell.colspan.max(1);
                 let merged = rs > 1 || cs > 1;
-                let fmt = match (is_head, merged) {
-                    (true, true) => header_center.clone(),
-                    (true, false) => header.clone(),
-                    (false, true) => body_center.clone(),
-                    (false, false) => body.clone(),
+                // 只有这个格子自己装不下时才换行；同行的其它格子保持原样
+                let wrap = cell_lines[r][c] > 1;
+                let fmt = match (is_head, merged, wrap) {
+                    (true, true, true) => header_center_wrap.clone(),
+                    (true, true, false) => header_center.clone(),
+                    (true, false, true) => header_wrap.clone(),
+                    (true, false, false) => header.clone(),
+                    (false, true, true) => body_center_wrap.clone(),
+                    (false, true, false) => body_center.clone(),
+                    (false, false, true) => body_wrap.clone(),
+                    (false, false, false) => body.clone(),
                 };
                 if merged {
                     for rr in r0..r0 + rs as u32 {
@@ -161,6 +208,30 @@ fn column_widths(rows: &[Vec<crate::report::model::GridCell>]) -> Vec<u16> {
     widths
 }
 
+/// 一行文本的高度（点）。Excel 默认行高就是 15pt，多一行就再加一个 15。
+///
+/// 用「行数 × 15」而不是更精细的算法，是因为要跟 Excel 自己算自动行高时的
+/// 结果保持一致 —— 否则同一张表在「有自动行高」和「我们写死行高」两种状态下
+/// 行列对齐会不一样。
+const LINE_HEIGHT: f64 = 15.0;
+
+/// 这段文本在 `avail` 宽的列里需要几行。
+///
+/// `avail` 是**该格实际能用多少宽**：合并格要把跨过的列宽都算进来，
+/// 否则一个横跨 5 列的长标题会被误判成要换行。
+///
+/// 抽成纯函数是为了能单测 —— 行高和 wrap 都写进 zip，从 `to_xlsx` 返回值上看不见。
+fn lines_needed(text: &str, avail: u16) -> usize {
+    if text.is_empty() || avail == 0 {
+        return 1;
+    }
+    // 每个 \n 段独立算：硬换行是作者**要**断开的地方，不能跟自动换行混在一起取 max
+    text.split('\n')
+        .map(|part| usize::from(display_width(part)).div_ceil(usize::from(avail)).max(1))
+        .sum::<usize>()
+        .max(1)
+}
+
 /// 显示宽度估算：中日韩全角字符算 2，**末尾另加 2 的内边距**。
 ///
 /// 那 +2 不是随手写的：估算本身就粗（同一个字符在不同字体里宽度不同），
@@ -193,6 +264,46 @@ mod tests {
             num_format: None,
             formula: None,
         }
+    }
+
+    /// `lines_needed` 的边界：整除、多一点点、硬换行。
+    /// 注意 `display_width` 末尾有 +2 内边距，所以 14 个汉字正好是 30 宽。
+    #[test]
+    fn lines_needed_wraps_only_when_text_exceeds_width() {
+        let avail = 30;
+        assert_eq!(display_width(&"长".repeat(14)), 30, "前提：14 字 = 30 宽");
+        assert_eq!(lines_needed(&"长".repeat(14), avail), 1, "正好装下 = 1 行");
+        assert_eq!(lines_needed(&"长".repeat(15), avail), 2, "多 2 宽就得多一行");
+        assert_eq!(lines_needed(&"长".repeat(29), avail), 2, "60 宽 = 正好 2 行");
+        assert_eq!(lines_needed(&"长".repeat(30), avail), 3, "62 宽 = 3 行");
+    }
+
+    #[test]
+    fn lines_needed_counts_hard_breaks() {
+        // `\n` 是作者**要**断开的地方，不能被自动换行覆盖掉
+        assert_eq!(lines_needed("一\n二", 60), 2);
+        assert_eq!(lines_needed("一\n二\n三", 60), 3);
+        assert_eq!(lines_needed("一\n", 60), 2, "尾随换行也算一行");
+    }
+
+    #[test]
+    fn lines_needed_adds_wrap_and_hard_breaks() {
+        // 第一段 15 字（32 宽 / 30）要 2 行，第二段 1 行 → 共 3 行
+        let t = format!("{}\n{}", "长".repeat(15), "短");
+        assert_eq!(lines_needed(&t, 30), 3);
+    }
+
+    #[test]
+    fn lines_needed_never_returns_zero() {
+        assert_eq!(lines_needed("", 30), 1, "空串也是 1 行");
+        assert_eq!(lines_needed("很长的一段文字", 0), 1, "宽度为 0 时不许除零");
+    }
+
+    /// 行高 = 行数 × 15pt。15 是 Excel 自己的默认行高 —— 用别的值会让
+    /// 「我们写死行高」和「Excel 自动行高」两种状态下行列对不齐。
+    #[test]
+    fn line_height_matches_excel_default() {
+        assert_eq!(LINE_HEIGHT, 15.0);
     }
 
     #[test]
