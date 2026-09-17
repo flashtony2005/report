@@ -36,19 +36,8 @@ pub fn to_xlsx(sheets: &[RenderedSheet], repeat_rows: usize) -> Result<Vec<u8>, 
         // 表头行数：至少 1，也不能超过总行数（`set_repeat_rows` 越界会报错）
         let head_n = repeat_rows.clamp(1, sheet.rows.len().max(1));
 
-        // 列宽：按该列最长文本粗略估算（中文按 2 个字符宽算）
-        let ncols = sheet.rows.iter().map(|r| r.len()).max().unwrap_or(0);
-        let mut widths = vec![0u16; ncols];
-        for row in sheet.rows.iter() {
-            for (c, cell) in row.iter().enumerate() {
-                if c < widths.len() {
-                    widths[c] = widths[c].max(display_width(&cell.text));
-                }
-            }
-        }
-        for (c, w) in widths.iter().enumerate() {
-            ws.set_column_width(c as u16, f64::from((*w).clamp(8, 40)))
-                .map_err(|e| e.to_string())?;
+        for (c, w) in column_widths(&sheet.rows).iter().enumerate() {
+            ws.set_column_width(c as u16, f64::from(*w)).map_err(|e| e.to_string())?;
         }
 
         // 已被合并区覆盖的格子：合并区内部**不能**再单独写值，否则会把合并冲掉。
@@ -138,7 +127,44 @@ fn safe_sheet_name(name: &str, idx: usize) -> String {
     s
 }
 
-/// 显示宽度估算：中日韩全角字符算 2
+/// 列宽下限：短列（「备注」「编码」这类两字词）也留一点余量，别挤成一条缝
+const MIN_COL_WIDTH: u16 = 8;
+/// 列宽上限。**刻意保留的取舍**，不是随手写的数：
+///
+/// - 不设上限时，一列长备注能把整表撑到几百字符宽；而导出同时开了
+///   `set_print_fit_to_pages(1, 0)`（缩放到一页宽），越宽 → 缩放越狠 →
+///   **打印出来字越小**，等于为了不截断而牺牲了整张表的可读性。
+/// - 40 又太紧：实测 23 个汉字的备注是 46 宽，被截掉一截（相邻列有内容时
+///   Excel 是裁掉而不是溢出）。
+/// - 60 ≈ 30 个汉字 / 60 个英文字符，覆盖常见的备注、地址、品名列，
+///   而典型报表总宽仍在一页之内，不会触发额外缩小。
+///
+/// 超过上限的仍然会截断 —— 真要完整显示长文本，应该走「换行 + 设行高」，
+/// 那是另一件事（会改变行高，属于产品取舍）。
+const MAX_COL_WIDTH: u16 = 60;
+
+/// 每列的宽度（字符数）。抽成纯函数是为了能单测 —— 列宽写进 zip 里，
+/// 从 `to_xlsx` 的返回值上看不出来，只能靠 `scripts/verify-xlsx-export.py` 拆包验。
+fn column_widths(rows: &[Vec<crate::report::model::GridCell>]) -> Vec<u16> {
+    let ncols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut widths = vec![0u16; ncols];
+    for row in rows.iter() {
+        for (c, cell) in row.iter().enumerate() {
+            if c < widths.len() {
+                widths[c] = widths[c].max(display_width(&cell.text));
+            }
+        }
+    }
+    for w in widths.iter_mut() {
+        *w = (*w).clamp(MIN_COL_WIDTH, MAX_COL_WIDTH);
+    }
+    widths
+}
+
+/// 显示宽度估算：中日韩全角字符算 2，**末尾另加 2 的内边距**。
+///
+/// 那 +2 不是随手写的：估算本身就粗（同一个字符在不同字体里宽度不同），
+/// 少了会贴边、看着像截断；而且 `write_blank` 补出来的空格子也需要这点余量。
 fn display_width(s: &str) -> u16 {
     s.chars()
         .map(|c| {
@@ -167,6 +193,40 @@ mod tests {
             num_format: None,
             formula: None,
         }
+    }
+
+    #[test]
+    fn column_width_uses_longest_text_in_the_column() {
+        let rows = vec![
+            vec![cell("备注", 1, 1, None), cell("编码", 1, 1, None)],
+            vec![cell("华东", 1, 1, None), cell("A-001", 1, 1, None)],
+        ];
+        // 「备注」= 4、「华东」= 4 → 4，低于下限被抬到 8；「A-001」= 5 → 同样抬到 8
+        assert_eq!(column_widths(&rows), vec![MIN_COL_WIDTH, MIN_COL_WIDTH]);
+    }
+
+    /// 上限 60：**23 个汉字的备注是 46 宽**，40 那版会把它截断。
+    /// 这条是「抬高上限」那次改动的钉子 —— 数字写死在这里，改了就会红。
+    #[test]
+    fn column_width_caps_at_60_not_40() {
+        // 23 字 × 2 + 2 内边距 = 48 宽
+        let note = "这是一段比较长的备注文字用来观察列宽上限的表现";
+        let rows = vec![vec![cell(note, 1, 1, None)]];
+        assert_eq!(display_width(note), 48, "前提：这段文本是 48 宽");
+        assert_eq!(column_widths(&rows), vec![48], "48 在 40~60 之间：旧上限会夹、新上限不该夹");
+
+        let longer = "长".repeat(40); // 80 宽
+        let rows = vec![vec![cell(&longer, 1, 1, None)]];
+        assert_eq!(column_widths(&rows), vec![MAX_COL_WIDTH], "超过上限要夹到 60");
+        assert_eq!(MAX_COL_WIDTH, 60, "上限就是 60，改这个值要同步改注释里的理由");
+    }
+
+    #[test]
+    fn column_width_counts_cjk_as_two() {
+        // 都含 +2 的内边距
+        assert_eq!(display_width("abc"), 5, "3 + 2");
+        assert_eq!(display_width("中国"), 6, "2×2 + 2");
+        assert_eq!(display_width("金额(元)"), 10, "4 全角 + 2 半角括号 + 2");
     }
 
     #[test]
