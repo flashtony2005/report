@@ -92,6 +92,22 @@
   且 package.json 里没有 typecheck 脚本）。判断类型错是不是自己引入的：
   `git stash push -- <文件>` → 重跑 → `git stash pop`，对比错误集合与行号偏移。
 
+## 预览与导出是两套口径 —— 预览算出来的东西，导出要么复用要么移植
+
+`buildRenderRequest` 在前端算出 `headerRows`（`headerRowCount`，TS 纯函数）；
+xlsx 导出在 Rust 侧另算一遍。**两边一旦不一致是静默的**：预览 2 行表头、
+导出只有标题行有表头样式、打印时列头不跨页重复，界面上完全看不出来。
+
+现已把 `headerRowCount` 移植成 `ReportTemplate::header_row_count()`
+（判据：从第一行起，连续「既没有 `expand_type=r` 也没有 `row_parent」的行；
+`row_parent: ""` 也算没主格）。生成器产出的模板第一行是**标题**、第二行才是列头，
+所以典型值 **2 / 2 / 2 / 3**（双指标交叉表 3）。
+→ 改任一侧都要同步另一侧；`sample_template_has_two_header_rows` 是那颗钉子。
+
+**配套教训（真机探针要按 handler 分别覆盖）**：把 `xlsx_handler` 改回写死 1 后，
+POST 探针如期变红（`$1:$1`），但 **sample 探针仍然绿** —— 它走的是
+`sample_xlsx_handler`，另一条路。别以为一个探针守住了全部导出路径。
+
 ## print-server（Rust 侧）硬事实
 
 - 默认端口 **18888**；binary 在 `~/.cargo/target/debug/print-server`（项目里**没有** `target/`）。
