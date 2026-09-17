@@ -206,6 +206,36 @@ pub struct ReportTemplate {
     pub datasets: BTreeMap<String, DataSet>,
 }
 
+impl ReportTemplate {
+    /// 表头行数：从第一行起，连续「既没有纵向展开格、也没有主格」的行。
+    ///
+    /// 与 TS 侧 `headerRowCount`（`openprint/src/report/grid-report.ts`）**同一套判据**，
+    /// 逐条对齐了空值语义（`row_parent: ""` 也算没主格、`model` 缺省整格算表头）。
+    /// 两边必须一致：预览按它决定前几行画成表头，xlsx 导出按它决定前几行用
+    /// 表头样式 + 打印时跨页重复。曾经导出侧写死 1，于是「预览 2 行表头、
+    /// 导出只有标题行」，打印时列头不跨页重复。
+    ///
+    /// 生成器产出的模板第一行是标题（如「city · amount 汇总」，整行合并），
+    /// 第二行才是列头 —— 典型值 **2**；双指标交叉表多一层指标子表头，是 **3**。
+    pub fn header_row_count(&self) -> usize {
+        let Some(sheet) = self.sheets.first() else {
+            return 0;
+        };
+        sheet
+            .rows
+            .iter()
+            .take_while(|r| {
+                r.cells.iter().all(|c| {
+                    let Some(m) = c.model.as_ref() else {
+                        return true;
+                    };
+                    m.expand_type != Some(ExpandType::R) && m.row_parent.as_deref().unwrap_or("").is_empty()
+                })
+            })
+            .count()
+    }
+}
+
 /// 展开后的一个单元格实例
 #[derive(Debug, Clone)]
 pub struct CellInst {

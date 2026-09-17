@@ -1632,16 +1632,31 @@ Rust 单测当时全绿。与 `scripts/mirror-check.py`（Rust↔TS 契约核对
 
 #### 边框与重复表头行：一个数管两件事
 
-`to_xlsx(sheets, repeat_rows)` 的第二个参数就是模板分页配置里的
-`repeat_header_rows`（与分页渲染**用的是同一个值**），没配分页时取 1。它同时决定：
+`to_xlsx(sheets, repeat_rows)` 的第二个参数就是表头行数，它同时决定：
 
 1. **前 N 行用表头样式**（粗体 + 底色 + 边框）—— 修好了「多行表头只有第一行有样式」；
 2. **`set_repeat_rows(0, N-1)`** —— 打印时每页顶部都重复这 N 行。
 
-两个入口各取一次值：`xlsx_handler` 从 `req.template.sheets[0].page` 取
+**取值优先级**（2026-09-17 修）：先取模板分页配置的 `repeat_header_rows`
+（用户显式填的，与分页渲染同一个值）；**没配分页时不再写死 1，而是按模板算**
+—— `ReportTemplate::header_row_count()`。
+
+> 写死 1 那版是错的，而且错在**最常用的那条路**上：生成器产出的模板第一行是
+> 标题（「销售分组汇总」整行合并）、第二行才是列头，双指标交叉表还有第三层
+> 指标子表头。所以典型值是 **2 / 2 / 2 / 3**，写死 1 的后果是「只有标题行有
+> 表头样式、列头掉进正文、打印时列头不跨页重复」——
+> 而同一时刻的**预览是按 2 行画的**，两边对不上。
+
+`header_row_count` 是 TS 侧 `headerRowCount`（`openprint/src/report/grid-report.ts`）
+的 Rust 移植，逐条对齐了空值语义（`row_parent: ""` 也算没主格、`model` 缺省整格
+算表头）。判据：从第一行起，连续「既没有纵向展开格（`expand_type != r`）、
+也没有主格」的行。**两边必须一致**，否则又会出现预览与导出两个口径。
+
+三个入口各取一次值：`xlsx_handler` 从 `req.template.sheets[0].page` 取
 （**必须在 `render_with_sources` 之前取，它会把 `req` 整个吃掉**）；
-`reports_xlsx_handler` 先看存盘模板、再退回 `options.repeat_header_rows`
-（存盘的是**未套分页**的原样模板）。
+`reports_xlsx_handler` / `run_report_cli` 先看存盘模板、再退回
+`options.repeat_header_rows`、最后才按模板算（存盘的是**未套分页**的原样模板）；
+`sample_xlsx_handler` 直接按 `sample_template()` 算。
 
 实现上三个坑（改之前先读）：
 

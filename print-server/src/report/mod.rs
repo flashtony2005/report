@@ -623,15 +623,24 @@ pub async fn xlsx_handler(
     State(state): State<AppState>,
     Json(req): Json<RenderRequest>,
 ) -> Result<HttpResponse<axum::body::Body>, (StatusCode, String)> {
-    // 表头行数：模板分页配置里的 `repeat_header_rows`（与分页渲染用的是同一个值），
-    // 没配分页就 1。它同时决定「前几行用表头样式」和「打印时表头跨页重复」。
+    // 表头行数：优先用模板分页配置里的 `repeat_header_rows`（与分页渲染同一个值，
+    // 是用户显式填的）；没配分页就**按模板算**（`ReportTemplate::header_row_count`，
+    // 与前端 `headerRowCount` 同一套判据）。
+    //
+    // 这里曾经写死 1：生成器产出的模板第一行是标题、第二行才是列头，于是导出的
+    // xlsx 只有标题行是表头样式、列头掉进正文，打印时列头也不跨页重复 ——
+    // 而同一时刻的预览是按 2 行画的，两边对不上。
+    //
     // 必须在 `render_with_sources` 之前取 —— 它会把 `req` 整个吃掉。
     let head = req
         .template
         .sheets
         .first()
         .and_then(|s| s.page.as_ref())
-        .map_or(1, |p| p.repeat_header_rows.max(1));
+        .map_or_else(
+            || req.template.header_row_count().max(1),
+            |p| p.repeat_header_rows.max(1),
+        );
     let resp = render_with_sources(&state, req).await.map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     // 模板配了分页时按页导出（每页一个 sheet），否则导出整表。
     // 文件名始终取未分页的 sheet 名，避免带上「 (1/3)」这类页码后缀。
@@ -761,7 +770,8 @@ pub async fn reports_xlsx_handler(
     let def = store::load(&dir, &id).map_err(|e| (StatusCode::NOT_FOUND, e))?;
     let name = if def.name.trim().is_empty() { def.id.clone() } else { def.name.clone() };
     // 存盘的模板是**未套分页**的原样，所以先看模板里的分页配置，
-    // 再退回 options 里的 repeat_header_rows。
+    // 再退回 options 里的 repeat_header_rows，最后才按模板本身算表头行数
+    // （`header_row_count`；与前端预览同一套判据，避免「预览 2 行表头、导出 1 行」）。
     let head = def
         .template
         .sheets
@@ -770,7 +780,7 @@ pub async fn reports_xlsx_handler(
         .map(|p| p.repeat_header_rows)
         .or_else(|| def.options.repeat_header_rows.map(|v| v as usize))
         .filter(|n| *n > 0)
-        .unwrap_or(1);
+        .unwrap_or_else(|| def.template.header_row_count().max(1));
     let resp = run_def(&state, def, body.map(|b| b.0).unwrap_or_default())
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
@@ -850,7 +860,8 @@ pub async fn run_report_cli(
         .map(|p| p.repeat_header_rows)
         .or_else(|| def.options.repeat_header_rows.map(|v| v as usize))
         .filter(|n| *n > 0)
-        .unwrap_or(1);
+        // 与 reports_xlsx_handler 同一套兜底：没有显式配置就按模板算。
+        .unwrap_or_else(|| def.template.header_row_count().max(1));
     let title = if def.name.trim().is_empty() {
         def.id.clone()
     } else {
@@ -945,9 +956,12 @@ pub async fn run_def(
 /// `GET /api/report/sample.xlsx`：内置样例导出，便于不开前端也能验证
 pub async fn sample_xlsx_handler() -> Result<HttpResponse<axum::body::Body>, (StatusCode, String)> {
     let tpl = sample_template();
+    // 与其它导出路径同一套口径：先按模板算表头行数（样例是「标题 + 列头」= 2），
+    // 不再写死 1 —— 写死 1 时样例的列头会掉进正文样式、打印也不跨页重复。
+    let head = tpl.header_row_count().max(1);
     let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None })
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let buf = xlsx::to_xlsx(&resp.sheets, 1).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let buf = xlsx::to_xlsx(&resp.sheets, head).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     HttpResponse::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -5060,6 +5074,111 @@ mod tests {
         assert_eq!(resp.sheets[0].rows[0][3].text, "", "lambda 单独写应出空");
         let w = resp.warnings.clone().unwrap_or_default().join("\n");
         assert!(w.contains("lambda"), "应告警，实际: {w:?}");
+    }
+
+    /* ---------------- 表头行数（导出兜底用，必须与前端 headerRowCount 一致） --------------- */
+
+    /// 按「每行有哪些格」搭模板：`(expand_type, row_parent)` 描述该行的每一格
+    fn tpl_of(rows: Vec<Vec<(Option<ExpandType>, Option<&str>)>>) -> ReportTemplate {
+        ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "t".into(),
+                page: None,
+                rows: rows
+                    .into_iter()
+                    .map(|cells| RowTpl {
+                        cells: cells
+                            .into_iter()
+                            .map(|(expand_type, row_parent)| CellTpl {
+                                pos: None,
+                                value: None,
+                                model: Some(CellModel {
+                                    expand_type,
+                                    row_parent: row_parent.map(|s| s.to_string()),
+                                    ..Default::default()
+                                }),
+                                merge_across: 0,
+                                merge_down: 0,
+                                merge_to_end: false,
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+                loop_field: None,
+            }],
+            datasets: BTreeMap::new(),
+        }
+    }
+
+    /// 没有 model 的格（生成器产出的标题行 / 列头行就是这种）
+    fn plain_row(n: usize) -> Vec<(Option<ExpandType>, Option<&'static str>)> {
+        vec![(None, None); n]
+    }
+
+    #[test]
+    fn header_row_count_counts_title_and_column_header() {
+        // 生成器的典型形态：标题行 + 列头行 + 展开行
+        let tpl = tpl_of(vec![plain_row(2), plain_row(2), vec![(Some(ExpandType::R), None)]]);
+        assert_eq!(tpl.header_row_count(), 2);
+    }
+
+    #[test]
+    fn header_row_count_counts_cross_subheader_as_third_row() {
+        // 双指标交叉表：标题 + 指标行 + 指标子表头
+        let tpl = tpl_of(vec![
+            plain_row(3),
+            plain_row(3),
+            plain_row(3),
+            vec![(Some(ExpandType::R), None)],
+        ]);
+        assert_eq!(tpl.header_row_count(), 3);
+    }
+
+    #[test]
+    fn header_row_count_stops_at_expand_row() {
+        let tpl = tpl_of(vec![vec![(Some(ExpandType::R), None)], plain_row(1)]);
+        assert_eq!(tpl.header_row_count(), 0, "第一行就展开 → 没有表头");
+    }
+
+    #[test]
+    fn header_row_count_stops_at_row_parent() {
+        // 主格是「这行跟着上一行展开」的标志，属于数据区不是表头
+        let tpl = tpl_of(vec![plain_row(1), vec![(None, Some("A3"))]]);
+        assert_eq!(tpl.header_row_count(), 1);
+    }
+
+    #[test]
+    fn header_row_count_treats_empty_row_parent_as_absent() {
+        // 与 TS 的 `!c.model?.row_parent` 对齐：空串也算「没主格」
+        let tpl = tpl_of(vec![plain_row(1), vec![(None, Some(""))]]);
+        assert_eq!(tpl.header_row_count(), 2);
+    }
+
+    #[test]
+    fn header_row_count_ignores_column_expand() {
+        // 横向展开在列头行上很常见（交叉表的月份列），不该被当成数据行
+        let tpl = tpl_of(vec![vec![(Some(ExpandType::C), None)], vec![(Some(ExpandType::R), None)]]);
+        assert_eq!(tpl.header_row_count(), 1);
+    }
+
+    /// 这条是**导出兜底**的钉子：样例模板是「标题 + 列头」两行。
+    /// 曾经导出侧写死 1，于是只有标题行是表头样式、列头掉进正文、打印也不跨页重复。
+    #[test]
+    fn sample_template_has_two_header_rows() {
+        assert_eq!(sample_template().header_row_count(), 2);
+    }
+
+    /// 空报表（查不到数据）仍然要出一张只有表头的表。此时「表头行数 == 总行数」，
+    /// 是 `to_xlsx` 里 clamp 的另一头边界，得保证不炸也不掉行。
+    #[test]
+    fn empty_report_whose_rows_are_all_header_still_exports() {
+        let tpl = tpl_of(vec![plain_row(2), plain_row(2)]);
+        let resp = render(RenderRequest { template: tpl.clone(), datasets: None, sources: None, dump: None })
+            .unwrap();
+        let n = tpl.header_row_count();
+        assert_eq!(n, resp.sheets[0].rows.len(), "前提：渲染出来的全是表头行");
+        let buf = xlsx::to_xlsx(&resp.sheets, n).expect("空报表也应能导出");
+        assert!(!buf.is_empty());
     }
 }
 

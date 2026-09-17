@@ -1,220 +1,130 @@
 # 项目长期记忆（report）
 
-## 三个"表格"不是一回事（问"能不能合到 Univer"前先分清）
+引擎：Rust `print-server`（非线性报表展开）+ TS `openprint`（引擎层，被 React 版 alias 引用）+ `designer-react`（UI）。
+
+## 三个「表格」不是一回事（问「能不能合到 Univer」前先分清）
 
 | 模型 | 结构 | 坐标 | 本质 | 在哪 |
 | --- | --- | --- | --- | --- |
-| 自由画布 | `AnyControl[]` 控件树 | mm 绝对定位 | 打印版面 | `designer-react/src/canvas/`（Fabric + HTML table overlay） |
-| 表格控件 | `TableCell[][]` 固定行列 | 挂靠控件 | 单据明细 | `openprint/src/types/control.ts` 的 `TableControl.cells` |
+| 自由画布 | `AnyControl[]` 控件树 | mm 绝对定位 | 打印版面 | `designer-react/src/canvas/` |
+| 表格控件 | `TableCell[][]` 固定行列 | 挂靠控件 | 单据明细 | `openprint/src/types/control.ts` |
 | 非线性报表 | `CellTpl[][]` 行列可扩展 | 运行期布局 | 分组/交叉 | `openprint/src/report/grid-report.ts` |
 
-混用这三个词是沟通事故的主要来源。用户说"自由表格"时先确认指哪个。
+混用这三个词是沟通事故的主要来源。用户说「自由表格」时先确认指哪个。
 
-## Univer 的三个硬约束（实测，别再试）
+## Univer 硬约束（实测，别再试）
 
-1. **列宽单位是 px，不是 mm** —— `FWorksheet.setColumnWidths` 文档明写
-   `to 100 pixels`。打印侧是 mm 精确，需要自己维护一层映射。
-2. **同页面只能有一个活的 Univer** —— 在已有 Univer 的页面再
-   `createUniver()`：**不抛异常，但完全不渲染**（容器内 0 canvas）。
-   第一个不受影响。→ 任何"每个表格各嵌一个"的方案都出局，
-   只能做单例 + 跟随选中切换。
-3. **样式通道只有「底色 + 字色」两个能画**（0.25 core preset，截图数像素实测）：
-   - ✅ `bg` 底色、`cl` 字色、`bl` 加粗、`it` 斜体
-   - ❌ `bd` 单元格边框：**完全不渲染**，THIN / MEDIUM 都试过，0 像素
-   - ⚠️ `ul` 下划线：会画，但**永远用字色** —— `ITextDecoration.c` 缺省
-     TRUE（"follow the font color"），显式写 `c: 0` 也无效，`cl` 被无视
-   → 别再设计依赖边框 / 下划线的第三个视觉维度。
+1. 列宽单位 **px 不是 mm**（`setColumnWidths` 文档明写）。打印侧 mm，要自己映射。
+2. 同页面只能有一个活 Univer：再 `createUniver()` **不抛异常但完全不渲染**（0 canvas）。
+   → 只能单例 + 跟随选中切换，不能每个表格各嵌一个。
+3. 样式通道只有「底色 + 字色」能画：`bg` `cl` `bl` `it` ✅；`bd` 边框 **完全不渲染** ❌；
+   `ul` 下划線会画但**永远用字色**（`ITextDecoration.c` 缺省 TRUE，写 `c:0` 也无效）。
+   → 别设计依赖边框/下划线的第三个视觉维度。
+4. **单测证明不了 Univer 画得出某样式**（曾带着画不出的橙色边框过了 11 条单测并提交）。
+   要验渲染只能截图数像素：`scripts/verify-semantic-colors.py`。
+5. 剥公式引擎要连带改四件事，漏一个就静默坏：
+   docs+docs-ui 插件不能省（sheets-ui 编辑器依赖 `univer.editor.service`，
+   异步抛 `[redi] Expect 1 ... but get 0`，**try/catch 接不到**）；CSS 不能省
+   （原子类 `univer-h-full`，没 CSS 根塌成 22px）；`presets: []` 占位；
+   **语言包要自己带**（否则 `LocaleService` 没初始化 → 一改格子就在
+   `SheetPermissionCheckController` 抛错，界面完全看不出来）。
+   配方见 `univerFormulaFree.ts` 顶部注释。
+6. `FWorksheet` **没有 `getCell`**。`sheet?.getCell?.(r,c)` 可选链 + 不存在的方法 =
+   `undefined`，TS 不报、运行期不报，整段死代码。调新方法前先核 facade `.d.ts`。
 
-   **配套教训**：单测只能证明我们**输出了**某个样式，证明不了 Univer
-   **画得出**它。曾带着一个画不出来的橙色边框过了 11 条单测并提交。
-   要验渲染只能截图数像素（`scripts/verify-semantic-colors.py`）。
+## 报表文件 = ReportDef（架构速查）
 
-## 自由模板已经在 Univer 里编辑了
+存 `print-server/reports/<id>.json`（**配置文件同级**，见下条）。
+顶层 `format version id name description updatedAt template sources options`。
+**存的是「模板 + 数据源声明 + 渲染选项」，不是数据快照**，打开/执行时按 sources 现查。
 
-`GridReportModal.tsx` 的 `free` 模式装的**就是模板本身**（不是展开结果），
-靠 `SelectionChanged` + `SheetValueChanged` 回写。
+- 五种定义入口（`GridReportModal` 的 Segmented）：内置样例 / 分组汇总 / 交叉表 /
+  画布表格 / 自由模板。前四种是**生成器**；自由模板是**通用表达**。
+  → 单向漏斗：`openReport` 一律 `setMode('free')`。
+- 一格 = `CellTpl` 两层：自身 `value` + 合并；`model?: CellModel` 二十余字段分四组
+  （数据绑定 / 展开 / 主格关系 / 表达式）。
+- **主格关系不画进格子**（没有第三个样式通道）：网格旁常显主格树 `parentTreeOf`，
+  选中点亮整条链 `parentChainOf`。
+- 存/开/跑：`PUT /api/reports/save` · `GET /api/reports/:id` → `templateToGrid`
+  · `POST /api/reports/:id/run`。模板**存原样**，`options` 单独存；
+  `withExportFormula`/`withExpandControl` 渲染前才套，且自由模板**刻意不套**
+  withExpandControl（它按最内/最外层猜层级，会覆盖手工主格）。
+- `id` 白名单 `[A-Za-z0-9_-]` ≤80 是安全边界（直接拼文件名）。
+- 样例：`print-server/reports/sales-by-region.json`（A3 region → B3 city → C3 salesman；
+  小计 `D3[B3:+0].sum()`、合计 `D3.sum()`）。
 
-**2026-09-14 更新**：语义已经画进网格了（`SEM_BG` / `SEM_FG`，
-见 `grid-report.ts`）—— 底色 = 扩展方向（纵黄 / 横绿），
-字色 = 内容来源（字段蓝 / 表达式紫斜）。属性面板也已补上
-`row_test_expr` / `col_test_expr` 输入框。
+## 报表目录跟着 cwd 走（起服务必须 `cd print-server/`）
 
-**仍未表达的**：`export_formula`（per-cell 与全局开关会冲突，故只保留全局）。
-**已表达的（2026-09-14 补）**：`expand_min_count` / `expand_max_count` /
-`keep_expand_empty` / `format_expr` / `dict` / `format`（kind+digits）/
-`col_after` / `merge_to_end` 在自由模板下都有了 per-cell 直设入口
-（`GridReportModal` 的相应 testid），绕开 `withExpandControl` /
-`withExportFormula` 的层级猜测；等价于 NopReport 的 `expandInplaceCount`
-（实验 + 故障注入证明，论证见 `引擎差距分析-对照PDF资料.md`）。
-`dict` 是 JSON 输入，留了 `dictDraft` 草稿态：半截 JSON parse 失败
-不提交，避免用户打第一个 `{` 就把字典静默清掉。
-`merge_to_end` 在 CellTpl 上不在 CellModel 里——单独走 `patchCell` 帮手，
-不混进 `patch`。
-→ 别把"能在 Univer 里打字"当成"非线性语义已经迁过去了"。
+`store::reports_dir(config_path)` = 配置文件同级的 `reports/`，默认配置路径是**相对**的
+`print-server.json`。从仓库根启动 → `/api/reports` 返回 `[]`，**没有任何报错**。
+目录跟着配置文件走是刻意设计，只做披露（启动横幅 / `/health.reportsDir` /
+`x-reports-dir` 响应头 / 设计器行内提示）。
+自定义响应头跨域下默认读不到，需服务端 expose（本项目 `CorsLayer::permissive()` 自带）。
+**curl 证明不了浏览器能读**，必须页面里 `fetch().then(r=>r.headers.get())` 才算验过。
+`HeaderValue` 只收可见 ASCII → 中文路径要 percent 编码（`store::header_safe`）。
 
-**主格关系**（`row_parent`）不画在格子里，而是网格旁**常显一棵主格树**
-（`parentTreeOf`）+ 选中时点亮整条链（`parentChainOf`）——
-理由见上面第 3 条硬约束：格子里没有第三个通道。
+## 写断言的规矩
 
-## 沙箱：npm / vite 的两个绕行脚本（已入库，别再写 /tmp）
+- **位置相关的断言，断言整条序列**。反例：只断言 `grid[1].last()=="行合计"`，
+  注入 bug 后变成 `["地区","1月","行合计"]`（2月被挤掉），`last()` 依然绿。
+  → 「目标元素还在」抓不住「旁边元素被挤掉/吞掉」。
+- **只查「有属性」的，别忘了「没属性」的那种**：xlsx 边框校验脚本只查带 `s` 属性的格，
+  去掉边框后无格式的格压根不写 `s`，脚本反而变绿。是故障注入探针暴露的。
+- 写完检查脚本**必须注入已知错误反向验证**，确认它真能红。
+- xlsx 是 zip，Rust 断言读不到内容 → 用 `scripts/verify-xlsx-export.py` 解压校验。
+  `fitToWidth="1"` 是 XML **默认值会被省掉**，真正的开关是 `pageSetUpPr fitToPage="1"`
+  + `fitToHeight="0"`。
 
-- `scripts/broker-mkdir-throttle.cjs` —— npm 并发 mkdir 节流。
-  fs broker 是**并发**限流（~120）不是数量配额。
-- `scripts/vite-safe-delete-bypass.cjs` —— vite 清 `deps_temp_*` 被
-  safe-delete 的 50 文件/turn 阈值拦死。必须在 **setImmediate** 里装
-  （同步段装会让 shim 捕获我们的 wrapper → 无限递归）。
+## 沙箱 / 环境
 
-**这两脚本上一版放在 /tmp，被系统清掉了，vite 直接起不来。已改放 scripts/ 入库。**
+- npm / vite 两个绕行脚本**已入库**，别再写 /tmp（上一版被系统清掉，vite 起不来）：
+  `scripts/broker-mkdir-throttle.cjs`（fs broker 是**并发**限流 ~120，不是数量配额）、
+  `scripts/vite-safe-delete-bypass.cjs`（必须在 **setImmediate** 里装，
+  同步段装会让 shim 捕获 wrapper → 无限递归）。
+- 起 vite：`cd designer-react && NODE_OPTIONS="--require .../scripts/vite-safe-delete-bypass.cjs $NODE_OPTIONS" npx vite --host 127.0.0.1 --port 5200 --strictPort`。
+  必须 `run_in_background=true`（`(cmd &)` / `nohup &` 随 shell 一起死）；
+  日志写 `scripts/.vite-dev.log`；curl 加 `--noproxy '*'`。
+- **浏览器 harness 在沙箱里跑不动键盘 E2E**：CDP `Input.insertText` 对多字符串报
+  `Invalid 'text' parameter`（`hello` 控制实验也失败，确认是 harness 问题）。
+  应对：逻辑抽纯函数 + 单测 + 探针；**画到脸上的那一步走右侧面板 `agent-browser fill`**
+  （antd `Input` 上能用，不像 canvas 击键），再 eval 读多个相关字段确认模型。
+- **本仓库 `tsc --noEmit` 不是干净的**（`designer-react` 有 6 处既有报错，
+  且 package.json 里没有 typecheck 脚本）。判断类型错是不是自己引入的：
+  `git stash push -- <文件>` → 重跑 → `git stash pop`，对比错误集合与行号偏移。
 
-## 起 vite 的正确姿势
+## print-server（Rust 侧）硬事实
 
-```bash
-cd designer-react && NODE_OPTIONS="--require /Users/lushaohui/project/report/scripts/vite-safe-delete-bypass.cjs $NODE_OPTIONS" \
-  npx vite --host 127.0.0.1 --port 5200 --strictPort
-```
-- 必须用任务工具的 `run_in_background=true`；`(cmd &)` / `nohup ... &`
-  都会随 shell 一起死。
-- 日志写 `scripts/.vite-dev.log`，别写 `/tmp`（会被清）。
-- curl 要加 `--noproxy '*'`（环境里有 HTTP_PROXY 拦截）。
+- 默认端口 **18888**；binary 在 `~/.cargo/target/debug/print-server`（项目里**没有** `target/`）。
+- **不是 rustfmt-clean**（`cargo fmt --check` 有 4483 行差异）→ **千万别 `cargo fmt`**，
+  手改保持局部风格。
+- `ReportSource` 是 `rename_all = "camelCase"` → JSON 里是 **`connId`**。写成 `conn_id`
+  被 serde 忽略、静默落到第一个连接，报「sqlite 文件不存在: F:\...\data.db」——
+  看着像配置没加载，其实是字段名错了。
+- 渲染输出的格子字段是 **`text`**（`GridCell.text`）；`value` 是模板侧 `CellTpl` 的。
+  拿 `value` 读渲染结果会一片空，容易误判成「渲染坏了」。
+- `SheetTpl` **不在** mirror-check 的 `CAMEL_CASED` 白名单里（白名单是
+  ReportSource/ReportDef/ReportOptions/ReportSummary）→ 新字段两端都用 snake_case。
+- 批量给 struct 加字段：正则要排除 `-> Foo {`（长得和结构体字面量一样），
+  用 `(?<!-> )SheetTpl\s*\{`。改完**插入数要和编译器报的错数对得上**，多出来就是误伤。
 
-## 写断言的规矩：位置相关的断言，断言整条序列
+## 前端 UI 测试（antd v6 + jsdom，实测可用）
 
-探针实测出来的反面教材（`col_after_places_row_total_after_month_columns`）：
+`designer-react` 有 5+ 个 modal 规格，用 `createRoot` + `act` 挂载，模式见
+`p55-modals.spec.tsx` / `data-import.spec.tsx`。**antd Select 在 jsdom 里能正常驱动**，
+但有两个坑：
+1. 触发器是 **`.ant-select-content`**（v6），不是 v5 的 `.ant-select-selector`。
+   开下拉：`mousedown`（bubbles）→ 等一拍 → 点 `.ant-select-item-option`。
+2. **上一个下拉不会从 DOM 摘掉**，只加 `-hidden` 类。在 `document` 里搜选项会点到
+   上一个 Select 的项去。必须只在「最后一个未 hidden 的 `.ant-select-dropdown`」里找。
+   （踩过：分组字段选完 city，再选数值字段时点中的还是分组字段的下拉，
+   `valueField` 一直空、请求一直发不出去，且不报错。）
+3. `data-testid` 落哪层随组件而异（InputNumber 可能在 input 本身也可能在外层 div），
+   查询要 `matches('input') ?? querySelector('input') ?? parentElement.querySelector`。
+4. 受控输入用原生 setter 触发（绕过 React valueTracker）。
+5. **预览有 400ms 去抖**，等请求要轮询到 6s；去抖靠 `doRender` 身份变化触发，
+   所以「state 变了但没进依赖数组」= 请求根本不发。
 
-只断言 `grid[1].last() == "行合计"`，注入 bug 后列布局变成
-`["地区","1月","行合计"]`（「2月」被挤掉），`last()` **依然成立，测试照样绿**。
-改成 `assert_eq!(cols, vec!["地区","1月","2月","行合计"])` 才如期变红。
-
-→ **"目标元素还在" 抓不住 "旁边元素被挤掉/吞掉"**。
-凡是涉及位置/顺序的断言（列布局、行序、展开顺序），断言完整序列，
-不要只断言端点或存在性。
-
-## 报表文件是怎么「可视化定义」的（架构速查）
-
-**报表文件 = ReportDef**，存 `print-server/reports/<id>.json`（配置文件同级——
-**注意这是相对配置路径算的，见文末「报表目录跟着 cwd 走」**）。
-顶层：`format` `version` `id` `name` `description` `updatedAt` `template` `sources` `options`。
-**存的是「模板 + 数据源声明 + 渲染选项」，不是数据快照** —— 打开/执行时按 sources 现查。
-
-**五种定义入口**（`GridReportModal` 的 Segmented）：
-内置样例 / 分组汇总 / 交叉表 / 画布表格 / 自由模板。
-前四种是**生成器**（选字段 → `buildGroupTemplate` 等构造模板）；自由模板是**通用表达**。
-→ 单向漏斗：`openReport` **一律 setMode('free')**，因为自由模板能表达任何模板，
-反过来向导填不出手写的模板。
-
-**一格 = CellTpl 两层**
-- 自身：`value`（静态文本，也是模板兜底值）+ 合并（across/down/to_end）
-- `model?: CellModel` 二十余字段，分四组：数据绑定(ds/field/agg)、
-  展开(expand_type/expr/min/max/keep)、主格关系(row_parent/col_parent/col_after)、
-  表达式(value_expr/format_expr/dict/row|col_test_expr)
-- 主格关系**不画进格子**，网格旁常显主格树（`parentTreeOf`），选中点亮整条链（`parentChainOf`）
-
-**存/开/跑**：PUT `/api/reports/save` · GET `/api/reports/:id` → `templateToGrid` 落回自由模板
-· POST `/api/reports/:id/run`。
-模板**存原样**，`options` 单独存；`withExportFormula`/`withExpandControl` 渲染前才套，
-且自由模板**刻意不套** withExpandControl（它按最内/最外层猜层级，会覆盖手工主格）。
-
-`id` 白名单 `[A-Za-z0-9_-]` ≤80 是安全边界（id 直接拼文件名）。
-
-现成样例：`print-server/reports/sales-by-region.json`
-（A3 region → B3 city(row_parent A3) → C3 salesman(row_parent B3)；
-小计 `D3[B3:+0].sum()`、合计 `D3.sum()`）。
-
-## 报表目录跟着 cwd 走（起服务必须 cd 到 print-server/）
-
-`store::reports_dir(config_path)` = **配置文件同级**的 `reports/`，而默认配置路径是
-**相对**的 `print-server.json`。所以「从哪个目录启动」决定看见哪个 `reports/`：
-从仓库根启动 → `/api/reports` 返回 `[]`，**没有任何报错**。
-
-- 正确启动：`cd print-server && <binary>`（或 `--config <绝对路径>` / 环境变量
-  `OPENPRINT_PRINT_SERVER_CONFIG`）
-- 目录跟着配置文件走是**刻意设计**（整体备份/迁移方便），所以没改行为，只做披露：
-  启动横幅 `报表目录:` 一行 · `/health.reportsDir` · `/api/reports` 的
-  `x-reports-dir` 响应头 · 设计器空列表时的行内提示
-- 加自定义响应头要注意**跨域下默认读不到**，服务端得 expose（本项目
-  `CorsLayer::permissive()` 自带 `expose_headers(Any)`）。**curl 证明不了浏览器能读**，
-  必须在页面里 `fetch(...).then(r=>r.headers.get(...))` 才算验过
-- `HeaderValue` 只收可见 ASCII → 中文路径要 percent 编码（`store::header_safe`），
-  别 `.ok()` 一丢了之
-
-## 判断「这个类型错是不是我引入的」：stash 再跑一遍
-
-`vue-tsc` / `tsc` 报错时不要靠肉眼判断归属。`git stash push -- <那个文件>` →
-重跑 → `git stash pop`，对比错误集合与行号偏移。本次实测：报错完全一致、
-只是行号被自己新增的行推移，**确认既有**，于是敢提交。
-
-## 剥 Univer 公式引擎要连带改四件事（漏一个就静默坏）
-
-1. **docs + docs-ui 插件不能省**——sheets-ui 的单元编辑器依赖
-   `univer.editor.service`（定义在 docs-ui）。少了异步抛 `[redi] Expect 1
-   dependency item(s) for id "univer.editor.service" but get 0`，**异步抛的错
-   try/catch 接不到**，容器空、控制台之外毫无提示。
-2. **CSS 不能省**——Univer 布局全靠 `univer-h-full` / `univer-flex` 这类原子类，
-   没 CSS 根塌成 22px（sheet 标签条）、canvas 0 高，同样没报错。
-   按依赖顺序 import：design → ui → docs-ui → sheets-ui。
-3. `createUniver` 类型上 `presets` 必填，不传要 `presets: []` 占位。
-4. **语言包要自己带**（preset 会捎带一张合并好的表，自己拼就没人管了）。
-   少了不报错、界面照画，但 `LocaleService` 没初始化 → 任何走
-   `syncExecuteCommand` 的命令都会在
-   `SheetPermissionCheckController._getPermissionCheck` 抛
-   `[LocaleService]: Locale not initialized`（`setValue` 就是一个）。
-   **表现是「画布看着好好的，一改格子就静默失败」**，界面层完全看不出来。
-   按插件逐个 import zh-CN 再 `mergeLocales`：
-   design → ui → docs-ui → sheets → sheets-ui。
-
-配方：把 preset-sheets-core 的插件表照抄，只扣掉 rpc / engine-formula /
-sheets-formula(-ui) / sheets-numfmt(-ui)。详见 `univerFormulaFree.ts` 顶部注释。
-
-## `FWorksheet` 没有 `getCell` —— optional chaining 调新方法必核签名
-
-`sheet?.getCell?.(r, c)` 可选链 + 不存在的方法 = `undefined`，TS 不报（过类型
-检查），运行期不报。整段就是死代码。**任何「靠可选链调新方法」的写法先核
-facade `.d.ts`**，或者用 `FUniver.getCommandService()` / `getCellData()` 这种
-确认存在的访问器。
-
-## 浏览器 harness 在沙箱里有时跑不动 E2E —— 接受它，把链路拆开单测
-
-CDP `Input.dispatchKeyEvent` / `Input.insertText` 在本环境对多字符字符串报
-`Invalid 'text' parameter`（单字符 OK）。`agent-browser type` / `keyboard type`
-/ `keyboard inserttext` 全字符字符串都失败，`hello` 控制实验也走不通——确认
-是 harness 问题，与代码无关。
-
-应对：把关键逻辑抽成纯函数 + 单测 + 探针，harness 坏了也能继续验证。
-这次 mutation 拦截逻辑放纯函数 `rescueFormulaString.ts`（30 行），链路
-parseCellText `=` → mutation 改写 → SheetValueChanged → setGrid → formatCellText
-每段都有单测。**真正画到用户脸上的那一步走右侧面板**：`agent-browser fill`
-在 antd `Input` 上能用（不像 canvas 击键），并且能同时读多个相关字段的当前值
-确认模型。验证 UI 改动时直接走 fill + eval 读字段，不去碰画布击键。
-四件事各自独立可验：
-
-| 验证什么 | 怎么验 |
-| --- | --- |
-| 解析对不对 | 单测 |
-| 逻辑对不对 | 单测 + 探针 |
-| 拦截器/钩子装上没 | 浏览器 console.error 钩子（errs=[] 即装上了） |
-| 端到端走通没 | 右栏 `fill` + 多字段 eval 读 |
-
-实操例：NopReport 方言切换验证。网格报表 → 自由模板 → 画布点 A1 → 右栏
-fill `=ds1.city` → eval 读「数据集」=`ds1`、`「字段」`非空即字段绑定触发；
-切 `=D3[B3:+0].sum()` → eval 读「展示表达式」=`D3[B3:+0].sum()`、数据集默认 `ds1`。
-截图：`.workbuddy-ai/screenshots/nopreport-dialect-e2e.png`。
-
-## print-server（Rust 侧）的硬事实
-
-- 默认端口 **18888**；binary 在 `~/.cargo/target/debug/print-server`
-  —— 项目里**没有** `target/`，跑 `./target/debug/...` 直接 no such file。
-- **项目不是 rustfmt-clean**：`cargo fmt --check` 有 4483 行差异。
-  → **千万别 `cargo fmt`**，会把全仓库格式化成无关巨 diff。手改保持局部风格即可。
-- `ReportSource` 带 `#[serde(rename_all = "camelCase")]` → JSON 里是 **`connId`**。
-  写成 `conn_id` 会被 serde 忽略、静默落到第一个连接，报
-  「sqlite 文件不存在: F:\project\admin\data.db」——看着像配置没加载，
-  其实是字段名错了。配置本身可以 `GET /api/config` 验证。
-- 渲染输出的格子字段是 **`text`**（`GridCell.text`）；`value` 是模板侧
-  `CellTpl` 的。拿 `value` 去读渲染结果会得到一片空，容易误判成“渲染坏了”。
-- `SheetTpl` **不在** mirror-check 的 `CAMEL_CASED` 白名单里
-  （白名单是 ReportSource/ReportDef/ReportOptions/ReportSummary），
-  所以新字段两端都用 snake_case（如 `loop_field`）。
-- **批量给 struct 加字段**：正则要排除 `-> Foo {`（函数返回类型 + 函数体左括号
-  连在一起，长得和结构体字面量一样）。用 `(?<!-> )SheetTpl\s*\{`。
-  改完必须编译 + 看 diff：**插入数要和编译器报的错数对得上**，
-  多出来的就是误伤（这次 engine.rs 报 4 处、脚本插了 5 处）。
+**UI 层用例要断言请求体，不是「没报错」** —— 见 `grid-report-paging.spec.tsx`
+（分页开关接线；四个用例各自做了故障注入验证）。
+纯函数 `buildRenderRequest` 的用例在 `grid-report-request.spec.ts`，
+它测不到 state → 入参 → 依赖数组那段接线，两层都要有。
