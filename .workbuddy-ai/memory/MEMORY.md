@@ -108,6 +108,21 @@ xlsx 导出在 Rust 侧另算一遍。**两边一旦不一致是静默的**：�
 POST 探针如期变红（`$1:$1`），但 **sample 探针仍然绿** —— 它走的是
 `sample_xlsx_handler`，另一条路。别以为一个探针守住了全部导出路径。
 
+## 改 xlsx 导出的固定套路（这套动作已经跑了四遍，别再临时发挥）
+
+导出物是 zip，**Rust 侧断言读不到内容**，所以：
+
+1. **先把逻辑抽成纯函数**（`column_widths` / `lines_needed` / `header_row_count`），
+   否则只能断言「不报错」，等于没测。
+2. 单测写**具体数值**，并把前提也断言上（「这段文本是 48 宽」）。
+   注意 `display_width` 末尾有 **+2 内边距**，第一次写断言就栽在这。
+3. **故障注入 ≥3 次**：改错算法、改错常量、改错接线（handler 级）。
+4. **真机探针**：`cd print-server && <binary> --port 189xx`（必须 `run_in_background`），
+   curl 导出 → `scripts/verify-xlsx-export.py` 拆 zip 读 XML。
+5. **handler 级注入单独做一次**：单测守不到 handler 接线，而且
+   注入 `xlsx_handler` 后 sample 探针**仍然绿**（走的是另一条路径）——
+   一个探针守不住全部导出路径。
+
 ## print-server（Rust 侧）硬事实
 
 - 默认端口 **18888**；binary 在 `~/.cargo/target/debug/print-server`（项目里**没有** `target/`）。
