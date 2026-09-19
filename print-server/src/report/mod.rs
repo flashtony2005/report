@@ -6,6 +6,7 @@
 //! - `GET  /api/report/sample`  内置「销售分组汇总」样例（可直接验证链路）
 //! - `GET  /api/report/sample-template`  样例模板（前端设计器的初始内容）
 
+pub mod csv;
 pub mod engine;
 pub mod expr;
 pub mod import;
@@ -619,6 +620,34 @@ pub async fn import_handler(
     Ok(Json(tpl))
 }
 
+/// `POST /api/report/csv`：渲染并直接返回 CSV 文件
+///
+/// 与 xlsx 的区别：CSV 没有 sheet / 合并 / 样式，所以不需要 `head`（表头行数）
+/// 那套口径，多个 sheet 直接按顺序拼。
+pub async fn csv_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RenderRequest>,
+) -> Result<HttpResponse<axum::body::Body>, (StatusCode, String)> {
+    let resp = render_with_sources(&state, req).await.map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    // 与 xlsx_handler 同一套取数：分页时按页导出，否则导出整表
+    let sheets = resp.pages.as_ref().unwrap_or(&resp.sheets);
+    let buf = csv::to_csv(sheets).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let filename = match resp.sheets.first() {
+        Some(s) if !s.name.trim().is_empty() => format!("{}.csv", s.name),
+        _ => "report.csv".to_string(),
+    };
+    HttpResponse::builder()
+        .status(StatusCode::OK)
+        // charset=utf-8 不能省：文件头带 BOM 只是让 Excel 猜对，HTTP 层面也要说清楚
+        .header(CONTENT_TYPE, "text/csv; charset=utf-8")
+        .header(
+            CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename.replace('"', "")),
+        )
+        .body(axum::body::Body::from(buf))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
 pub async fn xlsx_handler(
     State(state): State<AppState>,
     Json(req): Json<RenderRequest>,
@@ -954,6 +983,20 @@ pub async fn run_def(
 }
 
 /// `GET /api/report/sample.xlsx`：内置样例导出，便于不开前端也能验证
+/// `GET /api/report/sample.csv`：内置样例的 CSV，不开前端也能验编码和转义
+pub async fn sample_csv_handler() -> Result<HttpResponse<axum::body::Body>, (StatusCode, String)> {
+    let tpl = sample_template();
+    let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None })
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let buf = csv::to_csv(&resp.sheets).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    HttpResponse::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "text/csv; charset=utf-8")
+        .header(CONTENT_DISPOSITION, "attachment; filename=\"sample-report.csv\"")
+        .body(axum::body::Body::from(buf))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
 pub async fn sample_xlsx_handler() -> Result<HttpResponse<axum::body::Body>, (StatusCode, String)> {
     let tpl = sample_template();
     // 与其它导出路径同一套口径：先按模板算表头行数（样例是「标题 + 列头」= 2），

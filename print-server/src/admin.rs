@@ -224,7 +224,17 @@ pub async fn test_connection(
     let result = match engine.as_str() {
         "postgres" => crate::db_pg::probe(&c).await,
         "odbc" => Err("ODBC 引擎暂未实现（Rust 版客户端）：可以保存配置，但本服务暂不能连".to_string()),
-        _ => probe_sqlite(&c),
+        // 已知但不支持的引擎：说清楚，别掉进 probe_sqlite 去报「文件不存在」
+        _ => {
+            if let Some(name) = c.unsupported_engine() {
+                Err(format!(
+                    "{name} 引擎暂不支持（本服务目前只有 sqlite / postgres）：\
+                     配置可以保存，但本服务暂不能连"
+                ))
+            } else {
+                probe_sqlite(&c)
+            }
+        }
     };
     match result {
         Ok(message) => axum::Json(json!({

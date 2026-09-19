@@ -41,6 +41,7 @@ pub struct DataQuery {
 /* ------------------------------ 连接解析 ------------------------------ */
 
 /// 解析出的目标连接
+#[derive(Debug)]
 enum Target {
     Sqlite(PathBuf),
     Postgres(DbConnection),
@@ -69,12 +70,27 @@ fn finish_engine(engine: &str, database: Option<String>, _dsn: Option<String>) -
         "odbc" => Err(
             "ODBC 引擎暂未实现（Rust 版客户端），请改用 sqlite / postgres，或使用原 Qt 客户端".to_string(),
         ),
+        // 已知但不支持的引擎单独给一句人话，别落进「未知引擎」那种没信息量的报错
+        other if crate::config::unsupported_engine_name(other).is_some() => Err(format!(
+            "{} 引擎暂不支持（本服务目前只有 sqlite / postgres），\
+             请改用 sqlite / postgres，或先把数据导成 sqlite 文件",
+            crate::config::unsupported_engine_name(other).unwrap()
+        )),
         other => Err(format!("未知数据库引擎: {other}")),
     }
 }
 
 /// 配置连接 → 目标
 fn conn_to_target(c: DbConnection) -> Result<Target, String> {
+    // 配了 mysql / mssql 这类已知但不支持的引擎：明确报错，绝不能按 sqlite 去开。
+    // （`norm_engine` 对它们照样返回 sqlite，真开下去就是「文件不存在」的误导性报错。）
+    if let Some(name) = c.unsupported_engine() {
+        return Err(format!(
+            "连接「{}」配的引擎是 {name}，本服务暂不支持（目前只有 sqlite / postgres）；\
+             请改用 sqlite / postgres，或先把数据导成 sqlite 文件",
+            c.id
+        ));
+    }
     match c.norm_engine() {
         "postgres" => Ok(Target::Postgres(c)),
         "odbc" => Err(
@@ -591,6 +607,71 @@ fn json_to_sql(v: &serde_json::Value) -> SqlValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 配了「已知但不支持」的引擎时，报错必须点名引擎，
+    /// **绝不能**是「sqlite 文件不存在」那种把人往错误方向带的说法。
+    ///
+    /// 故障注入：把 `conn_to_target` 里那段 `unsupported_engine()` 判断注掉，
+    /// mysql 会掉进 `_ => sqlite` 分支，第 2 条断言应当红。
+    #[test]
+    fn unsupported_engine_is_rejected_not_silently_sqlite() {
+        let c = DbConnection {
+            id: "erp".into(),
+            engine: "mysql".into(),
+            // 故意给一个合法的 sqlite 路径：若被静默当 sqlite，它会真的去开这个文件
+            path: Some("definitely-not-here.db".into()),
+            ..Default::default()
+        };
+        let err = conn_to_target(c).unwrap_err();
+        assert!(err.contains("MySQL"), "报错应点名是 MySQL: {err}");
+        assert!(
+            !err.contains("sqlite 文件不存在"),
+            "不该退化成误导性的 sqlite 报错: {err}"
+        );
+    }
+
+    #[test]
+    fn supported_engines_are_untouched() {
+        // sqlite 照旧走 sqlite
+        let sqlite = DbConnection {
+            id: "s".into(),
+            engine: "sqlite".into(),
+            path: Some("a.db".into()),
+            ..Default::default()
+        };
+        assert!(matches!(conn_to_target(sqlite), Ok(Target::Sqlite(_))));
+
+        // postgres 照旧走 postgres
+        let pg = DbConnection {
+            id: "p".into(),
+            engine: "postgresql".into(),
+            url: Some("postgres://u:p@127.0.0.1:5432/db".into()),
+            ..Default::default()
+        };
+        assert!(matches!(conn_to_target(pg), Ok(Target::Postgres(_))));
+    }
+
+    #[test]
+    fn unsupported_engine_name_covers_known_servers() {
+        let cases = [
+            ("mysql", Some("MySQL / MariaDB")),
+            ("MariaDB", Some("MySQL / MariaDB")),
+            ("mssql", Some("SQL Server")),
+            ("sqlserver", Some("SQL Server")),
+            ("oracle", Some("Oracle")),
+            ("sqlite", None),
+            ("postgres", None),
+            ("odbc", None),
+            ("", None),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(
+                crate::config::unsupported_engine_name(raw),
+                want,
+                "引擎 {raw:?} 的判定不对"
+            );
+        }
+    }
 
     fn demo_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

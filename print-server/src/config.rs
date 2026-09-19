@@ -101,14 +101,36 @@ impl Default for DbConnection {
     }
 }
 
+/// 已知但**本服务不支持**的引擎 → 供报错用的人话名；支持 / 不认识则返回 None。
+///
+/// 为什么非得单独拎出来：`norm_engine` 对未知引擎一律回落 sqlite，于是手改配置
+/// 写了 `engine: "mysql"` 的人会拿到「sqlite 文件不存在: /x/y.db」——
+/// 看着像路径写错，其实是引擎根本不支持。**静默降级比报错危险**，所以这里宁可明确红。
+pub fn unsupported_engine_name(engine: &str) -> Option<&'static str> {
+    match engine.trim().to_ascii_lowercase().as_str() {
+        "mysql" | "mariadb" => Some("MySQL / MariaDB"),
+        "mssql" | "sqlserver" => Some("SQL Server"),
+        "oracle" => Some("Oracle"),
+        _ => None,
+    }
+}
+
 impl DbConnection {
     /// 归一化引擎名：未知引擎按 sqlite 处理（与历史行为一致）
+    ///
+    /// 注意调用方若要**建连接**，应先过 `unsupported_engine()` ——
+    /// 本函数对 mysql 这类已知但不支持的引擎仍会返回 sqlite。
     pub fn norm_engine(&self) -> &'static str {
         match self.engine.as_str() {
             "odbc" => "odbc",
             "postgres" | "postgresql" | "pgsql" | "pg" => "postgres",
             _ => "sqlite",
         }
+    }
+
+    /// 本条连接配的是已知但不支持的引擎吗？（返回人话名便于直接拼进报错）
+    pub fn unsupported_engine(&self) -> Option<&'static str> {
+        unsupported_engine_name(&self.engine)
     }
 
     /// 目标 schema（缺省 public）
