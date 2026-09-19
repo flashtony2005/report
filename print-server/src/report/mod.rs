@@ -309,6 +309,39 @@ fn loop_groups(
     out
 }
 
+/// 哪些行边界**不能**切页（true = 切了就腰斩一个分组）
+///
+/// 判据：合并格的 `rowspan`。一格 `rowspan = k` 覆盖 `[r, r+k-1]`，
+/// 那么 `b ∈ [r, r+k-2]` 这几个边界都不能切。
+///
+/// 为什么用合并格反推分组，而不是给模板加「带区类型」：后者要动前后端模型，
+/// 而**主格展开出来就是合并格** —— 一个地区跨几行，它的格就是 rowspan 几。
+/// 不许跨合并格切页 == 组内不跨页，这层关系白捡的，不用新概念。
+///
+/// 返回长度 `rows.len() - 1`（相邻行之间有 n-1 个边界）；不足 2 行时为空。
+pub fn merge_blocked_boundaries(rows: &[Vec<GridCell>]) -> Vec<bool> {
+    let n = rows.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    // 用覆盖次数累加再统一转 bool：多个合并格重叠时不用逐个判断
+    let mut span = vec![0usize; n - 1];
+    for (r, row) in rows.iter().enumerate() {
+        for cell in row.iter() {
+            let k = cell.rowspan.max(1);
+            if k <= 1 {
+                continue;
+            }
+            // 合并覆盖到的最后一行下标；越界的按末行截断
+            let last = (r + k - 1).min(n - 1);
+            for b in r..last {
+                span[b] += 1;
+            }
+        }
+    }
+    span.iter().map(|c| *c > 0).collect()
+}
+
 /// 页面级分页：把展开后的网格按数据行数切页，表头/表尾每页重复
 ///
 /// 只做「按固定行数切页」这一层，不引入润乾那套 9 类带区模型——
@@ -317,6 +350,10 @@ fn loop_groups(
 /// - `repeat_header_rows`：表头行数，出现在每页顶部
 /// - `repeat_footer_rows`：表尾行数，出现在每页底部
 /// - 中间的部分按 `rows_per_page` 切分
+///
+/// **但不会切在合并格中间**：落点被合并格跨过时往后顺延，保证一组不被腰斩
+/// （详见 `merge_blocked_boundaries`）。代价是页大小不再严格等于 `rows_per_page`，
+/// 只会偏多不会偏少 —— 一个组本身超过一页时，那一页就是会超，没法两全。
 pub fn paginate(rows: &[Vec<GridCell>], cfg: &PageConfig) -> Vec<Vec<Vec<GridCell>>> {
     let total = rows.len();
     if !cfg.is_effective(total) {
@@ -330,14 +367,50 @@ pub fn paginate(rows: &[Vec<GridCell>], cfg: &PageConfig) -> Vec<Vec<Vec<GridCel
     }
     let head = &rows[..head_n];
     let foot = &rows[total - foot_n..];
+    let blocked = merge_blocked_boundaries(rows);
 
     let mut pages = Vec::new();
-    for chunk in body.chunks(cfg.rows_per_page) {
-        let mut page = Vec::with_capacity(head_n + chunk.len() + foot_n);
+    let mut start = 0usize;
+    while start < body.len() {
+        // 剩下的已经够放一页了就别再切 —— 否则会为了「凑满」硬拆出一张小页
+        let end = if start + cfg.rows_per_page >= body.len() {
+            body.len()
+        } else {
+            // 理想落点：本页最后一行的下标（body 内坐标）
+            let want = start + cfg.rows_per_page - 1;
+            // 落点被合并格跨过时，往**两边**找最近的能切位置（先退后进），
+            // 这样页大小贴着 rows_per_page 走，不会一个劲儿往后胀。
+            let mut cut = None;
+            let mut i = want;
+            loop {
+                if !blocked[head_n + i] {
+                    cut = Some(i);
+                    break;
+                }
+                if i == start {
+                    break; // 退到头了：这一页至少得有一行，改往后找
+                }
+                i -= 1;
+            }
+            let cut = cut.unwrap_or_else(|| {
+                // 往后找第一个能切的位置。
+                // `head_n + j` 必须还是个**存在的行边界**（<= total-2）：
+                // 表尾为 0 时，最后一行数据就是全表最后一行，它后面没有边界可切，
+                // 越过去会 panic —— 这时 j 停在末行，等价于「剩下的全放这一页」。
+                let mut j = want + 1;
+                while j < body.len() && head_n + j < blocked.len() && blocked[head_n + j] {
+                    j += 1;
+                }
+                j.min(body.len() - 1)
+            });
+            cut + 1
+        };
+        let mut page = Vec::with_capacity(head_n + (end - start) + foot_n);
         page.extend_from_slice(head);
-        page.extend_from_slice(chunk);
+        page.extend_from_slice(&body[start..end]);
         page.extend_from_slice(foot);
         pages.push(page);
+        start = end;
     }
     pages
 }
@@ -3170,12 +3243,26 @@ mod tests {
         })
         .unwrap();
 
-        // 原表 23 行 = 1 标题 + 1 表头 + 21 数据；21 行按 10 切分 -> 3 页
+        // 原表 23 行 = 1 标题 + 1 表头 + 21 数据。
+        //
+        // 数据部分按**地区分组**对齐，而不是死板的 10/10/1：
+        // 华东 8 行（2-9）、华南 6 行（10-15）、华北 6 行 + 总计 1 行（16-22）。
+        // 切页不许腰斩合并格，所以页数仍是 3，但每页正好收一个完整的地区 ——
+        // 这才是「组内不跨页」想要的结果，比凑满 10 行重要。
         let pages = resp.pages.expect("配了 page 应返回分页结果");
         assert_eq!(pages.len(), 3, "{:#?}", pages.iter().map(|p| p.rows.len()).collect::<Vec<_>>());
-        assert_eq!(pages[0].rows.len(), 2 + 10);
-        assert_eq!(pages[1].rows.len(), 2 + 10);
-        assert_eq!(pages[2].rows.len(), 2 + 1);
+        assert_eq!(pages[0].rows.len(), 2 + 8, "首页应为华东整组");
+        assert_eq!(pages[1].rows.len(), 2 + 6, "第二页应为华南整组");
+        assert_eq!(pages[2].rows.len(), 2 + 7, "末页为华北 + 总计");
+
+        // 每个地区只出现在**一页**里，不会被切到两页
+        for region in ["华东", "华南", "华北"] {
+            let hits = pages
+                .iter()
+                .filter(|p| lines(&p.rows).iter().any(|l| l.contains(region)))
+                .count();
+            assert_eq!(hits, 1, "「{region}」被切到了 {hits} 页上");
+        }
 
         // 每页都带标题和表头
         for p in &pages {
@@ -3224,15 +3311,17 @@ mod tests {
         })
         .unwrap();
         let pages = resp.pages.unwrap();
-        // 23 行扣掉 2 行表头、1 行表尾后剩 20 行数据 -> 2 页
-        assert_eq!(pages.len(), 2);
+        // 23 行扣掉 2 行表头、1 行表尾后剩 20 行数据（华东 8 / 华南 6 / 华北 6）。
+        // 同样按组合并格对齐，所以是 3 页而不是「20 行按 10 切」的 2 页。
+        assert_eq!(pages.len(), 3, "{:#?}", pages.iter().map(|p| p.rows.len()).collect::<Vec<_>>());
         for p in &pages {
             let text = lines(&p.rows);
-            assert!(text.last().unwrap().contains("总计"), "{text:#?}");
+            assert!(text.last().unwrap().contains("总计"), "每页都该带表尾: {text:#?}");
         }
-        // 行数：2 表头 + 10 数据 + 1 表尾
-        assert_eq!(pages[0].rows.len(), 13);
-        assert_eq!(pages[1].rows.len(), 13);
+        // 2 表头 + N 数据 + 1 表尾
+        assert_eq!(pages[0].rows.len(), 2 + 8 + 1);
+        assert_eq!(pages[1].rows.len(), 2 + 6 + 1);
+        assert_eq!(pages[2].rows.len(), 2 + 6 + 1);
     }
 
     /// 表头 + 表尾吃掉整张表时不分页
@@ -3257,6 +3346,99 @@ mod tests {
         );
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].len(), 3);
+    }
+
+    fn gcell(text: &str, rowspan: usize) -> GridCell {
+        GridCell {
+            text: text.into(),
+            pos: "A1".into(),
+            rowspan,
+            colspan: 1,
+            raw_number: None,
+            num_format: None,
+            formula: None,
+        }
+    }
+
+    #[test]
+    fn merge_blocked_boundaries_marks_spanned_rows() {
+        // 「华东」rowspan=3 覆盖 0..2 → 边界 0、1 都不能切（切了就腰斩这一组）
+        let rows = vec![
+            vec![gcell("华东", 3), gcell("上海", 1)],
+            vec![gcell("", 1), gcell("北京", 1)],
+            vec![gcell("", 1), gcell("天津", 1)],
+        ];
+        assert_eq!(merge_blocked_boundaries(&rows), vec![true, true]);
+    }
+
+    #[test]
+    fn merge_blocked_boundaries_ignores_plain_rows() {
+        let rows = vec![vec![gcell("a", 1)], vec![gcell("b", 1)], vec![gcell("c", 1)]];
+        assert_eq!(merge_blocked_boundaries(&rows), vec![false, false]);
+    }
+
+    /// rowspan 越界（渲染不该产生，但别让它越界 panic）
+    #[test]
+    fn merge_blocked_boundaries_clamps_oversized_rowspan() {
+        let rows = vec![vec![gcell("x", 99)], vec![gcell("y", 1)]];
+        assert_eq!(merge_blocked_boundaries(&rows), vec![true]);
+    }
+
+    /// 分页**绝不**切在合并格中间 —— 这是「组内不跨页」的硬保证
+    ///
+    /// 故障注入：把 `paginate` 里那段找安全落点的逻辑换回 `body.chunks(rows_per_page)`，
+    /// 组会被腰斩，下面两条断言都会红。
+    #[test]
+    fn paginate_never_cuts_a_merge() {
+        // 2 行表头 + 4 个组，每组 3 行（组头 rowspan=3 + 2 行明细）
+        let mut rows = vec![vec![gcell("标题", 1)], vec![gcell("列头", 1)]];
+        for g in 0..4 {
+            rows.push(vec![gcell(&format!("组{g}"), 3), gcell("明细", 1)]);
+            rows.push(vec![gcell("", 1), gcell("明细", 1)]);
+            rows.push(vec![gcell("", 1), gcell("明细", 1)]);
+        }
+        let cfg = PageConfig { rows_per_page: 4, repeat_header_rows: 2, repeat_footer_rows: 0 };
+        let pages = paginate(&rows, &cfg);
+
+        // 不变量一：页内任何 rowspan>1 的格，都必须完整落在本页里
+        for (pi, page) in pages.iter().enumerate() {
+            let body = &page[2..];
+            for (r, row) in body.iter().enumerate() {
+                for c in row.iter().filter(|c| c.rowspan > 1) {
+                    assert!(
+                        r + c.rowspan <= body.len(),
+                        "第 {pi} 页第 {r} 行的合并格被切了（rowspan {}，本页只剩 {} 行）",
+                        c.rowspan,
+                        body.len() - r
+                    );
+                }
+            }
+        }
+        // 不变量二：每个组只出现在一页上（不会被切到两页）
+        for g in 0..4 {
+            let name = format!("组{g}");
+            let hits = pages
+                .iter()
+                .filter(|p| p.iter().any(|row| row.iter().any(|c| c.text == name)))
+                .count();
+            assert_eq!(hits, 1, "「{name}」被切到了 {hits} 页上");
+        }
+        // rows_per_page=4 而每组 3 行：退到 3 比进到 6 更近，所以每页 3 行
+        assert_eq!(pages.len(), 4, "{:#?}", pages.iter().map(|p| p.len()).collect::<Vec<_>>());
+        assert!(pages.iter().all(|p| p.len() == 2 + 3));
+    }
+
+    /// 一个组本身就超过一页时切不开 —— 那一页就是会超，宁超不切
+    #[test]
+    fn paginate_keeps_an_oversized_group_on_one_page() {
+        let mut rows = vec![vec![gcell("标题", 1)], vec![gcell("大组", 10)]];
+        for _ in 1..10 {
+            rows.push(vec![gcell("", 1)]);
+        }
+        let cfg = PageConfig { rows_per_page: 4, repeat_header_rows: 1, repeat_footer_rows: 0 };
+        let pages = paginate(&rows, &cfg);
+        assert_eq!(pages.len(), 1, "整张表被一个合并格罩住，切不开就只有 1 页");
+        assert_eq!(pages[0].len(), 11, "1 行表头 + 10 行大组");
     }
 
     /// 展开控制属性：expand_max_count（只显示前 N 条）/ expand_min_count（补空行）
@@ -5267,4 +5449,5 @@ mod tests {
         assert!(!buf.is_empty());
     }
 }
+
 
