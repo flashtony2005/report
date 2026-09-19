@@ -1660,8 +1660,21 @@ impl Engine {
     ///
     /// `evaluating` 同时充当循环引用检测：递归中再次进入同一实例说明成环，
     /// 直接放弃求值（保留 Null），避免无限递归。
+    ///
+    /// 成环时必须**告警**：不挂不崩、但也不给任何提示，用户看到的就是几个
+    /// 空格子，和自己写错了表达式完全对不上号 —— 属于最难排查的那类静默失败。
+    /// 同一格在一次展开里可能反复被撞上，所以只报一次。
     fn ensure_value(&mut self, i: usize) {
-        if self.insts[i].evaluated || self.insts[i].evaluating {
+        if self.insts[i].evaluated {
+            return;
+        }
+        if self.insts[i].evaluating {
+            if !self.insts[i].cycle_warned {
+                self.insts[i].cycle_warned = true;
+                let pos = self.insts[i].pos.clone();
+                self.warnings
+                    .push(format!("{pos} 的表达式存在循环引用（直接或间接引用了自己），该格按空值处理"));
+            }
             return;
         }
         self.insts[i].evaluating = true;

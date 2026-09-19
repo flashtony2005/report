@@ -277,6 +277,8 @@ pub struct CellInst {
     pub evaluated: bool,
     /// 求值进行中。再次进入说明表达式成环，此时放弃求值以避免无限递归
     pub evaluating: bool,
+    /// 成环告警已发过。一次展开里同一格可能被反复撞上，只报一次
+    pub cycle_warned: bool,
     /// 在本层父格下的序号（从 0 开始）
     pub expand_index: usize,
     /// 后代实例：位置名 -> 实例下标（向祖格链逐级注册，跨层汇总的前提）
@@ -348,6 +350,7 @@ impl CellInst {
             value_expr: None,
             evaluated: false,
             evaluating: false,
+            cycle_warned: false,
             expand_index,
             descendants: BTreeMap::new(),
             row_start: 0,

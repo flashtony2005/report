@@ -5076,6 +5076,49 @@ mod tests {
         assert!(w.contains("lambda"), "应告警，实际: {w:?}");
     }
 
+    /* ---------------- 循环引用 ---------------- */
+
+    fn render_tpl(tpl: ReportTemplate) -> RenderResponse {
+        render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None }).unwrap()
+    }
+
+    /// 第一行的显示文本
+    fn row0_texts(resp: &RenderResponse) -> Vec<String> {
+        resp.sheets[0].rows[0].iter().map(|c| c.text.clone()).collect()
+    }
+
+    /// 成环时不挂不崩（这点本来就有 `evaluating` 守着），但**必须告警** ——
+    /// 否则用户看到几个空格子，跟自己写错表达式完全对不上号。
+    #[test]
+    fn cyclic_value_expr_warns_instead_of_silently_blank() {
+        let resp = render_tpl(expr_row(&["B1 + 1", "A1 + 1"]));
+        let w = resp.warnings.clone().unwrap_or_default().join("\n");
+        assert!(w.contains("循环引用"), "成环应告警，实际: {w:?}");
+        assert!(w.contains("A1"), "告警要指明是哪一格，实际: {w:?}");
+        assert_eq!(row0_texts(&resp), vec!["", ""], "成环的格子按空值处理");
+    }
+
+    /// 自己引用自己也算成环
+    #[test]
+    fn self_referencing_value_expr_warns() {
+        let resp = render_tpl(expr_row(&["A1 + 1"]));
+        let w = resp.warnings.clone().unwrap_or_default().join("\n");
+        assert!(w.contains("循环引用"), "自引用应告警，实际: {w:?}");
+    }
+
+    /// 菱形依赖（A1→B1、A1→C1、两者都→D1）**不是**环，一条告警都不许有。
+    /// 告警一旦在正常的报表上误报，就比没有更糟 —— 用户会直接忽略它。
+    #[test]
+    fn diamond_dependency_is_not_a_cycle() {
+        let resp = render_tpl(expr_row(&["B1 + C1", "D1 + 1", "D1 + 2", "5"]));
+        assert_eq!(
+            resp.warnings.clone().unwrap_or_default(),
+            Vec::<String>::new(),
+            "菱形依赖不该告警"
+        );
+        assert_eq!(row0_texts(&resp), vec!["13", "6", "7", "5"]);
+    }
+
     /* ---------------- 表头行数（导出兜底用，必须与前端 headerRowCount 一致） --------------- */
 
     /// 按「每行有哪些格」搭模板：`(expand_type, row_parent)` 描述该行的每一格
