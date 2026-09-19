@@ -176,3 +176,60 @@ POST 探针如期变红（`$1:$1`），但 **sample 探针仍然绿** —— 它
 **配套**：列宽写进 zip，从 `to_xlsx` 的返回值上根本看不出来 ——
 所以列宽逻辑抽成了纯函数 `column_widths()` 才能单测，终局仍要
 `scripts/verify-xlsx-export.py` 拆包验。
+
+## 能力边界：画布有、服务端报表没有的东西（别再搞混）
+
+| 能力 | 自由画布 | 服务端非线性报表（`CellTpl`） |
+| --- | --- | --- |
+| 图片 / 条码 / 二维码 | 有（`PrintQrcode`、`data-binder` barcode） | **无** |
+| 图表 | 有，**自研** `openprint/src/core/chartkit`（bar/line/pie，纯函数出 SVG、零第三方依赖） | **无**（`print-server/src` grep `chart` 零命中） |
+| 导出 | 客户端 `export-engine/`（PDF/SVG/图片） | 服务端 xlsx / HTML |
+
+**教训**：`package.json` 里没装第三方图表库 ≠ 没有图表能力 —— 是自己写的。
+判断某能力有没有，**先 grep 源码，别先看依赖清单**。（我据此误判过一次。）
+
+## 非线性报表：格子没有「作者定义的样式」
+
+`GridCell`（`model.rs:379`）只有 7 个字段：`text / pos / rowspan / colspan /
+raw_number / num_format / formula`。**字体、字号、颜色、边框、对齐、条件样式
+一个都没有**，也导不出。
+
+设计器里的彩色是**语义高亮**（`grid-report.ts:661-666`：纵向扩展黄、横向扩展绿、
+字段蓝、表达式紫斜体，+ 表头/选中/主格高亮）—— 标的是「这格什么角色」，
+不是「这格长什么样」。xlsx 里的样全靠导出器写死（表头加粗+底色、全体细边框、
+按需换行行高）。**用户改不了任何一个。**
+
+→ 这是和润乾观感差距最大的一块；要补是完整链路（模型 + mirror-check +
+xlsx 通道 + 设计器面板）。
+
+## 分页不认分组
+
+`paginate()`（`mod.rs:319`）是**渲染完之后**按固定行数切拍平网格，
+不知道哪几行同组 → 一组明细跨页时，第二页只有重复的表头，**补不出主格**
+（表头重复只重复模板前 N 行，重复不了运行期展开出来的地区名）。
+`mod.rs:313` 注释已声明不做润乾 9 类带区模型。要「组内不跨页」得引入带区
+或「行后分页」标记。
+
+## 已核对：这些不是缺口（别重复查）
+
+表达式函数集（官方 11 个 + MAP/FILTER/REDUCE/FLATMAP）全在；
+`CellModel` 19 个字段**无死字段**（逐个统计引用，`engine.rs` 都有真实读点：
+`expand_max_count` 1127 / `keep_expand_empty` 1131 / `expand_expr` 1113 /
+`join_on` 754）；分页三配置都生效；多 sheet 导出支持（`xlsx.rs:37` 循环
+`add_worksheet`）；行/列测试已有设计器入口。
+
+## 数据源现状
+
+sqlite ✅ / postgres ✅ / odbc ❌ 引擎未实现（界面已标注，非静默坑）。
+MySQL **归一成 sqlite**（`normalizeDbEngine('mysql')==='sqlite'`，有测试钉住），
+但 UI 下拉只有 sqlite/postgres/odbc 三项（`admin.html:407`），**手改配置才会踩**，
+优先级最低。`/print` 只支持 pdf/html；`esc`/`tsc`/`zpl` 票据指令待实现
+（`print_job.rs:85`）。无 CSV 导出。**报表参数/查询表单整块缺失**
+（`params` 只是 SQL 绑定参数）。
+
+## 盘点方法（可复用）
+
+判断「某字段是不是死字段」：写脚本统计每个字段在 `engine.rs`/`xlsx.rs` 里的
+`\.field\b` 或 `field:` 命中数，**但别只看总数** —— 命中里混着测试夹具的
+结构体字面量（`mod.rs` 里 19 个字段命中数清一色 23~28，看着像都用了，
+其实大半是夹具）。要打开看**读点所在的那几行**才算数。
