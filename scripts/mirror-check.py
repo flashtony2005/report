@@ -34,6 +34,7 @@ PAIRS = [
     ("model.rs", "ReportTemplate", "ReportTemplate"),
     ("model.rs", "PageConfig", "PageConfig"),
     ("model.rs", "GridCell", "GridCell"),
+    ("model.rs", "CellImage", "CellImage"),
     ("model.rs", "RenderedSheet", "RenderedSheet"),
     ("model.rs", "NumFmt", "CellFormatSpec"),
     ("mod.rs", "RenderRequest", "RenderRequest"),

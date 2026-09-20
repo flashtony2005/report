@@ -70,8 +70,11 @@ import {
   templateToGrid,
   toWorkbookData,
   validateTemplate,
+  isValueImage,
+  parseImageDataUri,
   type AggType,
   type CellFormatSpec,
+  type CellImage,
   type CellModel,
   type CellStyle,
   type ReportParam,
@@ -357,6 +360,21 @@ function ParentTree({
  * **没法用格子里的文字表达**，必须有独立的属性面板。三个向导构造器碰不到它们，
  * 所以「手写模板」此前只能靠手写 JSON。
  */
+/**
+ * 把本地图片读成 data URI。
+ *
+ * 为什么在浏览器里读、而不是把文件路径填进模板：服务端**故意**不收文件路径 ——
+ * 模板可以被导入 / 分享，能按字符串读本地文件就等于任意文件读取原语。
+ * 读成自包含的 data URI 之后，路径不出本机，模板也能安全分享。
+ */
+function readAsDataUri(file: File, done: (uri: string) => void): void {
+  const reader = new FileReader()
+  reader.onload = () => {
+    if (typeof reader.result === 'string' && reader.result) done(reader.result)
+  }
+  reader.readAsDataURL(file)
+}
+
 /** 导出以便单测（格子属性面板是纯受控组件，不需要整个 modal 就能验） */
 export function CellModelEditor({
   pos,
@@ -386,6 +404,8 @@ export function CellModelEditor({
   // 留一份草稿文本，只有真正解析成对象才落进 model —— 否则用户打第一个 `{`
   // 就被判成「清掉了字典」，那是静默毁数据。
   const [dictDraft, setDictDraft] = useState<string | null>(null)
+  /** 隐藏的文件选择框（图片格用）；点「选文件」按钮触发它 */
+  const fileRef = useRef<HTMLInputElement>(null)
   // 换格就把跨度归位：否则输入框里还留着上一格的「3 行 × 2 列」，
   // 看着像当前格已经是那个跨度。（不用 key 重挂：--noResolve 下 JSX 的 key
   // 会因为解析不到 React 类型被误报成类型错误。）
@@ -783,6 +803,115 @@ export function CellModelEditor({
           )
         })}
       </Space>
+
+      {/*
+        图片格：这格不出文本，出图片（logo / 二维码 / 客户端栅格化好的图表）。
+
+        **故意只收 data URI，不收文件路径**：服务端按模板里的字符串读本地文件，
+        等于把模板变成任意文件读取原语，而模板是可以被导入 / 分享的。
+        「选文件」按钮走 FileReader 在浏览器里转成 data URI，路径不出本机。
+
+        缩略图是**必须的**：Univer 网格画不了图片（它的样式通道只有底色 + 字色），
+        没有缩略图的话，作者设了图在网格里看不到任何变化 —— 又一个「设了没反应」。
+      */}
+      {(() => {
+        const img = m?.image ?? undefined
+        const byValue = isValueImage(img?.from)
+        const kind = img && !byValue ? parseImageDataUri(img.src) : null
+        const srcText = img?.src ?? ''
+        // 空 src 也要提示：留空存下去，服务端会把它当「配了图但配错了」，
+        // 出一格 `[图片: ...]`。这里先说，比导出后才发现好。
+        const badSrc = !!img && !byValue && !kind
+        return (
+          <>
+            <Space wrap size="small" align="center">
+              <Tooltip title="这格画成图片而不是文本。图片走 data URI 内嵌，服务端只负责嵌字节">
+                <Typography.Text style={{ fontSize: 12 }}>图片</Typography.Text>
+              </Tooltip>
+              <Select
+                size="small"
+                style={{ width: 118 }}
+                placeholder="不出图"
+                value={img ? (byValue ? 'value' : 'literal') : ''}
+                options={[
+                  { label: '不出图', value: '' },
+                  { label: '固定图片', value: 'literal' },
+                  { label: '取本格的值', value: 'value' },
+                ]}
+                onChange={(v: string) => {
+                  if (!v) {
+                    patch({ image: undefined })
+                    return
+                  }
+                  patch({ image: { from: v as CellImage['from'], src: img?.src ?? '' } })
+                }}
+                data-testid="free-cell-image-from"
+              />
+              {/* 没配图时不出 src 输入框：留一个空框在那儿，作者会以为已经配上了 */}
+              {!!img && !byValue && (
+                <>
+                  <Input
+                    size="small"
+                    style={{ width: 220 }}
+                    placeholder="data:image/png;base64,..."
+                    value={srcText}
+                    onChange={(e) =>
+                      patch({ image: { from: 'literal', src: e.target.value } })
+                    }
+                    data-testid="free-cell-image-src"
+                  />
+                  <Button
+                    size="small"
+                    onClick={() => fileRef.current?.click()}
+                    data-testid="free-cell-image-pick"
+                  >
+                    选文件
+                  </Button>
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/gif,image/bmp"
+                    style={{ display: 'none' }}
+                    data-testid="free-cell-image-file"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0]
+                      // 同一文件连选两次也要触发：清掉 value，否则第二次 change 不冒泡
+                      e.target.value = ''
+                      if (f) readAsDataUri(f, (uri) => patch({ image: { from: 'literal', src: uri } }))
+                    }}
+                  />
+                </>
+              )}
+              {kind && (
+                <img
+                  src={srcText}
+                  alt="格子图片预览"
+                  data-testid="free-cell-image-thumb"
+                  style={{
+                    height: 24,
+                    maxWidth: 72,
+                    objectFit: 'contain',
+                    border: '1px solid #d9d9d9',
+                    borderRadius: 2,
+                    background: '#fff',
+                  }}
+                />
+              )}
+            </Space>
+            {badSrc && (
+              <Typography.Text type="warning" style={{ fontSize: 11 }}>
+                图片源要写成 data:image/png;base64,...（只支持 png / jpeg / gif / bmp，
+                不能填文件路径）
+              </Typography.Text>
+            )}
+            {byValue && (
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                取本格算出来的值当图片源：下面填的字段（如 photo）里每行存一个 data URI。
+              </Typography.Text>
+            )}
+          </>
+        )
+      })()}
 
       {/*
         最少行数：展开结果不足 N 条时补到 N 条（「默认留 N 个空行」）。

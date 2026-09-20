@@ -56,6 +56,7 @@ mod tests {
 
     fn cell(text: &str) -> GridCell {
         GridCell {
+            image: None,
             text: text.into(),
             pos: "A1".into(),
             rowspan: 1,

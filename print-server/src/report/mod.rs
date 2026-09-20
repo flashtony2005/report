@@ -647,11 +647,27 @@ fn to_html(sheets: &[RenderedSheet]) -> String {
                         }
                     }
                 }
+                // 图片格：出 `<img>` 不出文本。`src` 是 data URI，HTML 天然自包含
+                //（不用另发一个静态资源请求，也不用担心导出物散成两半）。
+                // base64 字母表里没有 `&`/`<`/`"`，转义是白转，但转了更保险。
+                let inner = match cell.image.as_deref() {
+                    Some(src) => {
+                        let alt = if cell.text.trim().is_empty() {
+                            format!("图片 {}", cell.pos)
+                        } else {
+                            cell.text.clone()
+                        };
+                        format!(
+                            "<img src=\"{}\" alt=\"{}\" style=\"max-width:100%;height:auto\">",
+                            escape(src),
+                            escape(&alt)
+                        )
+                    }
+                    None => escape(&cell.text),
+                };
                 out.push_str(&format!(
                     "<td rowspan=\"{}\" colspan=\"{}\">{}</td>",
-                    rs,
-                    cs,
-                    escape(&cell.text)
+                    rs, cs, inner
                 ));
             }
             out.push_str("</tr>\n");
@@ -1260,6 +1276,7 @@ pub fn sample_template() -> ReportTemplate {
     datasets.insert("ds1".to_string(), sample_data());
 
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+        image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
         model,
@@ -1269,6 +1286,7 @@ pub fn sample_template() -> ReportTemplate {
     };
     let m = |ds: &str, field: Option<&str>, expand: bool, row_parent: Option<&str>, value_expr: Option<&str>| {
         Some(CellModel {
+            image: None,
             ds: Some(ds.to_string()),
             field: field.map(|s| s.to_string()),
             agg: None,
@@ -1297,7 +1315,7 @@ pub fn sample_template() -> ReportTemplate {
         page: None,
         rows: vec![
             // 行 1：标题
-            RowTpl { cells: vec![CellTpl { pos: None, value: Some(JsonValue::from("2026 年销售分组汇总表")), model: None, merge_across: 0, merge_down: 0, merge_to_end: true }] },
+            RowTpl { cells: vec![CellTpl { image: None, pos: None, value: Some(JsonValue::from("2026 年销售分组汇总表")), model: None, merge_across: 0, merge_down: 0, merge_to_end: true }] },
             // 行 2：表头
             RowTpl {
                 cells: vec![
@@ -1357,6 +1375,7 @@ pub fn cross_tab_template() -> ReportTemplate {
 
     let m = |field: Option<&str>, expand: Option<ExpandType>, row_parent: Option<&str>, col_parent: Option<&str>| {
         Some(CellModel {
+            image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
             agg: None,
@@ -1380,6 +1399,7 @@ pub fn cross_tab_template() -> ReportTemplate {
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+        image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
         model,
@@ -1418,6 +1438,7 @@ pub fn cross_tab_two_metrics_template() -> ReportTemplate {
 
     let m = |field: Option<&str>, expand: Option<ExpandType>, row_parent: Option<&str>, col_parent: Option<&str>| {
         Some(CellModel {
+            image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
             agg: None,
@@ -1441,6 +1462,7 @@ pub fn cross_tab_two_metrics_template() -> ReportTemplate {
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+        image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
         model,
@@ -1497,6 +1519,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
              col_after: Option<&str>,
              value_expr: Option<&str>| {
         Some(CellModel {
+            image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
             agg: None,
@@ -1520,6 +1543,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+        image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
         model,
@@ -1534,6 +1558,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
         rows: vec![
             RowTpl {
                 cells: vec![CellTpl {
+                    image: None,
                     pos: None,
                     value: Some(JsonValue::from("地区 / 月份 销售交叉表")),
                     model: None,
@@ -1582,6 +1607,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
              col_after: Option<&str>,
              value_expr: Option<&str>| {
         Some(CellModel {
+            image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
             agg: None,
@@ -1605,6 +1631,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+        image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
         model,
@@ -1619,6 +1646,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
         rows: vec![
             RowTpl {
                 cells: vec![CellTpl {
+                    image: None,
                     pos: None,
                     value: Some(JsonValue::from("金额 / 数量 双指标交叉表")),
                     model: None,
@@ -1687,6 +1715,7 @@ pub fn cross_tab_multi_level_template() -> ReportTemplate {
              col_after: Option<&str>,
              value_expr: Option<&str>| {
         Some(CellModel {
+            image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
             agg,
@@ -1713,6 +1742,7 @@ pub fn cross_tab_multi_level_template() -> ReportTemplate {
                 model: Option<CellModel>,
                 merge_down: usize,
                 merge_to_end: bool| CellTpl {
+        image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
         model,
@@ -1864,6 +1894,7 @@ mod tests {
                 page: None,
                 rows: vec![RowTpl {
                     cells: vec![CellTpl {
+                        image: None,
                         pos: None,
                         value: Some(serde_json::json!(value)),
                         model: Some(CellModel { format: fmt, ..Default::default() }),
@@ -1993,6 +2024,7 @@ mod tests {
     #[test]
     fn value_expr_can_reference_a_later_cell() {
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(|v| JsonValue::from(v)),
             model,
@@ -2002,6 +2034,7 @@ mod tests {
         };
         let m = |field: Option<&str>, expand: bool, row_parent: Option<&str>, value_expr: Option<&str>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: field.map(|s| s.to_string()),
                 agg: None,
@@ -2082,6 +2115,7 @@ mod tests {
         datasets.insert("ds1".to_string(), sample_data());
         let m = |value_expr: &str| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: None,
                 agg: None,
@@ -2111,9 +2145,9 @@ mod tests {
                 rows: vec![RowTpl {
                     // A1 -> B1 -> A1，以及 C1 自引用
                     cells: vec![
-                        CellTpl { pos: None, value: None, model: m("B1"), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { pos: None, value: None, model: m("A1"), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { pos: None, value: None, model: m("C1"), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { image: None, pos: None, value: None, model: m("B1"), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { image: None, pos: None, value: None, model: m("A1"), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { image: None, pos: None, value: None, model: m("C1"), merge_across: 0, merge_down: 0, merge_to_end: false },
                     ],
                 }],
                 loop_field: None,
@@ -2136,6 +2170,7 @@ mod tests {
         let mut datasets = BTreeMap::new();
         datasets.insert("ds1".to_string(), sample_data());
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(|v| JsonValue::from(v)),
             model,
@@ -2145,6 +2180,7 @@ mod tests {
         };
         let m = |field: Option<&str>, expand: bool, row_parent: Option<&str>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: field.map(|s| s.to_string()),
                 agg: None,
@@ -2207,6 +2243,7 @@ mod tests {
         datasets.insert("ds1".to_string(), vec![mk(1, 100.0), mk(2, 200.0), mk(3, 400.0)]);
 
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(|v| JsonValue::from(v)),
             model,
@@ -2216,6 +2253,7 @@ mod tests {
         };
         let m = |field: Option<&str>, expand: bool, value_expr: Option<&str>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: field.map(|s| s.to_string()),
                 agg: None,
@@ -2289,6 +2327,7 @@ mod tests {
         let mut datasets = BTreeMap::new();
         datasets.insert("ds1".to_string(), sample_data());
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(|v| JsonValue::from(v)),
             model,
@@ -2298,6 +2337,7 @@ mod tests {
         };
         let m = |field: Option<&str>, expand: bool| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: field.map(|s| s.to_string()),
                 agg: None,
@@ -2368,6 +2408,7 @@ mod tests {
         let mut datasets = BTreeMap::new();
         datasets.insert("ds1".to_string(), sample_data());
         let cell = |model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: None,
             model,
@@ -2377,6 +2418,7 @@ mod tests {
         };
         let m = |field: &str, expand: bool, row_parent: Option<&str>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: Some(field.to_string()),
                 agg: Some(AggType::Sum),
@@ -2661,6 +2703,7 @@ mod tests {
             pos: None,
             value: None,
             model: Some(CellModel {
+                image: None,
                 ds: Some(ds.into()),
                 field: Some(field.into()),
                 agg: None,
@@ -3446,6 +3489,7 @@ mod tests {
         let rows: Vec<Vec<GridCell>> = (0..3)
             .map(|r| {
                 vec![GridCell {
+                    image: None,
                     text: format!("r{r}"),
                     pos: format!("A{}", r + 1),
                     rowspan: 1,
@@ -3467,6 +3511,7 @@ mod tests {
 
     fn gcell(text: &str, rowspan: usize) -> GridCell {
         GridCell {
+            image: None,
             text: text.into(),
             pos: "A1".into(),
             rowspan,
@@ -3694,6 +3739,7 @@ mod tests {
     fn expand_count_limits() {
         let mk = |field: Option<&str>, min: Option<usize>, max: Option<usize>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: field.map(|s| s.to_string()),
                 agg: None,
@@ -3725,6 +3771,7 @@ mod tests {
                     page: None,
                     rows: vec![RowTpl {
                         cells: vec![CellTpl {
+                            image: None,
                             pos: None,
                             value: None,
                             model,
@@ -3888,6 +3935,7 @@ mod tests {
                     rows: vec![
                         RowTpl {
                             cells: vec![CellTpl {
+                                image: None,
                                 pos: None,
                                 value: Some(JsonValue::from("地区")),
                                 model: None,
@@ -3898,9 +3946,11 @@ mod tests {
                         },
                         RowTpl {
                             cells: vec![CellTpl {
+                                image: None,
                                 pos: None,
                                 value: None,
                                 model: Some(CellModel {
+                                    image: None,
                                     ds: Some("ds1".to_string()),
                                     field: Some("region".to_string()),
                                     agg: None,
@@ -3964,6 +4014,7 @@ mod tests {
 
         let m = |field: Option<&str>, expand: bool, value_expr: Option<&str>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: field.map(|s| s.to_string()),
                 agg: None,
@@ -3992,16 +4043,16 @@ mod tests {
                 page: None,
                 rows: vec![RowTpl {
                     cells: vec![
-                        CellTpl { pos: None, value: None, model: {
+                        CellTpl { image: None, pos: None, value: None, model: {
                             // 同上：A1 自己是展开格，不能把自己声明成主格
                             let mut mm = m(Some("month"), true, None).expect("model");
                             mm.row_parent = None;
                             Some(mm)
                         }, merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { pos: None, value: None, model: m(Some("amount"), false, None), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { pos: None, value: None, model: m(None, false, Some("PRODUCT(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { pos: None, value: None, model: m(None, false, Some("COUNTA(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { pos: None, value: None, model: m(None, false, Some("RANK(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { image: None, pos: None, value: None, model: m(Some("amount"), false, None), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { image: None, pos: None, value: None, model: m(None, false, Some("PRODUCT(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { image: None, pos: None, value: None, model: m(None, false, Some("COUNTA(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { image: None, pos: None, value: None, model: m(None, false, Some("RANK(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
                     ],
                 }],
                 loop_field: None,
@@ -4023,6 +4074,7 @@ mod tests {
         let mut datasets = BTreeMap::new();
         datasets.insert("ds1".to_string(), sample_data());
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(|v| JsonValue::from(v)),
             model,
@@ -4032,6 +4084,7 @@ mod tests {
         };
         let cm = |field: Option<&str>, row_parent: Option<&str>, value_expr: Option<&str>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: field.map(|s| s.to_string()),
                 agg: None,
@@ -4105,6 +4158,7 @@ mod tests {
         let mut datasets = BTreeMap::new();
         datasets.insert("ds1".to_string(), sample_data());
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(|v| JsonValue::from(v)),
             model,
@@ -4280,6 +4334,7 @@ mod tests {
                   col_after: Option<&str>,
                   value_expr: Option<&str>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: field.map(|s| s.to_string()),
                 agg,
@@ -4303,6 +4358,7 @@ mod tests {
             })
         };
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(|v| JsonValue::from(v)),
             model,
@@ -4529,6 +4585,7 @@ mod tests {
                 page: None,
                 rows: vec![RowTpl {
                     cells: vec![CellTpl {
+                        image: None,
                         pos: None,
                         value: Some(serde_json::json!(value)),
                         model: Some(CellModel {
@@ -4643,6 +4700,7 @@ mod tests {
                   ve: Option<&str>,
                   rte: Option<&str>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: field.map(|s| s.to_string()),
                 agg: None,
@@ -4666,6 +4724,7 @@ mod tests {
             })
         };
         let c = |model| CellTpl {
+            image: None,
             pos: None,
             value: None,
             model,
@@ -5036,6 +5095,7 @@ mod tests {
         datasets.insert("ds1".to_string(), cross_tab_data());
 
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(|v| JsonValue::from(v)),
             model,
@@ -5049,6 +5109,7 @@ mod tests {
                   expand_expr: Option<&str>,
                   agg: Option<AggType>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: field.map(|s| s.to_string()),
                 agg,
@@ -5108,6 +5169,7 @@ mod tests {
 
         let mk = |expand_expr: Option<&str>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: Some("month".to_string()),
                 agg: None,
@@ -5135,6 +5197,7 @@ mod tests {
             page: None,
             rows: vec![RowTpl {
                 cells: vec![CellTpl {
+                    image: None,
                     pos: None,
                     value: None,
                     model: mk(Some("B9")), // 不是数组字面量：格引用在展开期无意义
@@ -5170,6 +5233,7 @@ mod tests {
                   max: Option<usize>,
                   agg: Option<AggType>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: field.map(|s| s.to_string()),
                 agg,
@@ -5201,6 +5265,7 @@ mod tests {
                 rows: vec![RowTpl {
                     cells: vec![
                         CellTpl {
+                            image: None,
                             pos: None,
                             value: None,
                             model: mk(Some("month"), Some(ExpandType::R), None, max, None),
@@ -5209,6 +5274,7 @@ mod tests {
                             merge_to_end: false,
                         },
                         CellTpl {
+                            image: None,
                             pos: None,
                             value: None,
                             model: mk(Some("amount"), None, Some("A1"), None, Some(AggType::Sum)),
@@ -5284,6 +5350,7 @@ mod tests {
         datasets.insert("ds1".to_string(), vec![mk(1, 100.0), mk(2, 200.0), mk(3, 400.0)]);
         let m = |field: Option<&str>, expand: bool, agg: Option<AggType>| {
             Some(CellModel {
+                image: None,
                 ds: Some("ds1".to_string()),
                 field: field.map(|s| s.to_string()),
                 agg,
@@ -5312,6 +5379,7 @@ mod tests {
             rows: vec![RowTpl {
                 cells: vec![
                     CellTpl {
+                        image: None,
                         pos: None,
                         value: None,
                         model: m(Some("month"), true, None),
@@ -5320,6 +5388,7 @@ mod tests {
                         merge_to_end: false,
                     },
                     CellTpl {
+                        image: None,
                         pos: None,
                         value: None,
                         model: m(Some("amount"), false, Some(AggType::Sum)),
@@ -5616,6 +5685,7 @@ mod tests {
                         cells: cells
                             .into_iter()
                             .map(|(expand_type, row_parent)| CellTpl {
+                                image: None,
                                 pos: None,
                                 value: None,
                                 model: Some(CellModel {
@@ -5705,6 +5775,152 @@ mod tests {
         assert_eq!(n, resp.sheets[0].rows.len(), "前提：渲染出来的全是表头行");
         let buf = xlsx::to_xlsx(&resp.sheets, n).expect("空报表也应能导出");
         assert!(!buf.is_empty());
+    }
+
+    /* ------------------------------ 图片格 ------------------------------ */
+
+    /// 一份 1×1 的真 PNG（96dpi），够 `parse_image_data_uri` 认就行
+    const TINY_PNG: &str =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    /// 一行一格的模板；`photo` 列用来放 data URI
+    fn image_tpl(cell: CellTpl, rows: Vec<&str>) -> ReportTemplate {
+        let mut ds = BTreeMap::new();
+        ds.insert(
+            "ds1".to_string(),
+            rows.into_iter()
+                .map(|p| {
+                    let mut m = DataRow::new();
+                    m.insert("photo".into(), JsonValue::from(p));
+                    m
+                })
+                .collect::<DataSet>(),
+        );
+        ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "t".into(),
+                page: None,
+                rows: vec![RowTpl { cells: vec![cell] }],
+                loop_field: None,
+            }],
+            datasets: ds,
+            ..Default::default()
+        }
+    }
+
+    fn img_decl(from: Option<&str>, src: &str) -> Option<CellImage> {
+        Some(CellImage { from: from.map(String::from), src: src.into() })
+    }
+
+    fn warns_of(resp: &RenderResponse) -> String {
+        resp.warnings.clone().unwrap_or_default().join("\n")
+    }
+
+    /// 字面图（logo / 二维码）：`src` 原样落到输出格，`text` 保留 ——
+    /// 它要当 HTML 的 `alt=`，在 Excel 里当图片的替代文字。
+    #[test]
+    fn literal_image_lands_in_the_grid_and_keeps_text_as_alt() {
+        let cell = CellTpl {
+            pos: Some("A1".into()),
+            value: Some(JsonValue::from("公司 logo")),
+            image: img_decl(None, TINY_PNG),
+            ..Default::default()
+        };
+        let resp = render_tpl(image_tpl(cell, vec!["unused"]));
+        let g = &resp.sheets[0].rows[0][0];
+        assert_eq!(g.image.as_deref(), Some(TINY_PNG), "图片应当原样落到输出格");
+        assert_eq!(g.text, "公司 logo", "text 降级成 alt，不许被清掉");
+        assert_eq!(warns_of(&resp), "", "正常图片不该告警");
+    }
+
+    /// `from: value`：src 取**本格算出来的值**，text 清空 ——
+    /// 那个 text 就是 data URI 本身，当 alt 毫无意义（几百字符的 base64）。
+    #[test]
+    fn value_image_takes_src_from_the_field_and_clears_text() {
+        let cell = CellTpl {
+            pos: Some("A1".into()),
+            model: Some(CellModel { field: Some("photo".into()), ..Default::default() }),
+            image: img_decl(Some("value"), ""),
+            ..Default::default()
+        };
+        let resp = render_tpl(image_tpl(cell, vec![TINY_PNG]));
+        let g = &resp.sheets[0].rows[0][0];
+        assert_eq!(g.image.as_deref(), Some(TINY_PNG), "src 应来自字段值");
+        assert_eq!(g.text, "", "data URI 不该留在 text 里");
+        assert_eq!(warns_of(&resp), "");
+    }
+
+    /// 一列产品图：每行各出各的图。这条要的是「逐实例解析」，
+    /// 不是「第一行解析完就复用」。
+    #[test]
+    fn value_image_resolves_per_expanded_row() {
+        // 两张**不同**的 data URI（只差一个 base64 字符，但内容确实不同）
+        let a = TINY_PNG;
+        let b = TINY_PNG.replace("CAYAAAAfFcSJ", "CAYAAAAfFcSK");
+        assert_ne!(a, b, "前提：两张图确实不同");
+        let cell = CellTpl {
+            pos: Some("A1".into()),
+            model: Some(CellModel {
+                field: Some("photo".into()),
+                expand_type: Some(ExpandType::R),
+                ..Default::default()
+            }),
+            image: img_decl(Some("value"), ""),
+            ..Default::default()
+        };
+        let resp = render_tpl(image_tpl(cell, vec![a, b.as_str()]));
+        let rows = &resp.sheets[0].rows;
+        assert_eq!(rows.len(), 2, "应当展开成两行");
+        assert_eq!(rows[0][0].image.as_deref(), Some(a), "第 1 行用第 1 张图");
+        assert_eq!(rows[1][0].image.as_deref(), Some(b.as_str()), "第 2 行用第 2 张图");
+    }
+
+    /// 配错了图（路径 / 不是 base64）**必须告警并把原因写进 text** ——
+    /// 留白看不出是「没配」还是「配错了」，这是最难查的一类。
+    #[test]
+    fn bad_image_src_warns_and_puts_the_reason_in_text() {
+        let cell = CellTpl {
+            pos: Some("B2".into()),
+            image: img_decl(None, "/Users/me/logo.png"),
+            ..Default::default()
+        };
+        let resp = render_tpl(image_tpl(cell, vec!["unused"]));
+        let g = &resp.sheets[0].rows[0][0];
+        assert!(g.image.is_none(), "没解析成功就不该当图片格输出");
+        assert!(g.text.starts_with("[图片:"), "原因要写在格子里，实际：{:?}", g.text);
+        assert!(g.text.contains("data URI"), "原因要具体，实际：{:?}", g.text);
+        let w = warns_of(&resp);
+        assert!(w.contains("B2"), "告警要带格位，实际：{w:?}");
+    }
+
+    /// 没声明图片的格子不许平白多出 image 字段（`skip_serializing_if` 不发，
+    /// 但内部也得是 None，否则导出侧会把它当图片格处理）
+    #[test]
+    fn cell_without_image_declaration_has_no_image() {
+        let cell = CellTpl {
+            pos: Some("A1".into()),
+            value: Some(JsonValue::from("普通文本")),
+            ..Default::default()
+        };
+        let resp = render_tpl(image_tpl(cell, vec!["unused"]));
+        let g = &resp.sheets[0].rows[0][0];
+        assert!(g.image.is_none());
+        assert_eq!(g.text, "普通文本");
+    }
+
+    /// 图片格进 HTML 预览要出 `<img>`，且 `src` 是自包含的 data URI
+    #[test]
+    fn html_preview_emits_img_for_image_cells() {
+        let cell = CellTpl {
+            pos: Some("A1".into()),
+            value: Some(JsonValue::from("logo")),
+            image: img_decl(None, TINY_PNG),
+            ..Default::default()
+        };
+        let resp = render_tpl(image_tpl(cell, vec!["unused"]));
+        let html = to_html(&resp.sheets);
+        assert!(html.contains("<img src=\"data:image/png;base64,"), "应当出 img，实际：{html}");
+        assert!(html.contains("alt=\"logo\""), "text 应当当 alt，实际：{html}");
     }
 }
 

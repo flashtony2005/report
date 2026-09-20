@@ -38,6 +38,82 @@ export interface CellStyle {
   v_align?: VAlign | null
 }
 
+/**
+ * 图片格：这格不出文本，出图片（logo / 产品图 / 二维码 / 客户端栅格化好的图表）。
+ *
+ * ## 为什么只收 data URI
+ *
+ * `src` 只认 `data:image/...;base64,...`（自包含），**故意不做文件路径** ——
+ * 服务端按模板里的字符串读本地文件，等于把模板变成一个任意文件读取原语，
+ * 而模板是可以被导入 / 分享的。少一条通路少一类洞。
+ *
+ * ## 为什么客户端栅格化是对的
+ *
+ * 图表是前端画的（chartkit）。与其在 Rust 里再实现一遍折线 / 柱状，
+ * 不如让客户端把图表转成 PNG 的 data URI 塞进图片格 —— 服务端只管嵌字节。
+ * 这正是「图表进服务端报表」缺的那一半。
+ *
+ * 只支持 png / jpeg / gif / bmp（xlsx 真能嵌的四种）；webp / svg 会被**明确拒绝**。
+ */
+export interface CellImage {
+  /**
+   * 来源：`literal`（缺省，`src` 就是图片本身）/ `value`（取本格算出来的值当 `src`，
+   * 用于「一列产品图」：`field: photo` + `image.from: 'value'`）。
+   *
+   * 服务端对 `value` 是大小写不敏感匹配、其余一律当 `literal`；这里收窄成两个字面量
+   * 是为了让设计器给得出一个下拉框。
+   */
+  from?: 'literal' | 'value' | null
+  /** `data:image/...;base64,...` */
+  src: string
+}
+
+/** 能嵌进 xlsx 的图片类型（= Rust 侧 `parse_image_data_uri` 的白名单） */
+export type ImageKind = 'png' | 'jpeg' | 'gif' | 'bmp'
+
+/**
+ * 校验 `data:image/...;base64,...`，认出来返回图片类型，否则返回 `null`。
+ *
+ * **判据必须与 Rust 的 `parse_image_data_uri` 保持一致，改一处要改两处。**
+ * 两个方向都要顾：
+ * - 这里更宽 → 设计器放行、导出时才报错，用户白填一次；
+ * - 这里更严 → 服务端明明能嵌的图，在设计器里被拦下。
+ *
+ * 所以白名单只列 xlsx 真能嵌的四种（webp / svg 服务端明确拒绝，这里也拒）。
+ * 只**校验**不解码：设计器只需要知道「能不能用 / 怎么显示」，真正的解码在服务端。
+ */
+export function parseImageDataUri(src: string): ImageKind | null {
+  const s = src.trim()
+  if (!s.startsWith('data:')) return null
+  const comma = s.indexOf(',')
+  if (comma < 0) return null
+  const meta = s.slice(5, comma).toLowerCase()
+  if (!meta.endsWith(';base64')) return null
+  const mime = meta.slice(0, -';base64'.length).trim()
+  const kind: ImageKind | null =
+    mime === 'image/png'
+      ? 'png'
+      : mime === 'image/jpeg' || mime === 'image/jpg'
+        ? 'jpeg'
+        : mime === 'image/gif'
+          ? 'gif'
+          : mime === 'image/bmp'
+            ? 'bmp'
+            : null
+  if (!kind) return null
+  // 服务端的解码器会剥空白、并依次试 标准 / no-pad / URL-safe 四种字母表，
+  // 所以这里的字母表要把四种的并集都收进来 —— 收窄了会误拦合法图。
+  const payload = s.slice(comma + 1).replace(/\s+/g, '')
+  if (!payload) return null
+  if (!/^[A-Za-z0-9+/=_-]+$/.test(payload)) return null
+  return kind
+}
+
+/** `CellImage.from` 是不是「取本格的值当图片源」（与服务端同样只认 `value`） */
+export function isValueImage(from: string | null | undefined): boolean {
+  return (from ?? '').trim().toLowerCase() === 'value'
+}
+
 export interface GridCell {
   text: string
   pos: string
@@ -53,6 +129,14 @@ export interface GridCell {
    * HTML 预览目前不用它（预览的配色是语义高亮，两套东西别混）。
    */
   style?: CellStyle | null
+  /**
+   * 图片格：**已解析**的 data URI。有值时这格出图片不出文本
+   * （`text` 降级成 `alt=`）。
+   *
+   * 只存 data URI 不存路径：预览（浏览器）、HTML 导出、xlsx 导出三边都能直接用，
+   * 且 HTML 天然自包含。代价是同一张图重复 N 行会在 JSON 里重复 N 份。
+   */
+  image?: string | null
 }
 
 export interface RenderedSheet {
@@ -162,6 +246,11 @@ export interface CellModel {
    * 这是**唯一**会导出到 xlsx 的样式来源，语义高亮不算。
    */
   style?: CellStyle | null
+  /**
+   * 把这格画成图片。放在 `CellModel` 上是为了让**数据驱动的图片**
+   *（`field: photo` + `image.from: 'value'`）能随展开逐行取源。
+   */
+  image?: CellImage | null
 }
 
 export interface CellTpl {
@@ -174,6 +263,11 @@ export interface CellTpl {
   merge_down?: number
   /** 横向铺到行尾；列数随数据变化时标题/表头无法写死合并宽度 */
   merge_to_end?: boolean
+  /**
+   * 把这格画成图片。放在 `CellTpl` 上是为了让**静态图片**（logo / 二维码）
+   * 不必为了一个 data URI 去建 `CellModel`。
+   */
+  image?: CellImage | null
 }
 
 export interface RowTpl {
@@ -658,6 +752,14 @@ export const PARENT_STYLE_ID = 'tpl-parent'
  * 和 `PARENT_STYLE_ID` 的底色同源 —— 两条路画出来的主格必须同色，故只留这一份常量。
  */
 export const PARENT_HIGHLIGHT = '#FFE8D6'
+/**
+ * 图片格在 Univer 网格里的占位文字。
+ *
+ * Univer 画不了图片（它的样式通道只有底色 + 字色，见文件头《Univer 实际能画什么》），
+ * 而 `from: value` 的图片格文本是空的 —— 不补占位的话那格在模板网格里**完全看不见**，
+ * 作者会以为「设了没反应」。它只是**设计态**的标记，不进模板、不进导出。
+ */
+export const IMAGE_CELL_TEXT = '[图片]'
 
 /**
  * 设计态语义样式 —— 把非线性语义编码进格子外观。
@@ -1703,10 +1805,20 @@ export function gridToWorkbookData(grid: TemplateGrid, opts: { selected?: string
       const text = formatCellText(cell)
       const pos = cellPos(r, c)
       const anchor = isMergeAnchor(cell)
+      // 图片格在 Univer 网格里画不出图（它的样式通道只有底色 + 字色），
+      // 而 `from: value` 的图片格 text 是空的 —— 不补个占位文字的话，
+      // 这格在模板网格里完全看不见，作者会以为「设了没反应」。
+      // 真图在右侧属性面板的缩略图、以及服务端出的 HTML 预览（`<img>`）里。
+      //
+      // **两处都要看**：`CellTpl.image`（手写模板 / 导入）与 `CellModel.image`
+      //（设计器面板写的就是这个，服务端也是 `cell.image.or(model.image)`）。
+      // 只看 `cell.image` 的话，面板里设的图在网格里仍然看不见 —— 实测踩过。
+      const hasImage = !!(cell.image || cell.model?.image)
+      const shown = hasImage && !text ? IMAGE_CELL_TEXT : text
       // 合并锚点即使没文字也要占一格：否则 Univer 可能把它当成未合并区域。
       // 扩展格同理 ——「这一格会长」正是最该被看见的语义，若因为没文字就整格不输出，
       // 底色标记根本画不出来，等于没标。
-      if (!text && !anchor && !cell.model?.expand_type) return
+      if (!shown && !anchor && !cell.model?.expand_type) return
       cellData[r] = cellData[r] || {}
       let s: string | undefined
       if (pos === opts.selected) s = SELECTED_STYLE_ID
@@ -1718,7 +1830,7 @@ export function gridToWorkbookData(grid: TemplateGrid, opts: { selected?: string
           semStyles[sem.id] = sem.style
         }
       }
-      cellData[r][c] = { v: text, t: text ? 4 : undefined, ...(s ? { s } : {}) }
+      cellData[r][c] = { v: shown, t: shown ? 4 : undefined, ...(s ? { s } : {}) }
       // `t: 4` 是 Univer `CellValueType.FORCE_STRING`：强制把单元格当字符串，
       // 阻止 Univer 看到 `v` 以 `=` 开头就把它挪到 `f` 字段当公式处理。
       // 我们用 `=ds1.city` / `=D3[B3:+0].sum()` 当 NopReport DSL 模板语法，

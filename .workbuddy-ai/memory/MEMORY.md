@@ -122,6 +122,10 @@ POST 探针如期变红（`$1:$1`），但 **sample 探针仍然绿** —— 它
 5. **handler 级注入单独做一次**：单测守不到 handler 接线，而且
    注入 `xlsx_handler` 后 sample 探针**仍然绿**（走的是另一条路径）——
    一个探针守不住全部导出路径。
+6. **探针自己也要做注入**：探针是「读 XML 下断言」的代码，它算错了照样一片绿。
+   加一条「改 Rust → 重新 build → **重启服务** → 重跑探针」的注入驱动，
+   每条注入都必须让探针变红。**服务是常驻进程，不重启就是拿旧 binary 测**。
+   （本次 6 条，见 `scripts/fault-inject-image-probe.py`。）
 
 ## print-server（Rust 侧）硬事实
 
@@ -181,12 +185,68 @@ POST 探针如期变红（`$1:$1`），但 **sample 探针仍然绿** —— 它
 
 | 能力 | 自由画布 | 服务端非线性报表（`CellTpl`） |
 | --- | --- | --- |
-| 图片 / 条码 / 二维码 | 有（`PrintQrcode`、`data-binder` barcode） | **无** |
+| 图片 | 有 | **有**（`CellTpl.image` / `CellModel.image`，只收 data URI，见下节） |
+| 条码 / 二维码 | 有（`PrintQrcode`、`data-binder` barcode） | **无** |
 | 图表 | 有，**自研** `openprint/src/core/chartkit`（bar/line/pie，纯函数出 SVG、零第三方依赖） | **无**（`print-server/src` grep `chart` 零命中） |
-| 导出 | 客户端 `export-engine/`（PDF/SVG/图片） | 服务端 xlsx / HTML |
+| 导出 | 客户端 `export-engine/`（PDF/SVG/图片） | 服务端 xlsx / HTML / CSV |
 
 **教训**：`package.json` 里没装第三方图表库 ≠ 没有图表能力 —— 是自己写的。
 判断某能力有没有，**先 grep 源码，别先看依赖清单**。（我据此误判过一次。）
+
+## 格子图片：`CellTpl.image`（2026-09-20 补上）
+
+**两个槽都认**：`CellTpl.image`（手写模板 / 导入）与 `CellModel.image`（**设计器面板写的是这个**）。
+服务端按 `cell.image.or(model.image)` 合并 —— 只认一个就会出「面板里设了但没生效」。
+TS 侧 `gridToWorkbookData` 同理：`!!(cell.image || cell.model?.image)`，只看 `cell.image`
+的话**面板里设的图在网格里完全看不见**（实测踩过）。
+
+`{from: "literal", src: "<data URI>"}` / `{from: "value", src: ""}`（逐行不同，值取本格字段文本）。
+
+- **只收 data URI，刻意不收文件路径**：模板是用户可编辑、可分享的 JSON，
+  允许路径 = 把模板变成「任意读本地文件」的原语（导出时把内容塞进 xlsx 带走）。
+  设计器选文件是浏览器端 `FileReader` 读成 data URI 再进模板。
+- 白名单 **png / jpeg / gif / bmp**（正好是 xlsx 能嵌的四种）；webp / svg **指名报错**。
+- 取不到图**不静默**：该格 `text` → `[图片: 原因]` + 进 `warnings`，表照常出。
+- **`rust_xlsxwriter 0.99.0` 没有 `image` feature**，PNG/JPEG/GIF/BMP 头解析是纯 Rust 内置的。
+  别凭 crate 名字猜依赖树（我先前误判成要引 `rust_image`）。
+
+## Excel 单位换算（写 xlsx 布局前先看这里，别凭记忆）
+
+```
+px = round(chars × 7) + 5          // chars → 像素（7 = max_digit_width, 5 = cell_padding）
+chars = ceil((px − 5.5) / 7)       // 反解，**ceil 不是 round**
+px = round(pts × 4/3)              // 磅 → 像素（15pt = 20px）
+XML width = floor(px × 256/7)/256  // 写进 <cols> 的形式
+px = round(width_xml × 7)          // 反解**不带 +5**（探针第一版就是这么算错的）
+1 px = 9525 EMU；1 dxa = EMU/635
+```
+
+- **列宽上限 60 字符 / 行高上限 409.5 磅**（= 546px）。行高超上限 Excel **直接拒开文件**。
+- **图片必须按 DPI 折显示尺寸**：Excel 按物理尺寸显示，203dpi 的 120×80 只显示约 57×38px。
+  不折就是 2.1 倍大 —— 而**设计器里看着是好的**（设计器用像素）。
+- 图**不放大**，只缩到不超格宽；合并格按**整段**算可用空间。
+- **`insert_image_with_offset` 插的是原始尺寸**：只算偏移不调
+  `.set_scale_to_size(w, h, true)`，大图会盖到右边那一列去（真机探针抓到的）。
+
+## 故障注入驱动器：两个必须避开的坑
+
+1. **永远不加 `--exact`**：`cargo test <name> -- --exact` 要**完整路径**，只给函数名
+   匹配到 0 个用例而**退出码仍是 0** → 每条注入都被读成「仍然是绿的」（12 条全假绿）。
+2. 解析 `test result:` 行，**`0 passed` 一律算「没验到」**，不能只看退出码。
+
+**注入全绿先怀疑注入，不是怀疑代码**：有一条「按宽高两个方向缩」真的是绿的，
+查下来是**宽度驱动 + 高度夹取**在缩小场景下与 min-fit **等价**（只差在放不放大）。
+改判据、补 `very_tall_image_is_shrunk_by_the_height_limit`、重新对准高度夹取后才全红。
+
+## 静默失败：图片格整格消失
+
+「纯占位空格」判据原为 `value.is_none() && model.is_none()`，且在
+`resolve_parents` 与 `expand` **各写了一遍**。只有图片的格子被当空占位跳过 → 整格消失，
+**表照样出得来，只是数据悄悄变少**。
+
+修法：抽成**一个** `fn is_placeholder(cell)`（含 `&& cell.image.is_none()`），两处共用。
+→ 通用规律：**同一判据出现两次就一定要抽函数**，否则迟早只改一处。
+
 
 ## 非线性报表：格子没有「作者定义的样式」
 
@@ -258,6 +318,11 @@ RFC 4180 转义 + UTF-8 BOM（缺了 Excel 开中文乱码）+ CRLF。
 **MySQL / MariaDB / SQL Server / Oracle 明确报错**：`unsupported_engine_name()`。
 注意 `ServerConfig::load()` **不调 `validate()`**（只有保存/试连调），
 所以手改配置写 mysql 是真能踩到的，会报误导性的「sqlite 文件不存在」。
+
+**格子图片**：`CellTpl.image` / `CellModel.image`（两处都认）→ `CellInst.image` →
+`GridCell.image`（data URI）→ xlsx 真嵌入 + HTML `<img>`。几何在服务端算，见上文
+「格子图片」与「Excel 单位换算」。真机探针 `scripts/verify-xlsx-image.py`，
+它的正确性由 `scripts/fault-inject-image-probe.py` 反证（6 条，含重建重启）。
 
 ## 批量给 struct 加字段：两个构建都要跑
 

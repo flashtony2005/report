@@ -31,7 +31,10 @@ import {
   parentChainOf,
   parentPosOf,
   parentTreeOf,
+  IMAGE_CELL_TEXT,
+  isValueImage,
   parseCellText,
+  parseImageDataUri,
   parsePos,
   SEMANTIC_LEGEND,
   semanticBgOf,
@@ -1837,5 +1840,91 @@ describe('withPage：分页配置落到每张 sheet 上', () => {
     expect(c.sheets[0]!.page ?? null).toBeNull()
     // 明细模板是唯一把 opts.page 透传的，但它自己不会凭空造 page
     expect(d.sheets[0]!.page ?? null).toBeNull()
+  })
+})
+
+/* ------------------------------ 图片格 ------------------------------ */
+
+describe('parseImageDataUri —— 与 Rust 侧 parse_image_data_uri 同一套判据', () => {
+  it('认 xlsx 真能嵌的四种', () => {
+    expect(parseImageDataUri('data:image/png;base64,aGVsbG8=')).toBe('png')
+    expect(parseImageDataUri('data:image/jpeg;base64,aGVsbG8=')).toBe('jpeg')
+    expect(parseImageDataUri('data:image/jpg;base64,aGVsbG8=')).toBe('jpeg')
+    expect(parseImageDataUri('data:image/gif;base64,aGVsbG8=')).toBe('gif')
+    expect(parseImageDataUri('data:image/bmp;base64,aGVsbG8=')).toBe('bmp')
+  })
+
+  it('元信息大小写不敏感、前后空白不算数', () => {
+    expect(parseImageDataUri('  data:IMAGE/PNG;BASE64,aGVsbG8=  ')).toBe('png')
+  })
+
+  it('webp / svg 明确不认（服务端也拒，两边要一致）', () => {
+    // 这一条是**跨端契约**：设计器放行、导出才报错的话用户白填一次
+    expect(parseImageDataUri('data:image/webp;base64,aGVsbG8=')).toBeNull()
+    expect(parseImageDataUri('data:image/svg+xml;base64,aGVsbG8=')).toBeNull()
+  })
+
+  it('不是 data URI 的一律不认（文件路径是明确要拦的）', () => {
+    expect(parseImageDataUri('/Users/me/logo.png')).toBeNull()
+    expect(parseImageDataUri('https://x/logo.png')).toBeNull()
+    expect(parseImageDataUri('')).toBeNull()
+    expect(parseImageDataUri('data:image/png')).toBeNull() // 没逗号
+  })
+
+  it('非 base64 编码不认', () => {
+    expect(parseImageDataUri('data:image/png,rawbytes')).toBeNull()
+  })
+
+  it('空载荷 / 非 base64 字符不认', () => {
+    expect(parseImageDataUri('data:image/png;base64,')).toBeNull()
+    expect(parseImageDataUri('data:image/png;base64,!!!!')).toBeNull()
+  })
+
+  it('四种 base64 字母表都要放行（服务端会依次试，收窄了会误拦合法图）', () => {
+    // 标准含 +/、URL-safe 含 -_，两种都要过
+    expect(parseImageDataUri('data:image/png;base64,ab+/cd==')).toBe('png')
+    expect(parseImageDataUri('data:image/png;base64,ab-_cd')).toBe('png')
+    // 无 padding 也要过
+    expect(parseImageDataUri('data:image/png;base64,aGVsbG8')).toBe('png')
+    // 载荷里的空白服务端会剥掉，这里也不能因此判成非法
+    expect(parseImageDataUri('data:image/png;base64,aGVs\nbG8=')).toBe('png')
+  })
+})
+
+describe('isValueImage', () => {
+  it('只认 value（大小写不敏感），其余都当字面图', () => {
+    expect(isValueImage('value')).toBe(true)
+    expect(isValueImage(' VALUE ')).toBe(true)
+    expect(isValueImage('literal')).toBe(false)
+    expect(isValueImage(undefined)).toBe(false)
+    expect(isValueImage(null)).toBe(false)
+    expect(isValueImage('')).toBe(false)
+  })
+})
+
+describe('图片格在模板网格里的占位', () => {
+  type Wb = {
+    sheets: { sheet1: { cellData: Record<number, Record<number, { v?: string }>> } }
+  }
+  /** `setGridCell` 是**不可变**的（返回新 grid）；忘了接返回值的话下面几条会空跑 */
+  const gridWith = (cell: CellTpl): Wb =>
+    gridToWorkbookData(setGridCell(emptyGrid(2, 2), 0, 0, cell)) as unknown as Wb
+  const at00 = (wb: Wb) => wb.sheets.sheet1.cellData[0]?.[0]
+
+  it('只有图片、没有文字的格子也要画出来（否则预览里完全看不见）', () => {
+    const cell = at00(gridWith({ value: undefined, model: { image: { from: 'value', src: '' } } }))
+    expect(cell, '图片格必须占一格').toBeTruthy()
+    expect(cell?.v).toBe(IMAGE_CELL_TEXT)
+  })
+
+  it('图片格本来就有文字时，网格里显示文字而不是占位', () => {
+    const cell = at00(
+      gridWith({ value: '公司 logo', image: { from: 'literal', src: 'data:image/png;base64,aGVsbG8=' } }),
+    )
+    expect(cell?.v).toBe('公司 logo')
+  })
+
+  it('没图没字的格子照旧不画（占位不许泄漏到普通空格）', () => {
+    expect(at00(gridWith({ value: undefined, model: undefined }))).toBeUndefined()
   })
 })

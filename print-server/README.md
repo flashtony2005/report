@@ -136,6 +136,7 @@ print-server --help
 - `/print` 实际打印走 ShellExecute（`print` / `printto` 动词），依赖本机 .pdf 关联程序；
   指定打印机时先试 `printto`，失败回落默认打印机
 - `esc/tsc/zpl`（画布 JSON → 票据指令）**已实现**（`src/ticket/`，见下节）
+- 格子图片（`image`）**已实现**：xlsx 真嵌入、HTML 预览出 `<img>`（见下节）
 - ODBC 引擎暂未实现，返回 ok:false 明确提示
 - `svg` 载荷已废弃（与原 Qt 客户端一致），返回 ok:false
 
@@ -156,6 +157,44 @@ print-server --help
 
 真机探针：`python3 scripts/verify-ticket-print.py`（走真实 `/print`，拆开落盘指令核对
 喂行序列 / GBK 字节 / 各段指令长度）。
+
+### 格子里的图片（`image`）
+
+声明写在 `CellTpl.image` 或 `CellModel.image` 上 —— **两处都认**，服务端按
+`cell.image.or(model.image)` 合并（设计器面板写的是 `model.image`）：
+
+```json
+{ "from": "literal", "src": "data:image/png;base64,iVBORw0KGgo…" }
+{ "from": "value",   "src": "" }
+```
+
+- `from: "literal"`：`src` 就是图本身
+- `from: "value"`：图**逐行不同**，`src` 留空，实际值取该格绑定字段的文本（字段里存的必须是 data URI）
+
+**只收 data URI，刻意不收文件路径。** 模板是用户可编辑、可分享的 JSON，允许路径就等于把
+模板变成「任意读本地文件」的原语（导出时把文件内容塞进 xlsx 带走）。要放本地图片，设计器里
+选文件后在浏览器端读成 data URI 再存进模板。
+
+白名单四种：`png` / `jpeg`(`jpg`) / `gif` / `bmp` —— 正好是 xlsx 能嵌的那四种。
+`webp` / `svg` **指名报错**（而不是笼统的「不支持」），因为静默出一张白图更难查。
+
+取不到图时**不静默**：该格 `text` 变成 `[图片: 原因]` 并进响应 `warnings`，表照常出。
+
+几何全在服务端算，不依赖模板里写死尺寸：按图 DPI 折成显示尺寸（203dpi 的图不会被当成两倍大）、
+缩到不超格宽且**不放大**，再撑开所在列的列宽 / 行高（列宽上限 60 字符、行高上限 Excel 的 409.5 磅，
+超了 Excel 会直接拒开文件）。合并格按整段算可用空间。图**不占单元格文本**，alt 文本用该格文字
+（没文字就用 `图片 A1`）。
+
+真机探针（拆开 xlsx 核对媒体字节 / 锚点 EMU / 列宽行高 / alt / 图片文字没混进 sharedStrings）：
+
+```bash
+python3 scripts/verify-xlsx-image.py
+```
+
+它自己的正确性由 `python3 scripts/fault-inject-image-probe.py` 反证：往 Rust 注入 6 个已知错误
+（不缩图 / 不撑列宽 / 不撑行高 / px→字符用四舍五入 / 忽略 dpi / 列宽不夹上限），**每个都必须让探针变红**。
+打单测的那一组是 `python3 print-server/scripts/fault-inject-image.py`（12 条）。
+「探针从没红过」等于没测 —— 这两组脚本就是防这个的。
 
 
 ## 构建

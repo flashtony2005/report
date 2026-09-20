@@ -176,6 +176,91 @@ pub struct CellModel {
     /// 这是**唯一**能导出到 xlsx 的样式来源。设计器网格里那些颜色是语义高亮
     /// （扩展黄、字段蓝…），标的是「这格什么角色」，不会进这里，也不会导出。
     pub style: Option<CellStyle>,
+    /// 把这格画成图片（logo / 产品图 / 二维码 / 客户端栅格化好的图表）。
+    pub image: Option<CellImage>,
+}
+
+/// 图片格：这格不出文本，出图片。
+///
+/// ## 为什么只收 data URI
+///
+/// `src` 只认 `data:image/...;base64,...`（自包含），**故意不做文件路径**。
+/// 服务端按模板里的字符串读本地文件 = 模板变成一个任意文件读取原语
+/// （`../../.ssh/id_rsa` 这种），而模板是可以被导入 / 分享的。少一条通路少一类洞。
+///
+/// 真要用本地图片，让设计器把它转成 data URI 再存进模板 —— 画布侧的图片控件
+/// 本来就有 `inline` 模式。
+///
+/// ## 为什么客户端栅格化是对的
+///
+/// 图表（`chartkit`）是前端画的。与其在 Rust 里再实现一遍折线 / 柱状，
+/// 不如让客户端把图表转成 PNG 的 data URI 塞进图片格 —— 服务端只管嵌字节。
+/// 这也正是「图表进服务端报表」缺的那一半。
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CellImage {
+    /// 来源：`literal`（缺省，`src` 就是图片本身）/ `value`（取本格算出来的值当 `src`）。
+    ///
+    /// `value` 是为了「一列产品图」这种场景：`field: photo` + `image.from: value`，
+    /// 每行的 data URI 从数据里来。
+    pub from: Option<String>,
+    /// `data:image/...;base64,...`
+    pub src: String,
+}
+
+impl CellImage {
+    /// 是否「取本格的值当图片源」
+    pub fn from_value(&self) -> bool {
+        matches!(
+            self.from.as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+            Some("value")
+        )
+    }
+}
+
+/// 解析 `data:image/<subtype>;base64,<payload>` → `(mime, 字节)`。
+///
+/// 认不出来一律**报错**（带着原文片段），不静默当空图 —— 空图在小票 / Excel 里
+/// 就是一块白，看不出是「没配」还是「配错了」。
+///
+/// 只认 xlsx 真能嵌的四种（PNG / JPEG / GIF / BMP，见 `rust_xlsxwriter` 的
+/// `process_image`）。**webp / svg 明确拒绝**：rust_xlsxwriter 会静默把 webp
+/// 转成 PNG 且不支持 svg，让它自己失败不如在这里说清楚。
+pub fn parse_image_data_uri(src: &str) -> Result<(&'static str, Vec<u8>), String> {
+    let s = src.trim();
+    let Some(rest) = s.strip_prefix("data:") else {
+        return Err(format!(
+            "图片源不是 data URI（要求 `data:image/png;base64,...`），实际开头是「{}」",
+            s.chars().take(24).collect::<String>()
+        ));
+    };
+    let Some((meta, payload)) = rest.split_once(',') else {
+        return Err("图片源 data URI 里没有逗号，取不到载荷".to_string());
+    };
+    let meta_lower = meta.to_ascii_lowercase();
+    if !meta_lower.ends_with(";base64") {
+        return Err(format!(
+            "图片源要求 base64 编码（`data:image/png;base64,`），实际元信息是「{meta}」"
+        ));
+    }
+    let mime = meta_lower.trim_end_matches(";base64").trim();
+    let ext = match mime {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpeg",
+        "image/gif" => "gif",
+        "image/bmp" => "bmp",
+        other => {
+            return Err(format!(
+                "图片类型「{other}」不支持（只支持 png / jpeg / gif / bmp）"
+            ))
+        }
+    };
+    let bytes = crate::util::decode_base64_lenient(payload)
+        .map_err(|e| format!("图片 base64 解码失败: {e}"))?;
+    if bytes.is_empty() {
+        return Err("图片载荷解出来是 0 字节".to_string());
+    }
+    Ok((ext, bytes))
 }
 
 impl CellModel {
@@ -206,6 +291,9 @@ pub struct CellTpl {
     ///
     /// 列数随数据变化时标题无法写死合并宽度，只能声明「铺到行尾」。
     pub merge_to_end: bool,
+    /// 把这格画成图片。放在 `CellTpl` 上是为了让**静态图片**（logo / 二维码）
+    /// 不必为了一个 data URI 去建 `CellModel`。
+    pub image: Option<CellImage>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -357,6 +445,8 @@ pub struct CellInst {
     pub col_test_expr: Option<String>,
     /// 作者定义的样式，原样带到输出格（见 CellModel::style）
     pub style: Option<CellStyle>,
+    /// 图片格声明，原样带到输出格（见 CellModel::image）
+    pub image: Option<CellImage>,
     /// 导出 xlsx 时写公式而不是值（见 CellModel::export_formula）
     pub export_formula: bool,
     /// 自身行测试的结果（`row_test_expr`）
@@ -421,6 +511,7 @@ impl CellInst {
             col_test_expr: None,
             export_formula: false,
             style: None,
+            image: None,
             row_test_passed: true,
             col_test_passed: true,
             hidden: false,
@@ -449,6 +540,14 @@ pub struct GridCell {
     /// HTML 预览目前不用它（预览的配色是语义高亮，两套东西别混）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub style: Option<CellStyle>,
+    /// 图片格：**已解析**的 data URI。有值时这格出图片不出文本
+    /// （`text` 降级成 alt 文本，给 HTML 的 `alt=` 和 CSV 用）。
+    ///
+    /// 只存 data URI 不存路径：预览（浏览器）、HTML 导出、xlsx 导出三边都能直接用，
+    /// 且 HTML 天然自包含。代价是同一张图重复 N 行会在 JSON 里重复 N 份 ——
+    /// 作者自己决定要不要每行内联图片。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 /// 展开结果
@@ -474,4 +573,79 @@ pub(crate) fn col_name(idx: usize) -> String {
 /// 由行列下标得到位置名，如 (0,2) -> "A3"
 pub fn cell_pos(row: usize, col: usize) -> String {
     format!("{}{}", col_name(col), row + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 认出来的四种要和 `rust_xlsxwriter` 真能嵌的四种一致
+    /// （它的 `XlsxImageType` 就是 Png/Jpg/Gif/Bmp）。
+    #[test]
+    fn image_data_uri_accepts_the_four_xlsx_formats() {
+        let cases = [
+            ("data:image/png;base64,aGVsbG8=", "png"),
+            ("data:image/jpeg;base64,aGVsbG8=", "jpeg"),
+            ("data:image/jpg;base64,aGVsbG8=", "jpeg"),
+            ("data:image/gif;base64,aGVsbG8=", "gif"),
+            ("data:image/bmp;base64,aGVsbG8=", "bmp"),
+        ];
+        for (src, want) in cases {
+            let (ext, bytes) = parse_image_data_uri(src).unwrap_or_else(|e| panic!("{src} 应当认：{e}"));
+            assert_eq!(ext, want, "{src} 的扩展名");
+            assert_eq!(bytes, b"hello");
+        }
+    }
+
+    /// 元信息大小写 / 前后空格都该认（前端拼 data URI 时大小写不统一）
+    #[test]
+    fn image_data_uri_meta_is_case_insensitive() {
+        let (ext, _) = parse_image_data_uri("  data:IMAGE/PNG;BASE64,aGVsbG8=  ").unwrap();
+        assert_eq!(ext, "png");
+    }
+
+    /// 不是 data URI 一律报错，且错误里要带**原文片段** ——
+    /// 作者贴了个本地路径进来时，得一眼看出是「路径」而不是「图坏了」。
+    #[test]
+    fn non_data_uri_errors_and_quotes_the_prefix() {
+        let err = parse_image_data_uri("/Users/me/logo.png").unwrap_err();
+        assert!(err.contains("/Users/me/logo.png"), "错误里要带原文，实际：{err}");
+        assert!(err.contains("data URI"), "错误里要说清要求，实际：{err}");
+    }
+
+    /// 只收 base64。别的编码（`utf8,` / 裸 `,`）要明确拒绝 ——
+    /// 静默当 base64 解会得到一堆乱字节，写进 xlsx 就是「图裂」。
+    #[test]
+    fn image_data_uri_requires_base64() {
+        let err = parse_image_data_uri("data:image/png,rawbytes").unwrap_err();
+        assert!(err.contains("base64"), "实际：{err}");
+    }
+
+    /// webp / svg 明确拒绝：rust_xlsxwriter 会**静默**把 webp 转成 PNG、
+    /// 而且完全不支持 svg。让它自己失败不如在这里说清楚是哪一种不支持。
+    #[test]
+    fn unsupported_image_types_are_named_in_the_error() {
+        for (src, ty) in [("data:image/webp;base64,aGVsbG8=", "webp"), ("data:image/svg+xml;base64,aGVsbG8=", "svg")] {
+            let err = parse_image_data_uri(src).unwrap_err();
+            assert!(err.contains(ty), "{ty} 的错误里应点名类型，实际：{err}");
+        }
+    }
+
+    /// 空载荷 / 没有逗号 / 解出来 0 字节都要报错，不能悄悄出一张空图
+    #[test]
+    fn empty_or_malformed_payload_errors() {
+        assert!(parse_image_data_uri("data:image/png;base64").is_err(), "没有逗号");
+        assert!(parse_image_data_uri("data:image/png;base64,").is_err(), "0 字节");
+        assert!(parse_image_data_uri("data:image/png;base64,!!!!").is_err(), "不是 base64");
+    }
+
+    #[test]
+    fn image_from_value_is_recognised_case_insensitively() {
+        let mk = |from: Option<&str>| CellImage { from: from.map(String::from), src: String::new() };
+        assert!(mk(Some("value")).from_value());
+        assert!(mk(Some(" VALUE ")).from_value());
+        assert!(!mk(None).from_value());
+        assert!(!mk(Some("")).from_value());
+        assert!(!mk(Some("literal")).from_value(), "其它值都当字面图");
+    }
 }

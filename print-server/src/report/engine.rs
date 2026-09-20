@@ -137,6 +137,19 @@ fn default_col_parent(sheet: &SheetTpl, r: usize, c: usize, resolved: &Resolved)
     }
 }
 
+/// 纯占位空格（既无值、无模型、也无图片声明）不参与展开。
+///
+/// **两处必须用同一个判据**：阶段 0 的父格解析（`resolve_parents`）和阶段 1 的
+/// 建实例（`expand`）。判据一旦不一致，后果是静默的：某格在一处算「存在」、
+/// 在另一处算「不存在」，于是主格树缺节点、子格退回挂根 —— 表照样出得来，
+/// 只是数据悄悄变多。抽成一个函数就是为了让它们没法各改各的。
+///
+/// 图片格必须算「有内容」：只放一张 logo、既不写 `value` 也不写 `model`
+/// 是很自然的写法，漏掉它那个格子会**整格消失**（实测，不是推的）。
+fn is_placeholder(cell: &CellTpl) -> bool {
+    cell.value.is_none() && cell.model.is_none() && cell.image.is_none()
+}
+
 /// 模板级父格解析（Pass 0）：按**行优先**顺序解析每格的父格，不建实例。
 ///
 /// 为什么要把这段从建实例的循环里抽出来：规则 3（`addDefaultRowParents`）要先知道
@@ -152,7 +165,7 @@ fn resolve_parents(sheet: &SheetTpl) -> (Resolved, Resolved) {
     let mut col: Resolved = BTreeMap::new();
     for (r, line) in sheet.rows.iter().enumerate() {
         for (c, cell) in line.cells.iter().enumerate() {
-            if cell.value.is_none() && cell.model.is_none() {
+            if is_placeholder(cell) {
                 continue;
             }
             let model = cell.model.clone().unwrap_or_default();
@@ -816,8 +829,8 @@ impl Engine {
         // ---- 阶段 1：按模板顺序（行升序、列升序）展开，父格必然先于子格 ----
         for (r, row) in sheet.rows.iter().enumerate() {
             for (c, cell) in row.cells.iter().enumerate() {
-                // 纯占位空单元格（既无值也无模型）不参与展开，否则会多出空行
-                if cell.value.is_none() && cell.model.is_none() {
+                // 纯占位空单元格不参与展开，否则会多出空行
+                if is_placeholder(cell) {
                     continue;
                 }
                 let pos = cell.pos.clone().unwrap_or_else(|| cell_pos(r, c));
@@ -1026,6 +1039,24 @@ impl Engine {
             } else {
                 (inst.col_span.max(1)).max(inst.merge_across + 1)
             };
+            // 图片格：`from: value` 时拿本格算出来的值当 src（一列产品图那种）。
+            // 解析不了就**把原因挂到 text 上**并告警 —— 留白看不出是「没配」还是「配错」。
+            let mut image = None;
+            if let Some(decl) = &inst.image {
+                let src = if decl.from_value() { text.trim().to_string() } else { decl.src.trim().to_string() };
+                match parse_image_data_uri(&src) {
+                    Ok(_) => image = Some(src),
+                    Err(e) => {
+                        self.warnings.push(format!("{} 的图片没出：{e}", inst.pos));
+                        text = format!("[图片: {e}]");
+                    }
+                }
+            }
+            // 出图片的格子，`text` 降级成 alt 文本（给 HTML 的 alt= 和 CSV 用）。
+            // `from: value` 那种的 text 就是 data URI 本身，当 alt 毫无意义，清掉。
+            if image.is_some() && inst.image.as_ref().is_some_and(|d| d.from_value()) {
+                text.clear();
+            }
             grid[inst.row_start][inst.col_start] = Some(GridCell {
                 text,
                 pos: inst.pos.clone(),
@@ -1037,6 +1068,7 @@ impl Engine {
                 // 全空的样式不往下带（`skip_serializing_if` 也不发），省得导出器
                 // 为每个格子都判一遍「是不是设了样」
                 style: inst.style.clone().filter(|s| !s.is_empty()),
+                image,
             });
         }
 
@@ -1159,6 +1191,9 @@ impl Engine {
                 inst.merge_to_end = cell.merge_to_end;
                 inst.format = model.format.clone();
                 inst.style = model.style.clone();
+                // 图片格声明走**两条**分支都要拷：挂在展开格上的产品图列
+                // （`field: photo` + `image.from: value`）走的是上面那条。
+                inst.image = cell.image.clone().or_else(|| model.image.clone());
                 inst.value_expr = model.value_expr.clone();
                 // 展示值与测试表达式：**展开格这条分支同样要拷**。
                 // 只拷非展开分支的话，挂在分组格上的字典（编码 → 名称）会静默失效。
@@ -1184,6 +1219,7 @@ impl Engine {
             inst.merge_to_end = cell.merge_to_end;
             inst.format = model.format.clone();
             inst.style = model.style.clone();
+            inst.image = cell.image.clone().or_else(|| model.image.clone());
             inst.value = match &model.field {
                 Some(f) => view.first().and_then(|r| ds.get(*r)).and_then(|row| row.get(f)).cloned().unwrap_or(JsonValue::Null),
                 None => cell.value.clone().unwrap_or(JsonValue::Null),
@@ -3325,6 +3361,7 @@ fn empty_cell() -> GridCell {
         num_format: None,
         formula: None,
         style: None,
+        image: None,
     }
 }
 
@@ -3338,6 +3375,7 @@ mod parent_tests {
 
     fn cm(expand: Option<ExpandType>, row_parent: Option<&str>, col_parent: Option<&str>) -> Option<CellModel> {
         Some(CellModel {
+            image: None,
             ds: Some("ds1".to_string()),
             field: None,
             agg: None,
@@ -3372,6 +3410,7 @@ mod parent_tests {
                     cells: cells
                         .into_iter()
                         .map(|(exp, rp, cp)| CellTpl {
+                            image: None,
                             pos: None,
                             value: Some(JsonValue::from("x")),
                             model: cm(if exp { Some(ExpandType::R) } else { None }, rp, cp),
@@ -3591,6 +3630,7 @@ mod scale {
             }
         };
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(JsonValue::from),
             model,
@@ -3650,6 +3690,7 @@ mod scale {
             None => m(Some("amount"), None, None),
         };
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(JsonValue::from),
             model,
@@ -4467,6 +4508,7 @@ mod scale {
             })
         };
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(JsonValue::from),
             model,
@@ -4609,6 +4651,7 @@ mod scale {
             })
         };
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(JsonValue::from),
             model,
@@ -4655,6 +4698,7 @@ mod scale {
             })
         };
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+            image: None,
             pos: None,
             value: value.map(JsonValue::from),
             model,
