@@ -21,6 +21,7 @@ mod health;
 mod print_job;
 mod printers;
 mod report;
+mod ticket;
 mod util;
 
 use std::path::PathBuf;

@@ -45,3 +45,7 @@ print-server/reports/
 
 # 本机覆盖配置（每台机器路径不同，例如 F:\... 这种，不该进公开仓库）
 *.local.json
+
+# 打印 spool（每次 /print 落盘的 PDF / HTML / 票据指令，是产物不是源码；
+# 里面还带本机路径与任务号，跟 reports/ 同理不该进公开仓库）
+print-server/spool/

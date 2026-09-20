@@ -135,8 +135,28 @@ print-server --help
 
 - `/print` 实际打印走 ShellExecute（`print` / `printto` 动词），依赖本机 .pdf 关联程序；
   指定打印机时先试 `printto`，失败回落默认打印机
-- `esc/tsc/zpl`（画布 JSON → 票据指令翻译）与 ODBC 引擎暂未实现，返回 ok:false 明确提示
+- `esc/tsc/zpl`（画布 JSON → 票据指令）**已实现**（`src/ticket/`，见下节）
+- ODBC 引擎暂未实现，返回 ok:false 明确提示
 - `svg` 载荷已废弃（与原 Qt 客户端一致），返回 ok:false
+
+### 票据 / 标签指令（`esc` / `tsc` / `zpl`）
+
+载荷是**净化后的画布 JSON**（前端 `raw-sanitize.ts` 已经把颜色 / 字体样式 / 设计器元数据裁掉），
+`src/ticket/` 负责翻译成指令字节，再**原样**发给打印机（CUPS 走 `lp -o raw`）。
+
+| 载荷 | 指令 | 定位 | 中文 |
+| --- | --- | --- | --- |
+| `esc` | ESC/POS（小票机） | 只有「行」：`ESC 3 24` 钉行距 + `ESC d n` 推进 + `ESC $` 绝对 x | GBK |
+| `tsc` | TSPL / TSPL2（TSC 标签机） | 真 x/y（点） | UTF-8 下发，靠机型字库 |
+| `zpl` | ZPL II（Zebra） | `^FO` 真 x/y（点） | UTF-8（`^CI28`） |
+
+翻不了的控件（`image` / `chart` / `math` / `signature` / `richtext` / `zone` / `labelgrid`）
+**不静默丢**：进响应的 `warnings` 数组并指名到控件 id 与坐标，同时 `ok=false`。
+数据行驱动的表格也只翻静态 `cells` 网格（`data` 运行期形状没有强约束，猜错比不做好）。
+
+真机探针：`python3 scripts/verify-ticket-print.py`（走真实 `/print`，拆开落盘指令核对
+喂行序列 / GBK 字节 / 各段指令长度）。
+
 
 ## 构建
 

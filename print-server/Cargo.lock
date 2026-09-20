@@ -834,6 +834,7 @@ dependencies = [
  "base64",
  "calamine",
  "chrono",
+ "encoding_rs",
  "rusqlite",
  "rust_xlsxwriter",
  "serde",

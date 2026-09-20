@@ -3,12 +3,13 @@
 //! 载荷支持：
 //! - `pdf` + `base64`：落盘 spool → ShellExecuteW 打印（指定打印机用 printto 动词，缺省用默认打印机）
 //! - `html` + `utf8`：注入 @page 纸张 CSS → Edge/Chrome headless 转 PDF → 同上打印（矢量、含文本层）
-//! - `esc/tsc/zpl`：画布 JSON → 票据指令的翻译暂未实现，返回 ok:false
+//! - `esc/tsc/zpl` + `utf8`：净化画布 JSON → 票据指令（`crate::ticket`）→ **原样字节**送打印机
 //! - `svg`：已废弃（原 Qt 客户端 QSvgRenderer 不支持 foreignObject），返回 ok:false
 //!
 //! 平台：发送打印在 Windows 走 ShellExecuteW，在 macOS / Linux 走 CUPS `lp`；
-//! 渲染 / 导出链路与平台无关。
+//! 渲染 / 导出链路与平台无关。票据指令走 `lp -o raw`（不能过 CUPS 的过滤器）。
 
+use crate::ticket;
 use crate::util::{decode_base64_lenient, service_error};
 #[cfg(target_os = "windows")]
 use crate::util::to_wide;
@@ -81,12 +82,127 @@ pub async fn handle_print(
         "pdf" => print_pdf(&job, &job_id, &spool),
         "html" => print_html(&job, &job_id, &spool).await,
         "svg" => service_error("svg 载荷已废弃：请改用 html（矢量推荐）或 pdf（位图）"),
-        "esc" | "tsc" | "zpl" => service_error(format!(
-            "Rust 客户端暂不支持 {} 画布 JSON → 票据指令翻译（待实现），任务 {} 未打印",
-            job.format.to_uppercase(),
-            job_id
-        )),
+        "esc" | "tsc" | "zpl" => print_ticket(&job, &job_id, &spool),
         other => service_error(format!("未知载荷格式: {other}")),
+    }
+}
+
+/* ---------------------------- 票据指令 ---------------------------- */
+
+/// 票据 / 标签：净化画布 JSON → 指令字节 → **原样**发给打印机。
+///
+/// 三个容易踩的点：
+/// 1. 必须走 `lp -o raw`（Windows 侧同理要 RAW 直发）—— 过 CUPS 的过滤器会被
+///    当成文本重新排版，出来是一堆乱码；
+/// 2. 翻译期的告警（画不出来的控件、编不出来的字、不支持的旋转角）要**回给调用方**，
+///    不能只写日志 —— 小票上少一行字，看屏幕是看不出来的；
+/// 3. 文件照样落盘。打印失败时至少还能 `copy /b` 手动发一次。
+fn print_ticket(job: &PrintJobRequest, job_id: &str, spool: &Path) -> axum::response::Response {
+    if job.encoding != "utf8" {
+        return service_error(format!(
+            "{} 载荷要求 encoding=utf8（画布 JSON），收到 {}",
+            job.format.to_uppercase(),
+            job.encoding
+        ));
+    }
+
+    let dpi = job.dpi.and_then(|d| u32::try_from(d).ok());
+    let mut doc = match ticket::from_canvas(&job.content, dpi) {
+        Ok(t) => t,
+        Err(e) => return service_error(format!("{} 载荷翻译失败：{e}", job.format.to_uppercase())),
+    };
+
+    let bytes = match ticket::render(&mut doc, &job.format) {
+        Ok(b) => b,
+        Err(e) => return service_error(e),
+    };
+
+    let ext = match job.format.as_str() {
+        "esc" => "esc",
+        "tsc" => "tspl",
+        _ => "zpl",
+    };
+    let path = spool.join(format!("{job_id}.{ext}"));
+    if let Err(e) = std::fs::write(&path, &bytes) {
+        return service_error(format!("写 {} 指令文件失败: {e}", job.format.to_uppercase()));
+    }
+
+    let warnings = std::mem::take(&mut doc.warnings);
+    let summary = if warnings.is_empty() {
+        format!(
+            "{} 指令 {} 字节（{}×{}mm，{}dpi）",
+            job.format.to_uppercase(),
+            bytes.len(),
+            doc.width_mm.round(),
+            doc.height_mm.round(),
+            doc.dpi
+        )
+    } else {
+        format!(
+            "{} 指令 {} 字节，但有 {} 处没翻出来：{}",
+            job.format.to_uppercase(),
+            bytes.len(),
+            warnings.len(),
+            warnings.join("；")
+        )
+    };
+
+    match send_raw_to_printer(&path, &job.printer) {
+        Ok(msg) => axum::response::IntoResponse::into_response(Json(json!({
+            "ok": true,
+            "jobId": job_id,
+            "message": format!("{msg} —— {summary}"),
+            "warnings": warnings,
+        }))),
+        Err(e) => axum::response::IntoResponse::into_response(Json(json!({
+            "ok": false,
+            "jobId": job_id,
+            "message": format!(
+                "{summary}；指令文件已保存至 {}，但直发打印失败：{e}",
+                path.display()
+            ),
+            "warnings": warnings,
+        }))),
+    }
+}
+
+/// 原样字节送打印机。
+///
+/// - macOS / Linux：`lp -o raw -d <printer> <file>`
+/// - Windows：**未实现**（要 winspool 的 StartDocPrinter(RAW) + WritePrinter，
+///   本机无法编译验证，不写没验过的 unsafe）。文件已落盘，可用
+///   `copy /b 文件 \\\\主机\\共享打印机` 或厂商工具手动发。
+fn send_raw_to_printer(path: &Path, printer: &str) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = printer;
+        return Err(format!(
+            "Windows 下的 RAW 直发暂未实现（指令文件在 {}）",
+            path.display()
+        ));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = std::process::Command::new("lp");
+        cmd.arg("-o").arg("raw");
+        if let Some(p) = Some(printer).map(str::trim).filter(|p| !p.is_empty()) {
+            cmd.arg("-d").arg(p);
+        }
+        cmd.arg(path);
+        let out = cmd.output().map_err(|e| format!("调用 lp 失败：{e}（请确认 CUPS 已安装）"))?;
+        if out.status.success() {
+            Ok(if printer.trim().is_empty() {
+                "已原样发送至系统默认打印机".to_string()
+            } else {
+                format!("已原样发送至打印机「{printer}」")
+            })
+        } else {
+            Err(format!(
+                "lp 退出码 {:?}：{}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        }
     }
 }
 

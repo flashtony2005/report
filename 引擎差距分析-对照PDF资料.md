@@ -1743,10 +1743,10 @@ Rust 单测当时全绿。与 `scripts/mirror-check.py`（Rust↔TS 契约核对
 
 - ✅ `pdf`、`html`
 - ❌ `svg` —— 已废弃，直接报错让改用 html / pdf
-- ❌ `esc` / `tsc` / `zpl` —— 报「Rust 客户端暂不支持 … → 票据指令翻译（**待实现**）」
+- ✅ `esc` / `tsc` / `zpl` —— **2026-09-20 已补**（`src/ticket/`，见下节）
 
-→ **标签 / 票据打印机（ESC-POS、TSC、ZPL）目前打不了**。对一个打印系统来说这是
-硬缺口，但是不是要补取决于业务有没有这类设备；要补是一块独立工作。
+→ 标签 / 票据打印机（ESC-POS、TSC、ZPL）已能打。翻不出来的控件会进 `warnings`
+并指名到控件 id（不是静默丢），详见「2026-09-20：票据指令」一节。
 
 `PrintJobRequest` 有的参数：printer / copies / orientation / duplex / color / dpi /
 width / height / unit。**没有页边距字段**。
@@ -1824,10 +1824,9 @@ width / height / unit。**没有页边距字段**。
 
 **4. ODBC 引擎未实现**（界面已标注，非静默坑，见上节）
 
-**5. 票据指令 `esc` / `tsc` / `zpl` 未实现**
+**5. 票据指令 `esc` / `tsc` / `zpl` —— ✅ 2026-09-20 已补**（`print-server/src/ticket/`）
 
-`print_job.rs:85` 明确返回待实现；`/print` 实际只支持 `pdf` / `html`
-（`svg` 已废弃）。标签机、小票机这类场景目前接不上。
+原状：`print_job.rs:85` 明确返回待实现。现在三种格式都能翻，见下节。
 
 **6. 报表参数 / 查询表单 —— ✅ 2026-09-20 已补**（声明 + 命名绑定，见下节）
 
@@ -1851,8 +1850,8 @@ width / height / unit。**没有页边距字段**。
 缺的是「长相」和「外延」**：格子样式、分组感知的分页、图表进服务端、
 票据打印、参数表单。
 
-**2026-09-20 更新**：上面标 ✅ 的四项里，前四项（格子样式、分组分页、CSV、
-MySQL 报错）**已经补完**，剩「外延」那三项 —— 图表进服务端、票据打印、参数表单。
+**2026-09-20 更新**：标 ✅ 的项（格子样式、分组分页、CSV、MySQL 报错、参数表单、
+票据指令）**已经补完**，只剩两项真正的「外延」：**图表进服务端报表**、**ODBC 引擎**。
 
 ---
 
@@ -1924,3 +1923,91 @@ RFC 4180 转义 + UTF-8 BOM（缺了 Excel 开中文乱码）+ CRLF。
 **未知参数检查必须先于必填检查** —— 真机探针踩出来的：放在后面时，
 typo 会被报成「region 必填」，把人往错的方向带。现在报
 「未知参数「regoin」：本报表声明的参数是 [region]」。
+
+---
+
+## 2026-09-20：票据指令（esc / tsc / zpl）
+
+补的是 `print_job.rs` 里那句「画布 JSON → 票据指令翻译（**待实现**）」。
+
+### 输入契约（前端的净化画布 JSON）
+
+`openprint/src/core/print-client/raw-sanitize.ts` 已经把颜色、字体样式、设计器元数据
+（`locked` / `name` / `showGuides` / `childOf`）全裁掉了 —— 票据机是单色、内置字库，
+那些字段本来就没用。**翻译层不该假设 `fill` / `fontWeight` 一定在**。
+
+```
+{ version, document: { page: {width,height,unit,orientation,margin},
+                       sections: [{ type, height?, repeat?, components: [...] }] }, data? }
+```
+
+几何单位跟 `page.unit`（mm / in / pt），原点是**所属 Section 左上角**，多节纵向堆叠。
+
+### 中间表示 + 三个发射器
+
+`print-server/src/ticket/`：
+
+| 文件 | 作用 |
+| --- | --- |
+| `mod.rs` | 画布 JSON → `Ticket { width_mm, height_mm, dpi, items, warnings }`（IR + 单位换算 + 取值） |
+| `esc.rs` | ESC/POS（小票机） |
+| `tspl.rs` | TSPL / TSPL2（TSC 标签机） |
+| `zpl.rs` | ZPL II（Zebra） |
+
+IR 只有五种图元：`Text` / `Barcode` / `Qr` / `Rule` / `Box`，坐标统一 mm。
+
+### 三种格式的硬约束（各自踩过）
+
+**ESC/POS 没有 y 坐标。** 只有「行」：`ESC 3 24` 把行距钉成 24 点，
+每个图元的 y 换算成行号，用 `ESC d n` 推进，行内用 `ESC $ nL nH` 设绝对 x。
+- 行距**必须显式钉**：不钉的话 `ESC d n` 推多少点由机型默认值决定，算出来的行号全错。
+- 中文必须 **GBK**（票据机内置中文字库），不是 UTF-8；编不出来的字符要报警告，
+  否则小票上就是个空格，谁也看不出少了个字。
+- 没有旋转指令，`angle != 0` 报警告并按 0° 打。
+
+**TSPL / ZPL 有真 x/y**，但都没有「对齐」参数 —— 居中和右对齐只能自己按估宽挪 x。
+这是格式的真实约束，不是偷懒；不挪的话对齐会**静默**变靠左。
+
+**ZPL 的 `^` 和 `~` 是控制字符**，内容里出现必须走 `^FH` 十六进制转义
+（`^` → `_5E`）。不转的话内容里的 `^` 会把指令结构撑破 —— 这是「打了半张就乱码」
+最常见的原因。反过来，内容里没有这两个字符时**不该**无脑加 `^FH`。
+
+**旋转只认 90 的倍数**（TSPL：0/90/180/270；ZPL：N/R/I/B）。别的角度报警告并 snap。
+
+### 翻不了的必须留痕
+
+`image` / `chart` / `math` / `signature` / `richtext` / `zone` / `labelgrid` 一律不翻，
+但**每条都进 `Ticket::warnings`**，`/print` 把它回给调用方并置 `ok=false`。
+静默丢控件是小票最容易犯的错：少一行字，看屏幕是看不出来的。
+
+数据行驱动的表格（只有 `dataSource`、没有静态 `cells`）也只留痕不翻 ——
+`RenderRequest.data` 在运行期没有形状约束，猜错了比不做好。
+
+### 探针抓到的一个真 bug：同行多图元会把后面的内容整体上移
+
+`cur_row` 第一版写成 `cur_row += 1`。表格第一行有两格（品名 / 数量），
+打完第二格时又加了一次，`cur_row` 变成 `row + 2`，于是**整个方框往上跳了一行**。
+每多一个同行图元就多错一行。
+
+修法：`cur_row = max(cur_row, row + 1)` —— 打完第 `row` 行，下一个可用行是 `row + 1`，
+跟这一行打了几个图元无关。
+
+为什么单测没抓到：原来的用例只数 `ESC d` 的**次数**（「有没有多喂一行」），
+而这个是「累计位置偏了」。现在断言的是**整条喂行序列**
+（`extra_same_row_items_do_not_push_later_rows_up`），探针也核对同一条序列。
+
+### 验证
+
+- 单测 59 条（IR 20 + ESC 18 + TSPL 11 + ZPL 10），10 处故障注入各自变红。
+- 真机探针 `scripts/verify-ticket-print.py`：走真实 `/print`，拆开落盘的指令文件核对
+  喂行序列、GBK 字节、二维码五段长度、`^CI28`、`^PW639`（203dpi 是 7.9921 点/mm，
+  **不是**整 8 —— 80mm 是 639 点不是 640）。
+- 探针本身也做了故障注入：把 `advance` 退回 `cur_row += 1`，探针如期报
+  「喂行序列 = [1,2,2,4,8,2,6]（期望 [1,2,1,2,4,8,3,7]）」。
+
+### 已知没做的
+
+- **Windows 下的 RAW 直发**：要 winspool 的 `StartDocPrinter(RAW)` + `WritePrinter`，
+  本机（macOS）无法编译验证，不写没验过的 unsafe。指令文件照常落盘，
+  报错信息里给出路径。非 Windows 走 `lp -o raw`（不能过 CUPS 过滤器，会被当文本重排）。
+- 图片 / 图表进票据（本来也画不出来，靠警告兜住）。
