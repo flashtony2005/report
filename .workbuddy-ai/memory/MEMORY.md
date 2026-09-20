@@ -233,3 +233,40 @@ MySQL **归一成 sqlite**（`normalizeDbEngine('mysql')==='sqlite'`，有测试
 `\.field\b` 或 `field:` 命中数，**但别只看总数** —— 命中里混着测试夹具的
 结构体字面量（`mod.rs` 里 19 个字段命中数清一色 23~28，看着像都用了，
 其实大半是夹具）。要打开看**读点所在的那几行**才算数。
+
+## 已完成（2026-09-20，别再当缺口重复做）
+
+**CSV 导出**：`POST /api/report/csv` + `GET /api/report/sample.csv`。
+RFC 4180 转义 + UTF-8 BOM（缺了 Excel 开中文乱码）+ CRLF。
+写 `text` 不写 `formula`（CSV 里 `=SUM(...)` 只是文本）。多 sheet 顺序拼接。
+**CSV 注入（`=cmd|`）刻意不改写**：加 `'` 前缀会把 `+86` 手机号也改掉，
+拿正确性换安全不值；数据来自自己配的库。取舍写在 `csv.rs` 顶部注释。
+
+**分页不切合并格**：`merge_blocked_boundaries()`（mod.rs）。
+**关键洞察：主格展开出来就是合并格** —— 一个地区跨几行，格 rowspan 就是几，
+所以「不许在合并格中间切页」==「组内不跨页」，不用引入润乾 9 类带区模型。
+落点被跨过时往两边找最近安全边界（先退后进）；剩下的够放一页就不再切。
+代价：页大小不再严格等于 rows_per_page，组超过一页时那页必然超（宁超不切）。
+
+**格子样式 `CellStyle`**：bold / italic / font_size / color / bg / h_align / v_align。
+链路 `CellModel.style` → `CellInst.style` → `GridCell.style` → xlsx `with_style()`。
+`with_style` 是**叠加**在基础格式上（表头加粗 + 全体细边框保留），没设的项不动。
+- **刻意不给边框**：Univer `bd` 完全不渲染 → 设了看不见 = 静默失败。
+- **颜色只认 `#RRGGBB`，认不出来报 HTTP 500**（点名哪格哪个值），不静默丢弃。
+- 清掉最后一项时整个 `style` 要摘掉，不能留 `{}`（有 UI 用例钉住）。
+
+**MySQL / MariaDB / SQL Server / Oracle 明确报错**：`unsupported_engine_name()`。
+注意 `ServerConfig::load()` **不调 `validate()`**（只有保存/试连调），
+所以手改配置写 mysql 是真能踩到的，会报误导性的「sqlite 文件不存在」。
+
+## 批量给 struct 加字段：两个构建都要跑
+
+只跑 `cargo build` 会漏掉**测试代码里**的字面量（本次：build 报 7 处，
+`cargo test --no-run` 又报 18 处）。**两边都跑**，且插入数要和错数对得上
+（多出来就是误伤了 `-> Foo {` 之类的形状）。
+
+## 受控组件的 UI 测试：必须把 onChange 结果喂回去
+
+`CellModelEditor` 是受控的，spec 里只点开关不重新 render，界面永远停在初始值
+（色块不跟着变、断言拿到旧值）。要像真实父组件那样 `sync()` 把新 cell 传回去。
+另：jsdom 对 `style.background` 有时保留 `#RRGGBB`、有时转 `rgb(...)`，断言两种都收。
