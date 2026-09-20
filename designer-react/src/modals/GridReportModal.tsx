@@ -74,6 +74,7 @@ import {
   type CellFormatSpec,
   type CellModel,
   type CellStyle,
+  type ReportParam,
   type CellTpl,
   type ExpandDir,
   type MergeRect,
@@ -94,6 +95,7 @@ import {
   type TemplateMode,
 } from './grid-report-request'
 import { useDataSourceStore } from '../stores/dataSource'
+import type { DbEngine } from '@/core/print-client'
 import { useDesignerStore } from '../stores/designer'
 
 export const REPORT_SERVER = 'http://127.0.0.1:18888'
@@ -1106,6 +1108,15 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const [dump, setDump] = useState(false)
   const [dumpText, setDumpText] = useState('')
   const [warnings, setWarnings] = useState<string[]>([])
+  /**
+   * 报表参数：非 null 表示「正在等用户填查询条件」。
+   * 报表声明了参数时，执行前先把表单弹出来 —— 不然用户按了执行却不知道
+   * 还有条件没填，服务端直接报「必填」也太晚。
+   */
+  const [paramDefs, setParamDefs] = useState<ReportParam[] | null>(null)
+  const [paramDraft, setParamDraft] = useState<Record<string, unknown>>({})
+  const [pendingRunId, setPendingRunId] = useState<string | null>(null)
+  const [paramErr, setParamErr] = useState('')
 
   const dbDatabases = useDataSourceStore((s) => s.dbDatabases)
   const dbTables = useDataSourceStore((s) => s.dbTables)
@@ -1385,7 +1396,11 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       // 数据源回填到左侧选择器，让人看得见数据从哪来
       const s0 = def.sources?.[0]
       if (s0?.database && s0?.table) {
-        void selectDatabase(s0.database, s0.engine)
+        // `ReportSource.engine` 是自由字符串（模板可能被人手改过），
+        // 认不出来的就当没写 —— 别硬塞给 selectDatabase，那会静默落到第一个连接
+        const eng: DbEngine | undefined =
+          s0.engine === 'sqlite' || s0.engine === 'postgres' || s0.engine === 'odbc' ? s0.engine : undefined
+        void selectDatabase(s0.database, eng)
         void selectTable(s0.table)
       }
       if (s0?.where) setWhere(s0.where)
@@ -1402,43 +1417,102 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
    * 执行已保存的报表：**不依赖当前表单**，直接按文件里存的定义跑。
    * 这是「打开报表就能出数据」的那一半——表单只是编辑态，文件才是事实。
    */
-  const runReport = useCallback(async (id: string) => {
-    setFileBusy(true)
-    try {
-      // 先取定义：要它算表头行数（给 Univer 加粗用），顺便提前告诉用户「没数据源」
-      const defRes = await fetch(`${REPORT_SERVER}/api/reports/${encodeURIComponent(id)}`)
-      if (!defRes.ok) throw new Error((await defRes.text()) || `打开失败 ${defRes.status}`)
-      const def = JSON.parse(await defRes.text()) as ReportDef
-      if (!def.sources?.length && !def.template?.datasets?.length) {
-        setError(`报表「${def.name || id}」没有数据源也没有内嵌数据，执行会没有数据。先补上数据源再执行。`)
+  /** 真正发执行请求（参数已确定）。`values` 为空对象时完全交给服务端默认值。 */
+  const executeRun = useCallback(
+    async (id: string, values: Record<string, unknown>) => {
+      setFileBusy(true)
+      try {
+        // 表头行数给 Univer 加粗用；与导出侧同一套判据（见 headerRowCount）
+        const defRes = await fetch(`${REPORT_SERVER}/api/reports/${encodeURIComponent(id)}`)
+        if (!defRes.ok) throw new Error((await defRes.text()) || `打开失败 ${defRes.status}`)
+        const def = JSON.parse(await defRes.text()) as ReportDef
+        const rows = headerRowCount(def.template)
+
+        const res = await fetch(`${REPORT_SERVER}/api/reports/${encodeURIComponent(id)}/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ values }),
+        })
+        const text = await res.text()
+        if (!res.ok) throw new Error(text || `执行失败 ${res.status}`)
+        const data = JSON.parse(text) as RenderResponse
+        setWarnings(data.warnings ?? [])
+        setDumpText(data.dump ?? '')
+        lastRenderRef.current = { data, headerRows: rows }
+        const pageList = data.pages ?? []
+        setPages(pageList)
+        setPageIndex(0)
+        setFallbackHtml(
+          pageList.length ? (data.pages_html?.[0] ?? data.html ?? '') : data.html || '',
+        )
+        // 先清上一次的错误，再 init —— 反过来的话 init 报的错会被这次清空盖掉
+        setError('')
+        paintSheet(0)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setFileBusy(false)
+      }
+    },
+    [paintSheet],
+  )
+
+  const runReport = useCallback(
+    async (id: string) => {
+      setFileBusy(true)
+      try {
+        // 先取定义：要它算表头行数（给 Univer 加粗用），顺便提前告诉用户「没数据源」
+        const defRes = await fetch(`${REPORT_SERVER}/api/reports/${encodeURIComponent(id)}`)
+        if (!defRes.ok) throw new Error((await defRes.text()) || `打开失败 ${defRes.status}`)
+        const def = JSON.parse(await defRes.text()) as ReportDef
+        if (!def.sources?.length && !def.template?.datasets?.length) {
+          setError(
+            `报表「${def.name || id}」没有数据源也没有内嵌数据，执行会没有数据。先补上数据源再执行。`,
+          )
+          return
+        }
+
+        // 声明了参数 → 先弹查询表单。不然用户按了执行却不知道还有条件没填，
+        // 等服务端报「必填」就太晚了。
+        if (def.params && def.params.length) {
+          const draft: Record<string, unknown> = {}
+          for (const p of def.params) {
+            if (p.default !== undefined && p.default !== null) draft[p.name] = p.default
+          }
+          setParamDraft(draft)
+          setParamErr('')
+          setPendingRunId(id)
+          setParamDefs(def.params)
+          return
+        }
+
+        await executeRun(id, {})
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setFileBusy(false)
+      }
+    },
+    [executeRun],
+  )
+
+  /** 查询表单点「执行」：必填校验在前端先过一遍，别让用户白等一趟服务端 */
+  const confirmParams = useCallback(() => {
+    if (!paramDefs || !pendingRunId) return
+    for (const p of paramDefs) {
+      if (!p.required) continue
+      const v = paramDraft[p.name]
+      if (v === undefined || v === null || v === '') {
+        setParamErr(`请填写「${p.label || p.name}」`)
         return
       }
-      const rows = headerRowCount(def.template)
-
-      const res = await fetch(`${REPORT_SERVER}/api/reports/${encodeURIComponent(id)}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      })
-      const text = await res.text()
-      if (!res.ok) throw new Error(text || `执行失败 ${res.status}`)
-      const data = JSON.parse(text) as RenderResponse
-      setWarnings(data.warnings ?? [])
-      setDumpText(data.dump ?? '')
-      lastRenderRef.current = { data, headerRows: rows }
-      const pageList = data.pages ?? []
-      setPages(pageList)
-      setPageIndex(0)
-      setFallbackHtml(pageList.length ? (data.pages_html?.[0] ?? data.html ?? '') : data.html || '')
-      // 先清上一次的错误，再 init —— 反过来的话 init 报的错会被这次清空盖掉
-      setError('')
-      paintSheet(0)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setFileBusy(false)
     }
-  }, [paintSheet])
+    setParamDefs(null)
+    setParamErr('')
+    const id = pendingRunId
+    setPendingRunId(null)
+    void executeRun(id, paramDraft)
+  }, [paramDefs, pendingRunId, paramDraft, executeRun])
 
   /**
    * 渲染。`silent` 用于「参数变化触发的自动刷新」：
@@ -2387,7 +2461,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
                   fontSize: 11,
                   fontWeight: 600,
                   borderRadius: 2,
-                  border: it.swatch === 'border' ? `2px solid ${it.fg}` : '1px solid #d9d9d9',
+                  border: '1px solid #d9d9d9',
                   background: it.bg ?? '#fff',
                   color: it.fg ?? '#333',
                   fontStyle: it.italic ? 'italic' : 'normal',
@@ -2425,6 +2499,84 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           </pre>
         </details>
       )}
+
+      {/*
+        查询表单：报表声明了参数时，执行前先弹这个。
+        控件按 `kind` 选：enum → 下拉（options 即候选项）、number → 数字框、
+        date → 日期框、其余 → 文本。必填在前端先过一遍，别让用户白等服务端一趟。
+      */}
+      <Modal
+        title="填写查询条件"
+        open={paramDefs !== null}
+        onOk={confirmParams}
+        onCancel={() => {
+          setParamDefs(null)
+          setPendingRunId(null)
+          setParamErr('')
+        }}
+        okText="执行"
+        cancelText="取消"
+        width={420}
+        destroyOnHidden
+        // 两个按钮给 testid：UI 用例要点它们，而按钮上只有文字没有可依赖的钩子
+        okButtonProps={{ 'data-testid': 'report-param-ok' } as never}
+        cancelButtonProps={{ 'data-testid': 'report-param-cancel' } as never}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {(paramDefs ?? []).map((p) => {
+            const label = p.label || p.name
+            const value = paramDraft[p.name]
+            const set = (v: unknown) =>
+              setParamDraft((d) => ({ ...d, [p.name]: v === '' ? undefined : v }))
+            return (
+              <div key={p.name} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <Typography.Text style={{ fontSize: 12 }}>
+                  {label}
+                  {p.required ? <span style={{ color: '#cf1322' }}> *</span> : null}
+                </Typography.Text>
+                {p.kind === 'enum' ? (
+                  <Select
+                    size="small"
+                    allowClear
+                    placeholder="请选择"
+                    value={value as string | undefined}
+                    options={(p.options ?? []).map((o) => ({ label: o, value: o }))}
+                    onChange={(v) => set(v)}
+                    data-testid={`report-param-${p.name}`}
+                  />
+                ) : p.kind === 'number' ? (
+                  <InputNumber
+                    size="small"
+                    style={{ width: '100%' }}
+                    value={value as number | undefined}
+                    onChange={(v) => set(v)}
+                    data-testid={`report-param-${p.name}`}
+                  />
+                ) : p.kind === 'date' ? (
+                  <Input
+                    size="small"
+                    type="date"
+                    value={(value as string) ?? ''}
+                    onChange={(e) => set(e.target.value)}
+                    data-testid={`report-param-${p.name}`}
+                  />
+                ) : (
+                  <Input
+                    size="small"
+                    placeholder="请输入"
+                    value={(value as string) ?? ''}
+                    onChange={(e) => set(e.target.value)}
+                    data-testid={`report-param-${p.name}`}
+                  />
+                )}
+              </div>
+            )
+          })}
+          {paramErr ? (
+            <Alert type="error" showIcon message={paramErr} data-testid="report-param-error" />
+          ) : null}
+        </Space>
+      </Modal>
     </Modal>
   )
 }

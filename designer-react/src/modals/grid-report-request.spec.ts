@@ -175,12 +175,12 @@ describe('校验与早退分支', () => {
 
   it('参数框为空串 → 不带 params（而不是空数组）', () => {
     const out = req({ paramText: '' })
-    expect(out.req.sources[0]!.params).toBeUndefined()
+    expect(out.req.sources![0]!.params).toBeUndefined()
   })
 
   it('WHERE 为空 → 不带 where；有内容则 trim 后带上', () => {
-    expect(req({ where: '   ' }).req.sources[0]!.where).toBeUndefined()
-    expect(req({ where: ' amount > 0 ' }).req.sources[0]!.where).toBe('amount > 0')
+    expect(req({ where: '   ' }).req.sources![0]!.where).toBeUndefined()
+    expect(req({ where: ' amount > 0 ' }).req.sources![0]!.where).toBe('amount > 0')
   })
 
   it('dump 只在开启时进请求体', () => {

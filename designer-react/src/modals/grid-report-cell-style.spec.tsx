@@ -161,7 +161,8 @@ describe('格子样式面板', () => {
   it('非法色值不染色块（但仍按原样保存，由服务端导出时报错）', async () => {
     await mount({ value: '华东' })
     await typeInto(inputIn('free-cell-style-color'), 'red')
-    expect(styleOf()?.color).toBe('red', '前端不擅自丢弃，交给导出时报清楚')
+    // 前端不擅自丢弃，交给导出时报清楚
+    expect(styleOf()?.color).toBe('red')
     const bg = byTestid('free-cell-style-color-swatch').style.background
     expect(bg === '' || bg.includes('transparent'), `色块不该被染: ${bg}`).toBe(true)
   })

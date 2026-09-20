@@ -1685,7 +1685,7 @@ describe('自由模板：非线性语义画进网格', () => {
     for (const it of SEMANTIC_LEGEND) {
       const color = (it.bg ?? it.fg) as string | null
       if (!color) continue
-      // 三种 swatch 都要查，少查一种就等于给「改声明不改实现」留了后门
+      // 每种 swatch 都要查，少查一种就等于给「改声明不改实现」留了后门
       expect(pools[it.swatch]).toContain(color.toUpperCase())
     }
     // 别让这条检查变成空转：两种 swatch 都得有人用
