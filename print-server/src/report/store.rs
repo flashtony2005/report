@@ -18,6 +18,7 @@
 //!   代价是服务端要有 TS 侧 `withExportFormula` / `withExpandControl` 的等价实现（见 apply_options）。
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::path::{Path, PathBuf};
 
 use super::model::{cell_pos, PageConfig, ReportTemplate, SheetTpl};
@@ -49,6 +50,33 @@ pub struct ReportOptions {
     pub dump: Option<bool>,
 }
 
+/// 报表参数声明 —— 决定「执行前弹什么查询条件」
+///
+/// 之前只有 `RunRequest.params`（数据集名 → 位置参数数组）那条底层通道：
+/// 调用方得自己知道 SQL 里第几个 `?` 是什么，前端没法据此画表单。
+/// 这一层把参数**命名**并描述清楚，UI 才能自动生成查询表单。
+///
+/// 绑定方式：数据源的 `params` 里写字符串 `"$地区"`（`$` + 参数名），
+/// 执行时换成这里解析出来的值。用显式 `$` 前缀而不是「看着像占位符就换」，
+/// 是为了让「作者忘了写 $」变成一个能查出来的错误，而不是把字面量静默塞进 SQL。
+///
+/// 字段都是单词，无需 camelCase / snake_case 之争（与 SheetTpl 一致用 snake）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ReportParam {
+    pub name: String,
+    /// 表单上的显示名；缺省用 name
+    pub label: Option<String>,
+    /// `text` | `number` | `date` | `enum`；缺省 text
+    pub kind: Option<String>,
+    /// 没传值时用它
+    pub default: Option<JsonValue>,
+    /// 必填：既没传值也没默认值就报错（不能静默按空过）
+    pub required: Option<bool>,
+    /// `kind=enum` 时的候选项
+    pub options: Option<Vec<String>>,
+}
+
 /// 一个报表定义文件的完整内容
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +97,9 @@ pub struct ReportDef {
     /// 数据从哪来；执行时现查
     #[serde(default)]
     pub sources: Vec<ReportSource>,
+    /// 执行前要填的参数（UI 据此画查询表单）；缺省空
+    #[serde(default)]
+    pub params: Vec<ReportParam>,
     #[serde(default)]
     pub options: ReportOptions,
 }
@@ -403,6 +434,7 @@ mod tests {
             updated_at: None,
             template: ReportTemplate::default(),
             sources: Vec::new(),
+            params: Vec::new(),
             options: ReportOptions::default(),
         }
     }

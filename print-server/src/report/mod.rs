@@ -845,6 +845,10 @@ pub async fn reports_delete_handler(
 pub struct RunRequest {
     /// 数据集名 → 参数数组（覆盖定义里的 params）
     pub params: Option<BTreeMap<String, Vec<JsonValue>>>,
+    /// **命名参数**值：参数名 → 值。配合 `ReportDef.params` 的声明使用，
+    /// UI 可按声明画出查询表单。与上面的 `params` 是两条通道：
+    /// 这条按名字绑（人填），那条按数据集整体覆盖（程序填）。
+    pub values: Option<BTreeMap<String, JsonValue>>,
     /// 覆盖定义里的 dump 开关
     pub dump: Option<bool>,
 }
@@ -972,10 +976,7 @@ pub async fn run_report_cli(
     let resp = run_def(
         state,
         def,
-        RunRequest {
-            params,
-            dump: None,
-        },
+        RunRequest { params, values: None, dump: None },
     )
     .await?;
 
@@ -1014,6 +1015,104 @@ pub async fn run_report_cli(
 }
 
 /// 执行一个报表定义：应用 options → 合并运行时参数 → 渲染
+/// 解析本次运行各参数的值：优先用传入值，没传就用声明的 `default`。
+///
+/// 三种情况一律**报错**，不静默放过：
+/// - 传了没声明的参数 —— 多半是名字打错，静默忽略会让筛选**不生效**而作者以为生效了；
+/// - 声明为必填但既没传值也没有默认值；
+/// - 声明重复（同名两个参数，后面的会悄悄覆盖前面的，说不清用哪个）。
+pub fn resolve_params(
+    declared: &[store::ReportParam],
+    supplied: &BTreeMap<String, JsonValue>,
+) -> Result<BTreeMap<String, JsonValue>, String> {
+    let mut seen: BTreeMap<String, bool> = BTreeMap::new();
+    let mut out: BTreeMap<String, JsonValue> = BTreeMap::new();
+
+    // 未知参数**先查**：名字打错时，真实原因是「写错了名字」而不是「没传值」。
+    // 放在必填检查之后的话，typo 会被报成「region 必填」，把人往错的方向带。
+    let known: Vec<&str> = declared.iter().map(|p| p.name.as_str()).collect();
+    if let Some(unknown) = supplied.keys().find(|k| !known.contains(&k.as_str())) {
+        return Err(format!(
+            "未知参数「{unknown}」：本报表声明的参数是 [{}]",
+            known.join(", ")
+        ));
+    }
+
+    for p in declared {
+        let name = p.name.trim();
+        if name.is_empty() {
+            return Err("参数声明里有空的 name".to_string());
+        }
+        if seen.insert(name.to_string(), true).is_some() {
+            return Err(format!("参数「{name}」声明了多次"));
+        }
+        if let Some(v) = supplied.get(name) {
+            out.insert(name.to_string(), v.clone());
+            continue;
+        }
+        if let Some(d) = &p.default {
+            out.insert(name.to_string(), d.clone());
+            continue;
+        }
+        if p.required.unwrap_or(false) {
+            return Err(format!(
+                "参数「{name}」必填，但本次运行没有传值，它也没有默认值"
+            ));
+        }
+        // 非必填且没值：不进结果集。数据源若引用了它，会在 bind_params 里报错
+        // —— 那是引用方的错，不该在这里拿 Null 蒙过去。
+    }
+
+    Ok(out)
+}
+
+/// 把参数值绑到数据源的 `params` 上：`"$name"` 这样的**字符串**整体换成对应值。
+///
+/// 只对字符串生效、且必须整体等于 `$name`（不是「包含 $ 就替换」）：
+/// 宽松匹配会把作者真想写进 SQL 的 `$` 也换掉，那是查不出来的错。
+///
+/// 引用了没解析出值的参数 —— 报错。拿 Null 顶上去会让 SQL 筛出「字段 IS NULL」
+/// 的结果，看着像筛过了，其实筛的是另一回事。
+pub fn bind_params(
+    sources: &[ReportSource],
+    resolved: &BTreeMap<String, JsonValue>,
+) -> Result<Vec<ReportSource>, String> {
+    let mut out = Vec::with_capacity(sources.len());
+    for s in sources {
+        let mut s = s.clone();
+        if let Some(list) = &s.params {
+            let mut bound = Vec::with_capacity(list.len());
+            for v in list {
+                match v {
+                    JsonValue::String(t) if t.starts_with('$') => {
+                        let name = t[1..].trim();
+                        if name.is_empty() {
+                            return Err(format!(
+                                "数据源「{}」的参数写成了裸的 \"$\"，没有参数名",
+                                s.name
+                            ));
+                        }
+                        match resolved.get(name) {
+                            Some(r) => bound.push(r.clone()),
+                            None => {
+                                return Err(format!(
+                                    "数据源「{}」引用了参数「{name}」，但本次运行没拿到它的值\
+                                     （没传值且没有默认值）",
+                                    s.name
+                                ))
+                            }
+                        }
+                    }
+                    other => bound.push(other.clone()),
+                }
+            }
+            s.params = Some(bound);
+        }
+        out.push(s);
+    }
+    Ok(out)
+}
+
 pub async fn run_def(
     state: &AppState,
     def: store::ReportDef,
@@ -1021,8 +1120,12 @@ pub async fn run_def(
 ) -> Result<RenderResponse, String> {
     let template = store::apply_options(def.template, &def.options);
 
+    // 命名参数：先按声明解析出「这次运行每个参数的值」，再绑到数据源的 params 上。
+    // 没声明任何参数时不报错 —— 老报表没有这一层，照旧跑。
+    let resolved = resolve_params(&def.params, &run.values.unwrap_or_default())?;
+    let mut sources = bind_params(&def.sources, &resolved)?;
+
     // 运行时参数覆盖。key 是数据集名，值直接替换该数据源的 params。
-    let mut sources = def.sources;
     if let Some(overrides) = run.params {
         for s in sources.iter_mut() {
             if let Some(p) = overrides.get(&s.name) {
@@ -3454,6 +3557,136 @@ mod tests {
         let pages = paginate(&rows, &cfg);
         assert_eq!(pages.len(), 1, "整张表被一个合并格罩住，切不开就只有 1 页");
         assert_eq!(pages[0].len(), 11, "1 行表头 + 10 行大组");
+    }
+
+    /* ------------------------------ 报表参数 ------------------------------ */
+
+    fn param(name: &str) -> store::ReportParam {
+        store::ReportParam {
+            name: name.into(),
+            label: None,
+            kind: None,
+            default: None,
+            required: None,
+            options: None,
+        }
+    }
+
+    fn src(name: &str, params: Option<Vec<JsonValue>>) -> ReportSource {
+        ReportSource {
+            name: name.into(),
+            conn_id: None,
+            engine: None,
+            database: None,
+            table: Some("t".into()),
+            fields: None,
+            limit: None,
+            r#where: Some("x = ?".into()),
+            params,
+        }
+    }
+
+    fn vals(pairs: &[(&str, JsonValue)]) -> BTreeMap<String, JsonValue> {
+        pairs.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect()
+    }
+
+    #[test]
+    fn resolve_params_supplied_wins_over_default() {
+        let mut p = param("region");
+        p.default = Some(JsonValue::from("全部"));
+        let got = resolve_params(&[p], &vals(&[("region", JsonValue::from("华东"))])).unwrap();
+        assert_eq!(got["region"], JsonValue::from("华东"));
+    }
+
+    #[test]
+    fn resolve_params_falls_back_to_default() {
+        let mut p = param("region");
+        p.default = Some(JsonValue::from("全部"));
+        let got = resolve_params(&[p], &BTreeMap::new()).unwrap();
+        assert_eq!(got["region"], JsonValue::from("全部"));
+    }
+
+    /// 传了没声明的参数 —— 多半是名字打错。静默忽略会让筛选**不生效**
+    /// 而作者以为生效了，所以必须报错。
+    #[test]
+    fn resolve_params_errors_on_unknown_param() {
+        let err = resolve_params(&[param("region")], &vals(&[("regoin", JsonValue::from("x"))]))
+            .unwrap_err();
+        assert!(err.contains("未知参数") && err.contains("regoin"), "{err}");
+        assert!(err.contains("region"), "应列出已声明的参数名: {err}");
+    }
+
+    #[test]
+    fn resolve_params_errors_on_missing_required() {
+        let mut p = param("date_from");
+        p.required = Some(true);
+        let err = resolve_params(&[p], &BTreeMap::new()).unwrap_err();
+        assert!(err.contains("date_from") && err.contains("必填"), "{err}");
+    }
+
+    /// 同名声明两次：后面会悄悄覆盖前面，说不清用哪个
+    #[test]
+    fn resolve_params_errors_on_duplicate_declaration() {
+        assert!(resolve_params(&[param("a"), param("a")], &BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn bind_params_substitutes_dollar_refs() {
+        let resolved = vals(&[("region", JsonValue::from("华东"))]);
+        let sources = vec![src("ds1", Some(vec![JsonValue::from("$region")]))];
+        let out = bind_params(&sources, &resolved).unwrap();
+        assert_eq!(out[0].params.as_ref().unwrap()[0], JsonValue::from("华东"));
+    }
+
+    /// 只认**整体等于** `$name` 的字符串：宽松匹配会把作者真想写进 SQL 的 `$` 换掉
+    #[test]
+    fn bind_params_only_substitutes_whole_dollar_refs() {
+        let resolved = vals(&[("region", JsonValue::from("华东"))]);
+        let sources = vec![src(
+            "ds1",
+            Some(vec![
+                JsonValue::from("price > $region"), // 含 $ 但整体不是引用 → 原样
+                JsonValue::from("$"),               // 裸 $ → 报错
+            ]),
+        )];
+        assert!(bind_params(&sources, &resolved).is_err());
+        // 去掉裸 $ 后，另一个应保持原样
+        let sources = vec![src("ds1", Some(vec![JsonValue::from("price > $region")]))];
+        let out = bind_params(&sources, &resolved).unwrap();
+        assert_eq!(
+            out[0].params.as_ref().unwrap()[0],
+            JsonValue::from("price > $region"),
+            "不该部分替换"
+        );
+    }
+
+    /// 引用了没值的参数不拿 Null 顶：SQL 会变成筛「字段 IS NULL」，
+    /// 看着像筛过了，其实筛的是另一回事。
+    #[test]
+    fn bind_params_errors_when_ref_has_no_value() {
+        let sources = vec![src("ds1", Some(vec![JsonValue::from("$region")]))];
+        let err = bind_params(&sources, &BTreeMap::new()).unwrap_err();
+        assert!(err.contains("region") && err.contains("ds1"), "{err}");
+    }
+
+    /// 非字符串原样透传（数字 / 布尔 / null 不该被当引用）
+    #[test]
+    fn bind_params_passes_non_strings_through() {
+        let sources =
+            vec![src("ds1", Some(vec![JsonValue::from(7), JsonValue::from(true)]))];
+        let out = bind_params(&sources, &BTreeMap::new()).unwrap();
+        let p = out[0].params.as_ref().unwrap();
+        assert_eq!(p[0], JsonValue::from(7));
+        assert_eq!(p[1], JsonValue::from(true));
+    }
+
+    /// 老报表没有参数声明：不能因为加了这层就跑不起来
+    #[test]
+    fn no_params_declared_still_runs() {
+        let resolved = resolve_params(&[], &BTreeMap::new()).unwrap();
+        assert!(resolved.is_empty());
+        let out = bind_params(&[src("ds1", None)], &resolved).unwrap();
+        assert!(out[0].params.is_none());
     }
 
     /// 展开控制属性：expand_max_count（只显示前 N 条）/ expand_min_count（补空行）

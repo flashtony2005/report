@@ -928,6 +928,31 @@ export interface ReportOptions {
 }
 
 /** 一个报表定义文件的完整内容 */
+/**
+ * 报表参数声明 —— 决定「执行前弹什么查询条件」。
+ *
+ * 之前只有 `RunRequest.params`（数据集名 → 位置参数数组）那条底层通道，
+ * 调用方得自己知道 SQL 里第几个 `?` 是什么，前端没法据此画表单。
+ * 这一层把参数**命名**并描述清楚，UI 才能自动生成查询表单。
+ *
+ * 绑定方式：数据源的 `params` 里写字符串 `"$地区"`（`$` + 参数名），
+ * 执行时换成这里解析出来的值。用显式 `$` 前缀而不是「看着像占位符就换」，
+ * 是为了让「作者忘了写 $」变成一个能查出来的错误，而不是把字面量静默塞进 SQL。
+ */
+export interface ReportParam {
+  name: string
+  /** 表单上的显示名；缺省用 name */
+  label?: string
+  /** `text` | `number` | `date` | `enum`；缺省 text */
+  kind?: string
+  /** 没传值时用它 */
+  default?: unknown
+  /** 必填：既没传值也没默认值就报错（不能静默按空过） */
+  required?: boolean
+  /** `kind=enum` 时的候选项 */
+  options?: string[]
+}
+
 export interface ReportDef {
   format: string
   version: number
@@ -939,6 +964,8 @@ export interface ReportDef {
   template: ReportTemplate
   /** 数据从哪来；执行时现查 */
   sources?: ReportSource[]
+  /** 执行前要填的参数（UI 据此画查询表单）；缺省空 */
+  params?: ReportParam[]
   options?: ReportOptions
 }
 
