@@ -270,3 +270,23 @@ RFC 4180 转义 + UTF-8 BOM（缺了 Excel 开中文乱码）+ CRLF。
 `CellModelEditor` 是受控的，spec 里只点开关不重新 render，界面永远停在初始值
 （色块不跟着变、断言拿到旧值）。要像真实父组件那样 `sync()` 把新 cell 传回去。
 另：jsdom 对 `style.background` 有时保留 `#RRGGBB`、有时转 `rgb(...)`，断言两种都收。
+
+## 报表参数（ReportDef.params + RunRequest.values）
+
+`ReportDef.params: Vec<ReportParam>`（name/label/kind/default/required/options）
+是「执行前弹什么查询条件」的声明层，UI 据此自动生成表单；`kind=enum` 时
+`options` 就是下拉项。运行请求用 `values`（参数名 → 值）。
+
+与老的 `RunRequest.params`（数据集名 → 位置参数数组）是两条通道：
+这条按名字绑（人填），那条按数据集整体覆盖（程序填）。
+
+绑定：`resolve_params()` 解析出值 → `bind_params()` 把数据源 params 里
+**整体等于** `"$name"` 的字符串换成值。只认整体等于，不认「包含 `$`」。
+
+三种情况一律报错（静默的后果都是「筛选没生效，作者以为生效了」）：
+未知参数（typo）、必填缺失、引用了解析不出值的参数。
+
+**报错顺序也是正确性**：未知参数检查必须**先于**必填检查，否则 typo 会被报成
+「region 必填」，把人往错的方向带。先报离用户真实错误最近的那条。
+
+老报表没有 params 时照旧跑（`no_params_declared_still_runs` 钉住）。
