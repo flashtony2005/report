@@ -91,6 +91,22 @@
 - **本仓库 `tsc --noEmit` 不是干净的**（`designer-react` 有 6 处既有报错，
   且 package.json 里没有 typecheck 脚本）。判断类型错是不是自己引入的：
   `git stash push -- <文件>` → 重跑 → `git stash pop`，对比错误集合与行号偏移。
+- **沙箱的删除拦截是「按轮累计」的**（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，一轮里
+  超过阈值后**每一次**删除都要人工确认）。`shutil.rmtree` 直接被拒。
+  危害：连跑十几次探针的故障注入脚本会在第 N 次挂掉，**报错长得像探针自己坏了**
+  （踩过：误判成「未注入时探针就是红的」）。
+  → **脚本一律不删文件**：建目录用 `mkdir(exist_ok=True)`，清数据用
+  `DROP TABLE IF EXISTS`，写文件直接覆盖（`write_text` 自带截断）。
+- **ESM 裸包解析按脚本自己的位置**往上找 `node_modules`，**跟 cwd 无关**。
+  脚本放 `scripts/` 而依赖在 `designer-react/node_modules` 时（jsdom 就是），
+  必须 `createRequire(join(ROOT, 'designer-react/package.json'))`，不能指望 `cd` 过去。
+- **jsdom 里 `body.textContent` 会把 `<script>` 源码也算进去**。
+  查「页面上有没有某个词」时必须 `cloneNode(true)` 后
+  `querySelectorAll('script, style').remove()`，否则**源码注释会被当成页面上的字**
+  → 假红（踩过：注释里正好写了那句要消灭的话，3 条断言全假红）。
+- **同一个文件的两个 `Edit` 放一条消息里会竞态**，前一个可能被**静默丢掉**
+  （踩过两次：`db.rs` 的 `resolve_target` 那处）。靠「变量报 unused」才发现。
+  → 同一个文件的多个改动**一条一条发**，改完 grep 复核。
 
 ## 预览与导出是两套口径 —— 预览算出来的东西，导出要么复用要么移植
 
@@ -280,12 +296,36 @@ xlsx 通道 + 设计器面板）。
 
 ## 数据源现状
 
-sqlite ✅ / postgres ✅ / odbc ❌ 引擎未实现（界面已标注，非静默坑）。
+sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。
 MySQL **归一成 sqlite**（`normalizeDbEngine('mysql')==='sqlite'`，有测试钉住），
-但 UI 下拉只有 sqlite/postgres/odbc 三项（`admin.html:407`），**手改配置才会踩**，
-优先级最低。`/print` 只支持 pdf/html；`esc`/`tsc`/`zpl` 票据指令待实现
-（`print_job.rs:85`）。无 CSV 导出。**报表参数/查询表单整块缺失**
-（`params` 只是 SQL 绑定参数）。
+但 UI 下拉只有 sqlite/postgres/odbc 三项（`admin.html:407`），**手改配置才会踩**。
+`/print` 只支持 pdf/html。
+
+（这一节以前还写着「票据指令待实现 / 无 CSV 导出 / 参数表单整块缺失」——
+**都补完了，见下节「已完成」**。别再照着旧记忆当缺口。）
+
+## odbc 引擎：可选 feature + 三条硬约束
+
+`odbc-api 29`，`default-features = false`（默认带的 `prompt` 会拖进 `winit` GUI 依赖）
++ `features = ["odbc_version_3_80"]`，`[features] odbc = ["dep:odbc-api"]`。
+**不需要额外链接器环境变量**（odbc-sys 构建脚本自己问 `brew --prefix`）。
+本机依赖：`brew install unixodbc sqliteodbc`。
+
+1. **拿不到裸连接 handle** → 设不了 `SQL_ATTR_ACCESS_MODE`（**没有会话级只读**），
+   也调不了 `SQLGetInfo(SQL_IDENTIFIER_QUOTE_CHAR)`（引号符**写死 `"`**）。
+   原因：`Connection::into_handle(self)` **消费 self**、`Environment::allocate_connection`
+   **私有**。→ 只读降级到**语句级**，残余风险照实写进 README，靠**只读账号**兜底。
+   引号写死是可接受的：猜错得到**明确 SQL 语法错**，不是静默错数据。
+2. **目录函数的名字参数是「搜索模式」不是字面量**：`_` 匹配任意单字符、`%` 任意串、
+   `\` 转义。不转义 → `user_name` **连 `userXname` 一起匹配出来且不报错**。
+   探针里有 `userXname` 诱饵表守这条。
+3. **类型要原生解码**（整数/浮点/布尔），全按文本取的话报表 `sum()` 会在字符串上
+   **静默算错**。
+
+编译器层面的坑：`odbc-api` 有**两个 `Connection`**（高层的没有 `as_sys`）；
+`PrimaryKeysRow` 字段是 **`column`** 不是 `column_name`；**`bool` 没实现 `Pod`**
+→ 用 `Nullable::<u8>` 判 `!= 0`；`col_data_type` 要 **`ResultSetMetadata` trait 在作用域**；
+是 `VarCharArray<const L: usize>`（没有 `VarArrayLen`）；同步 API 全包 `spawn_blocking`。
 
 ## 盘点方法（可复用）
 
@@ -323,6 +363,31 @@ RFC 4180 转义 + UTF-8 BOM（缺了 Excel 开中文乱码）+ CRLF。
 `GridCell.image`（data URI）→ xlsx 真嵌入 + HTML `<img>`。几何在服务端算，见上文
 「格子图片」与「Excel 单位换算」。真机探针 `scripts/verify-xlsx-image.py`，
 它的正确性由 `scripts/fault-inject-image-probe.py` 反证（6 条，含重建重启）。
+
+**ODBC 引擎**（八项缺口的最后一项，至此全清）：`db_odbc.rs`，可选 feature。
+元数据走 ODBC 目录函数（不写方言 SQL）；`where` 参数走驱动绑定；
+`where` 拒 `; -- /* */`；表名先目录校验。见上文「odbc 引擎」。
+探针 `scripts/verify-odbc.py`（正例 + `--expect-off`）、
+反证 `scripts/fault-inject-odbc-probe.py`（10 条 / 两组各编各的）、
+配置页 `scripts/verify-admin-odbc-display.mjs`（jsdom，自带 3 条反向对照）。
+
+## 可选 feature（默认不编）怎么改：三件事必须一起做
+
+以后再加这类「要原生依赖」的能力（ODBC 就是这么做的），照这个清单走：
+
+1. **默认构建必须仍然可用，且报错要说「没编进这个构建」+ 重编命令**。
+   说成「暂未实现」是**错**的 —— 听起来像永远没有，用户会去换驱动 / 提需求，
+   其实只要重编一次。见 `db.rs::odbc_not_built_in()`。
+2. **界面/接口不能写死能力状态**，要从后端读一个能力位。
+   `/health.odbc = cfg!(feature = "odbc")`，页面**三态**显示：
+   已编入 / 未编入 / **读不到服务状态**。
+   ⚠️ 第三态是必须的：**读不到 ≠ 没编入**，混为一谈就是换了个方向的谎。
+   判据：凡「某功能有没有」是**构建期决定**的，页面上就不许出现写死的说法。
+3. **验证要覆盖两种构建配置**：`cargo build` 和 `cargo build --features X` 都要跑
+   （本次 313 / 321）。**只测开着 feature 那条路会漏掉一半** ——
+   默认构建下接口和页面说什么，才是用户实际看到的。
+
+配套：反证脚本要**按构建配置分组**（每组自己的目标文件 / 编译参数 / 探针参数）。
 
 ## 批量给 struct 加字段：两个构建都要跑
 

@@ -223,12 +223,27 @@ pub async fn test_connection(
 
     let result = match engine.as_str() {
         "postgres" => crate::db_pg::probe(&c).await,
-        "odbc" => Err("ODBC 引擎暂未实现（Rust 版客户端）：可以保存配置，但本服务暂不能连".to_string()),
+        // ODBC 是同步 API，别在 tokio 工作线程上直接跑
+        #[cfg(feature = "odbc")]
+        "odbc" => {
+            let cc = c.clone();
+            match tokio::task::spawn_blocking(move || crate::db_odbc::probe(&cc)).await {
+                Ok(r) => r,
+                Err(e) => Err(format!("ODBC 试连任务异常结束：{e}")),
+            }
+        }
+        #[cfg(not(feature = "odbc"))]
+        "odbc" => Err(
+            "ODBC 引擎没有编进这个构建：需要 `cargo build --features odbc`，\
+             并先装 unixODBC（macOS: `brew install unixodbc`，见 README）。\
+             配置可以保存，但本构建连不上"
+                .to_string(),
+        ),
         // 已知但不支持的引擎：说清楚，别掉进 probe_sqlite 去报「文件不存在」
         _ => {
             if let Some(name) = c.unsupported_engine() {
                 Err(format!(
-                    "{name} 引擎暂不支持（本服务目前只有 sqlite / postgres）：\
+                    "{name} 引擎暂不支持（本服务目前只有 sqlite / postgres / odbc）：\
                      配置可以保存，但本服务暂不能连"
                 ))
             } else {

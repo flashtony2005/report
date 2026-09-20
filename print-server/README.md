@@ -114,7 +114,7 @@ print-server --help
   - **sqlite**：用 `path`（文件绝对路径）
   - **postgres**：`url`（完整连接串）或 `host/port/user/password/dbname` 分项；`schema` 可选（缺省 `public`），
     配了就只检索该 schema、表名不带前缀；不配则列出全部非系统 schema，非默认 schema 的表名带 `schema.` 前缀
-  - **odbc**：用 `dsn`（**暂未实现**，会返回明确提示）
+  - **odbc**：用 `dsn`（ODBC 数据源名）。**可选功能，默认构建不带** —— 见下节「odbc 使用要点」
 - `scanDirs`：自动发现 `*.db / *.sqlite / *.sqlite3`，以绝对路径为库名
 - 所有 sqlite 打开均为 **只读模式**（SQLITE_OPEN_READ_ONLY），绝不写库
 - postgres 连接后立即 `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`，本会话内无法写库；
@@ -131,13 +131,85 @@ print-server --help
 - **仅支持明文连接**（未接 TLS 连接器）。服务端强制 SSL 时，请先用 `stunnel` 本地转发，
   或把需要的数据同步成本地只读副本 / sqlite 快照
 
+### odbc 使用要点
+
+**为什么是可选 feature**：ODBC 要链本机 unixODBC（`libodbc`），这是**原生依赖**。
+默认构建保持「零原生依赖」—— CI 和只跑 sqlite / postgres 的机器不受影响。
+没编 feature 时用到 odbc 连接会得到明确报错（说清是「没编进这个构建」+ 重编命令），
+配置页也会按 `/health` 里的能力位显示，不会谎报「暂未实现」。
+
+```bash
+# macOS：驱动管理器 + sqlite 的 ODBC 驱动（探针就用它做端到端）
+brew install unixodbc sqliteodbc
+
+# 打开 feature 重编。不需要额外的链接器环境变量：
+# odbc-sys 的构建脚本自己会去问 brew --prefix 找 libodbc
+cd print-server && cargo build --features odbc
+```
+
+然后在 `odbcinst.ini` 注册驱动、`odbc.ini` 配 DSN，`connections[].dsn` 填 **DSN 名**：
+
+```ini
+; odbcinst.ini
+[MyPGDriver]
+Driver=/path/to/psqlodbcw.so
+
+; odbc.ini
+[erp_dsn]
+Driver=MyPGDriver
+Database=erp
+Server=127.0.0.1
+Port=5432
+```
+
+服务端按 **`ODBCINI` 环境变量**找 `odbc.ini`（不设则用系统的默认位置）：
+
+```bash
+ODBCINI=/etc/odbc.ini ./print-server
+```
+
+- 元数据走 ODBC **目录函数**（`SQLTables` / `SQLColumns` / `SQLPrimaryKeys`），
+  所以表与视图能一起列出、主键与可空性都读得到，**不依赖某个驱动的方言**
+- 表名 / schema 传给目录函数前会转义 `_ % \` —— 这三个是**搜索模式**元字符，
+  不转义的话 `user_name` 会连 `userXname` 一起匹配出来，而且**不报错**
+- 取值类型：整数 / 浮点 / 布尔**原生解码**（报表里 `sum()` 才算得对）；
+  其余统一按文本取
+- `where` 里的 `?` 占位符走**驱动参数绑定**，参数按序放在 `params`
+- `where` 里禁止出现 `;` `--` `/*` `*/`，命中即拒；表名必须先在目录里存在
+
+#### ⚠️ 只读保证比 sqlite / postgres **弱一档**
+
+- sqlite 靠 `SQLITE_OPEN_READ_ONLY`（**文件级**）、postgres 靠
+  `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`（**会话级**），
+  **ODBC 这两样都做不到**：`odbc-api 29` 没暴露 `SQL_ATTR_ACCESS_MODE`，
+  裸连接句柄也拿不到（`Connection::into_handle` 是**消费 self** 的，
+  `Environment::allocate_connection` 是私有的），因此设不了连接属性。
+- 实际能给的只有**语句级**：① 服务端自己拼的永远只有 `SELECT` / `SELECT COUNT(*)`；
+  ② `where` 是唯一的注入面，按上面的规则拒掉分隔符与注释。
+- **残余风险**：若驱动允许在表达式里调用有副作用的函数，理论上仍可能触发写操作。
+  → **给 ODBC 配只读账号是最稳的做法，这条别省。**
+
+真机探针（用 sqlite 的 ODBC 驱动跑端到端，自己起停服务在 18899 端口）：
+
+```bash
+python3 scripts/verify-odbc.py                 # 验开着 feature 的构建：能连上且连对
+python3 scripts/verify-odbc.py --expect-off    # 验默认构建：拒绝的措辞对不对
+python3 scripts/fault-inject-odbc-probe.py     # 证明上面两个探针真会红（10 条注入，两组各编各的）
+node scripts/verify-admin-odbc-display.mjs     # 验配置页三种能力状态各显示什么（自带反向对照）
+```
+
+最后一条是给**配置页**的：它原来把「暂未实现」写死在页面上，feature 一开就成了页面在说谎。
+现在页面读 `/health.odbc` 三态显示，这个探针在 jsdom 里把三种状态各渲染一遍，
+并确认「读不到服务状态」不会被说成「未编入」。
+
 ## 限制与说明
 
 - `/print` 实际打印走 ShellExecute（`print` / `printto` 动词），依赖本机 .pdf 关联程序；
   指定打印机时先试 `printto`，失败回落默认打印机
 - `esc/tsc/zpl`（画布 JSON → 票据指令）**已实现**（`src/ticket/`，见下节）
 - 格子图片（`image`）**已实现**：xlsx 真嵌入、HTML 预览出 `<img>`（见下节）
-- ODBC 引擎暂未实现，返回 ok:false 明确提示
+- ODBC 引擎是**可选 feature**（默认不编，见下节）：默认构建返回 ok:false，
+  并说明「**没有编进这个构建**」而不是「暂未实现」—— 前者只要重编，后者像是永远没有
 - `svg` 载荷已废弃（与原 Qt 客户端一致），返回 ok:false
 
 ### 票据 / 标签指令（`esc` / `tsc` / `zpl`）

@@ -45,6 +45,55 @@ pub struct DataQuery {
 enum Target {
     Sqlite(PathBuf),
     Postgres(DbConnection),
+    /// 只有编了 `odbc` feature 才存在 —— 没编的时候 `Target::Odbc` 这个变体压根不在，
+    /// 于是「忘了接线」会变成编译错误，而不是运行期静默走错分支。
+    #[cfg(feature = "odbc")]
+    Odbc(DbConnection),
+}
+
+/// 没编 `odbc` feature 时的统一报错。
+///
+/// **必须说清是「没编进去」而不是「没实现」** —— 这两个是完全不同的事，
+/// 报成「暂未实现」会让用户以为换驱动也没用，实际只要加个 feature。
+#[cfg(not(feature = "odbc"))]
+fn odbc_not_built_in() -> String {
+    "ODBC 引擎没有编进这个构建：需要 `cargo build --features odbc`，\
+     并先装 unixODBC（macOS: `brew install unixodbc`，见 print-server/README.md）"
+        .to_string()
+}
+
+#[cfg(feature = "odbc")]
+fn odbc_from_config(c: DbConnection) -> Result<Target, String> {
+    Ok(Target::Odbc(c))
+}
+
+#[cfg(not(feature = "odbc"))]
+fn odbc_from_config(_c: DbConnection) -> Result<Target, String> {
+    Err(odbc_not_built_in())
+}
+
+/// 内联用法：`engine=odbc` + `database=<DSN>`
+#[cfg(feature = "odbc")]
+fn odbc_inline(database: Option<String>) -> Result<Target, String> {
+    let dsn = database
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "ODBC 内联连接缺少 DSN（database 参数）".to_string())?;
+    let mut c = DbConnection::default();
+    c.id = dsn.clone();
+    c.engine = "odbc".into();
+    c.dsn = Some(dsn);
+    Ok(Target::Odbc(c))
+}
+
+#[cfg(not(feature = "odbc"))]
+fn odbc_inline(_database: Option<String>) -> Result<Target, String> {
+    Err(odbc_not_built_in())
+}
+
+/// 缺省连接能不能选它。没编 odbc 时不能选中 odbc 条目 —— 选中了就必然报错，
+/// 而用户只是没传 database 参数而已。
+fn usable_as_default(c: &DbConnection) -> bool {
+    cfg!(feature = "odbc") || c.norm_engine() != "odbc"
 }
 
 /// 内联配置（请求里直接给 database + engine）→ 目标
@@ -67,12 +116,10 @@ fn finish_engine(engine: &str, database: Option<String>, _dsn: Option<String>) -
             c.url = Some(url);
             Ok(Target::Postgres(c))
         }
-        "odbc" => Err(
-            "ODBC 引擎暂未实现（Rust 版客户端），请改用 sqlite / postgres，或使用原 Qt 客户端".to_string(),
-        ),
+        "odbc" => odbc_inline(database),
         // 已知但不支持的引擎单独给一句人话，别落进「未知引擎」那种没信息量的报错
         other if crate::config::unsupported_engine_name(other).is_some() => Err(format!(
-            "{} 引擎暂不支持（本服务目前只有 sqlite / postgres），\
+            "{} 引擎暂不支持（本服务目前只有 sqlite / postgres / odbc），\
              请改用 sqlite / postgres，或先把数据导成 sqlite 文件",
             crate::config::unsupported_engine_name(other).unwrap()
         )),
@@ -86,16 +133,14 @@ fn conn_to_target(c: DbConnection) -> Result<Target, String> {
     // （`norm_engine` 对它们照样返回 sqlite，真开下去就是「文件不存在」的误导性报错。）
     if let Some(name) = c.unsupported_engine() {
         return Err(format!(
-            "连接「{}」配的引擎是 {name}，本服务暂不支持（目前只有 sqlite / postgres）；\
+            "连接「{}」配的引擎是 {name}，本服务暂不支持（目前只有 sqlite / postgres / odbc）；\
              请改用 sqlite / postgres，或先把数据导成 sqlite 文件",
             c.id
         ));
     }
     match c.norm_engine() {
         "postgres" => Ok(Target::Postgres(c)),
-        "odbc" => Err(
-            "ODBC 引擎暂未实现（Rust 版客户端），请改用 sqlite / postgres，或使用原 Qt 客户端".to_string(),
-        ),
+        "odbc" => odbc_from_config(c),
         _ => {
             let p = c
                 .path
@@ -129,14 +174,14 @@ fn resolve_target(state: &AppState, q: &DataQuery) -> Result<Target, String> {
         return finish_engine(engine, Some(db.to_string()), None);
     }
 
-    // 3. 缺省：配置里第一条非 odbc 连接，或扫描发现的第一条 sqlite
+    // 3. 缺省：配置里第一条可用连接，或扫描发现的第一条 sqlite
     let first = state
         .config
         .read()
         .unwrap()
         .connections
         .iter()
-        .find(|c| c.norm_engine() != "odbc")
+        .find(|c| usable_as_default(c))
         .cloned();
     if let Some(c) = first {
         return conn_to_target(c);
@@ -264,6 +309,8 @@ pub async fn tables(
     match resolve_target(&state, &dq).map_err(service_error) {
         Ok(Target::Sqlite(path)) => run_tables_sqlite(&path),
         Ok(Target::Postgres(conn)) => crate::db_pg::tables(&conn).await,
+        #[cfg(feature = "odbc")]
+        Ok(Target::Odbc(conn)) => crate::db_odbc::tables(&conn).await,
         Err(resp) => resp,
     }
 }
@@ -321,6 +368,8 @@ async fn run_columns(state: &AppState, dq: &DataQuery) -> Result<Response, Respo
     match target {
         Target::Sqlite(path) => run_columns_sqlite(&path, table),
         Target::Postgres(conn) => Ok(crate::db_pg::columns(&conn, table).await),
+        #[cfg(feature = "odbc")]
+        Target::Odbc(conn) => Ok(crate::db_odbc::columns(&conn, table).await),
     }
 }
 
@@ -391,6 +440,19 @@ async fn run_rows(state: &AppState, dq: &DataQuery) -> Result<Response, Response
         Target::Postgres(conn) => {
             let params = dq.params.as_deref().unwrap_or(&[]);
             Ok(crate::db_pg::rows(
+                &conn,
+                table,
+                dq.fields.as_deref(),
+                dq.limit,
+                dq.r#where.as_deref(),
+                params,
+            )
+            .await)
+        }
+        #[cfg(feature = "odbc")]
+        Target::Odbc(conn) => {
+            let params = dq.params.as_deref().unwrap_or(&[]);
+            Ok(crate::db_odbc::rows(
                 &conn,
                 table,
                 dq.fields.as_deref(),
@@ -540,6 +602,26 @@ pub async fn query_rows(state: &AppState, q: &DataQuery) -> Result<Vec<DataRow>,
         Target::Postgres(conn) => {
             let params = q.params.as_deref().unwrap_or(&[]);
             let (rows, _total, _display) = crate::db_pg::fetch_rows(
+                &conn,
+                table,
+                q.fields.as_deref(),
+                q.limit,
+                q.r#where.as_deref(),
+                params,
+                Some(REPORT_MAX_ROWS),
+            )
+            .await?;
+            rows.into_iter()
+                .filter_map(|v| match v {
+                    serde_json::Value::Object(m) => Some(m),
+                    _ => None,
+                })
+                .collect()
+        }
+        #[cfg(feature = "odbc")]
+        Target::Odbc(conn) => {
+            let params = q.params.as_deref().unwrap_or(&[]);
+            let (rows, _total, _display) = crate::db_odbc::fetch_rows(
                 &conn,
                 table,
                 q.fields.as_deref(),

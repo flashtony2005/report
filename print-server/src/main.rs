@@ -15,6 +15,8 @@
 mod admin;
 mod config;
 mod db;
+#[cfg(feature = "odbc")]
+mod db_odbc;
 mod db_pg;
 mod fonts;
 mod health;

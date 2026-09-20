@@ -28,7 +28,18 @@ calamine = "0.36.1"
 # 票据指令（ESC/POS）要按 GBK 编码中文 —— 票据机内置的是中文字库，不吃 UTF-8。
 # 这个 crate 本来就在依赖树里（calamine 带的），这里只是提升成直接依赖。
 encoding_rs = "0.8"
+# ODBC 引擎：**可选**，默认不编。
+# 关掉 default-features 是因为默认带的 `prompt` 会拖进 winit（GUI 依赖），
+# 对一个 headless 服务没意义；`odbc_version_3_80` 只是多声明几个 3.8 的函数，留着。
+# 打开方式：`cargo build --features odbc`（需要先装 unixODBC，见 README）。
+odbc-api = { version = "29.0.0", default-features = false, features = [
+  "odbc_version_3_80",
+], optional = true }
 
 [profile.release]
 opt-level = 2
 lto = false
+
+[features]
+# 名字取 `odbc` 而不是自动生成的 `odbc-api`：`--features odbc` 更顺手
+odbc = ["dep:odbc-api"]

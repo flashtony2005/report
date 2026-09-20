@@ -22,5 +22,9 @@ pub async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
         "reportsDir": crate::config::ServerConfig::abs_display(
             &crate::report::store::reports_dir(state.config_path.as_ref()),
         ),
+        // ODBC 是**可选 feature**：页面得按「这个构建到底编没编」来显示。
+        // 写死「暂未实现」的话，开了 feature 的构建里页面就是在说谎 ——
+        // 用户看着「暂未实现」去换驱动，其实只要重新编译。
+        "odbc": cfg!(feature = "odbc"),
     }))
 }

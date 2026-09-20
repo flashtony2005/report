@@ -1754,10 +1754,10 @@ width / height / unit。**没有页边距字段**。
 ### 数据源
 
 - ✅ `sqlite`、`postgres`（`config.rs` 归一化 `postgresql` / `pgsql` / `pg` 等别名）
-- ⚠️ `odbc` —— **配置能存，但连不上**：`admin.rs:226` 明确返回
-  「ODBC 引擎暂未实现（Rust 版客户端）：可以保存配置，但本服务暂不能连」
-
-→ 老系统走 ODBC / DSN 的场景目前进不来。
+- ✅ `odbc` —— **2026-09-20 已补**，是**可选 feature**（默认不编，`cargo build --features odbc`）。
+  老系统走 ODBC / DSN 的场景现在能进来了，详见「2026-09-20：ODBC 引擎」一节。
+  ⚠️ 只读保证比 sqlite / postgres **弱一档**（做不到文件级 / 会话级只读），
+  给 ODBC 配只读账号这一条别省。
 
 **2026-09-17 更正**：上一版写「能存不能用容易误导人」是**我自己想当然** ——
 读 `admin.html` 才发现界面已经把话说清楚了，不是静默的坑：
@@ -1766,9 +1766,13 @@ width / height / unit。**没有页边距字段**。
   （`admin.html:322`）；
 - 连接列表里 ODBC 那条会挂一个「暂未实现」的 warn 标签（`admin.html:512`）。
 
-所以「能不能用」这件事**不是缺口**，界面已经标注；真正的缺口只是
-**引擎没实现**（要接 unixODBC / 平台相关，且本机 macOS 链接本来就麻烦）。
-要不要做取决于有没有非 ODBC 不可的老系统。
+所以「能不能用」这件事**不是缺口**，界面已经标注；真正的缺口只是**引擎没实现**
+（要接 unixODBC / 平台相关，且本机 macOS 链接本来就麻烦）。
+
+**2026-09-20 补记**：上面那两处写死的「暂未实现」**已经改成按构建能力显示** ——
+因为 feature 是可选的，写死之后「开了 feature 的构建里页面反而在说谎」。
+现在页面读 `/health.odbc`（= `cfg!(feature = "odbc")`），三态显示：
+已编入 / 未编入 / 读不到服务状态（**未知不能当成「未编入」**，那是另一个会骗人的显示）。
 
 ---
 
@@ -1873,6 +1877,14 @@ width / height / unit。**没有页边距字段**。
 `"odbc"` 仍走「暂未实现」的明确报错）。另有一项**平台性**限制不是缺口、
 但要知道：Windows 下的 RAW 直发（`StartDocPrinter`）没写 —— 它无法在本机
 （macOS）编译验证，宁可明确报错也不写一段没验过的代码。
+
+**2026-09-20 收尾（八项全清）**：**ODBC 也补上了**，做成**可选 feature**
+（默认不编，`cargo build --features odbc`），见「2026-09-20：ODBC 引擎」一节。
+八项缺口至此**全部关闭**。
+
+唯一留下的仍然不是缺口，而是那条**平台性**限制：Windows 下的 RAW 直发
+（`StartDocPrinter`）依旧不写 —— 本机（macOS）编译不了也验不了，
+宁可明确报错也不写一段没验过的代码。
 
 ---
 
@@ -2032,3 +2044,108 @@ IR 只有五种图元：`Text` / `Barcode` / `Qr` / `Rule` / `Box`，坐标统�
   本机（macOS）无法编译验证，不写没验过的 unsafe。指令文件照常落盘，
   报错信息里给出路径。非 Windows 走 `lp -o raw`（不能过 CUPS 过滤器，会被当文本重排）。
 - 图片 / 图表进票据（本来也画不出来，靠警告兜住）。
+
+---
+
+## 2026-09-20：ODBC 引擎（最后一项缺口，八项全清）
+
+### 为什么做成可选 feature
+
+ODBC 要链本机 unixODBC（`libodbc`），这是**原生依赖**，而这个仓库的默认构建一直是
+「零原生依赖」。直接加硬依赖会波及 CI 和所有只跑 sqlite / postgres 的机器，
+所以：
+
+```toml
+odbc-api = { version = "29.0.0", default-features = false,
+             features = ["odbc_version_3_80"], optional = true }
+
+[features]
+odbc = ["dep:odbc-api"]
+```
+
+- `default-features = false` 是因为 odbc-api 默认带的 **`prompt`** 会拖进 `winit`（GUI 依赖），
+  对一个 headless 服务没意义。
+- 名字取 `odbc` 而不是自动生成的 `odbc-api`，`--features odbc` 更顺手。
+- **不需要额外的链接器环境变量**：odbc-sys 的构建脚本自己会问 `brew --prefix` 找 libodbc。
+
+### 「没编进这个构建」≠「暂未实现」
+
+这条是本项**最容易写歪**的地方。默认构建下用到 odbc 连接，报错必须说
+**「没有编进这个构建」+ 重编命令**，不能说「暂未实现」—— 后者听起来像永远不会有，
+用户会去换驱动 / 提需求，其实只要重编一次。
+
+配套：`admin.html` 原来**写死**了「Rust 版客户端暂未实现 ODBC」和「暂未实现」标签。
+feature 一开，那两处就变成**页面在说谎**。改成读 `/health.odbc`
+（= `cfg!(feature = "odbc")`）三态显示：
+
+| 状态 | 显示 |
+| --- | --- |
+| `true` | 本构建已编入 ODBC（提示装 unixODBC + 配 DSN） |
+| `false` | 本构建未编入，给出 `cargo build --features odbc` |
+| 读不到 `/health` | **未知**，明说读不到 |
+
+第三态是刻意的：**读不到服务状态 ≠ 这个构建没有 ODBC**，混为一谈又是一个会骗人的显示。
+
+### 只读保证比另两条路弱一档（已知的、写明的降级）
+
+| 引擎 | 只读手段 | 级别 |
+| --- | --- | --- |
+| sqlite | `SQLITE_OPEN_READ_ONLY` | 文件级 |
+| postgres | `SET SESSION ... READ ONLY` | 会话级 |
+| **odbc** | 只拼 `SELECT` / `SELECT COUNT(*)` + `where` 设防 | **语句级** |
+
+做不到会话级的原因是**够不到连接句柄**：`odbc-api 29` 没暴露 `SQL_ATTR_ACCESS_MODE`，
+而 `Connection::into_handle(self)` 是**消费 self** 的、`Environment::allocate_connection`
+是**私有**的 —— 想设连接属性就得放弃查询 API。同一个原因也让
+`SQLGetInfo(SQL_IDENTIFIER_QUOTE_CHAR)` 拿不到，标识符引号只能**写死 ANSI 双引号**。
+
+写死是**可接受**的取舍：引号符猜错会得到**明确的 SQL 语法错**，不是静默算错数据。
+**残余风险**照实写进了模块头注释和 README：若驱动允许在表达式里调用有副作用的函数，
+理论上仍可能触发写操作 → **给 ODBC 配只读账号是最稳的做法**。
+
+### 目录函数的名字参数是「搜索模式」
+
+`SQLTables` / `SQLColumns` 的表名 / schema 参数**不是字面量**：`_` 匹配任意单字符、
+`%` 匹配任意串、`\` 是转义符。不转义的话 `user_name` 会**连 `userXname` 一起匹配出来，
+而且不报错** —— 表名里带下划线的到处都是，这个坑几乎必然踩到。
+探针里专门放了一张 `userXname` 诱饵表守着这条。
+
+### 踩到的编译器事实（记下来省下次的时间）
+
+- odbc-api 有**两个 `Connection`**：高层的 `connection::Connection<'c>`（不透明 struct）
+  和裸句柄 `handles::connection::Connection<'c>`。`as_sys` / `set_autocommit`
+  只在**裸句柄**上，而它只能靠 `into_handle(self)` 拿到。
+- `PrimaryKeysRow` 的字段是 `column`，不是 `column_name`。
+- **`bool` 没实现 `Pod`** → `Nullable<bool>` 编不过，取 `Nullable::<u8>` 再判 `!= 0`。
+- `col_data_type` 是 **`ResultSetMetadata` trait 的方法**，trait 必须在作用域里。
+- `VarArrayLen` 不存在 → 是 `VarCharArray<const LENGTH: usize>`，泛型函数写 `fn text_of<const L: usize>`。
+- odbc-api 是**同步 API**，全部包 `spawn_blocking`，别卡住 tokio 工作线程。
+
+### 验证（两层，缺一层都不算完）
+
+- **单测**：`db_odbc.rs` 8 条（连接串转义 / 模式转义 / 引号翻倍 / where 设防 /
+  NULL 参数 / 默认 schema / 表名拆分）。总数 **313（无 feature）→ 321（有 feature）**，
+  两种配置都零警告。
+- **真机探针** `scripts/verify-odbc.py`：自己起停服务（18899 端口，`ODBCSYSINI` /
+  `ODBCINI` 指向临时目录，`--config` 不碰仓库配置），用 **sqlite 的 ODBC 驱动**
+  跑端到端，12 组断言。
+- **探针的探针** `scripts/fault-inject-odbc-probe.py`：**9 条注入，两组各编各的** ——
+  8 条往 `db_odbc.rs` 里塞（编 `--features odbc`），1 条往 `db.rs` 的措辞里塞
+  （编默认构建，跑 `--expect-off`）。**只测开着 feature 那条路会漏掉一半**：
+  默认构建下页面和接口说什么，才是用户实际看到的东西。
+  9 条全部如期变红。
+
+### 探针本身踩的两个坑（都不是产品 bug）
+
+- **沙箱的删除配额是按轮累计的**（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，一轮里超过阈值后
+  每次删除都要人工确认）。故障注入要连跑十几次探针，用删除清理就会在第 N 次挂掉，
+  而且报错长得像**探针自己坏了**（差点误判成「未注入时探针就是红的」）。
+  → 探针改成**一个文件都不删**：测试库 `DROP TABLE IF EXISTS` 再建，ini / 配置覆盖写。
+- **注入结果里的明细行要挑**：探针的汇总行「✗ N 条断言失败：」在**最后**，
+  直接取 `bad[0]` 会拿到无关内容。
+
+### 已知没做的
+
+- 标识符引号写死双引号（够不到 `SQLGetInfo`）。只认 `` ` `` 或 `[]` 的驱动会明确语法错。
+- 会话级只读做不到（见上）。**靠只读账号兜底**。
+- 连接串里只带 `DSN` / `UID` / `PWD`，没有暴露任意驱动属性透传。

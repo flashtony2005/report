@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231677FF'/%3E%3Ctext x='16' y='22' font-size='14' font-family='sans-serif' font-weight='700' fill='%23fff' text-anchor='middle'%3EOP%3C/text%3E%3C/svg%3E" />
+<html lang="zh-CN" data-page-node-id="eA5gjhu28qBPVpMK24bpMu">
+<head data-page-node-id="6PxfJX9F4SL7pfaejqgKOc">
+<meta charset="utf-8" data-page-node-id="iFq7gTQUshhiXph3JwWwxS" />
+<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="wKF5s7uRcNxjWYG65iOAGg" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231677FF'/%3E%3Ctext x='16' y='22' font-size='14' font-family='sans-serif' font-weight='700' fill='%23fff' text-anchor='middle'%3EOP%3C/text%3E%3C/svg%3E" data-page-node-id="YiLdt8Sz7zmobsM56XYonD" />
 <title>OpenPrint · 数据库配置</title>
 <style>
   :root{
@@ -146,218 +146,218 @@
   @keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 </style>
 </head>
-<body>
+<body data-page-node-id="TB8o424xwI0JRdmGzcNUTt">
 
-<header class="topbar">
-  <div class="topbar-inner">
-    <div class="logo">OP</div>
-    <div>
-      <div class="title">数据库配置</div>
-      <div class="subtitle">OpenPrint 本地打印客户端 · 改完保存即生效，无需重启</div>
+<header class="topbar" data-page-node-id="qeVRw7AN4LO9NIQo3YelQr">
+  <div class="topbar-inner" data-page-node-id="A7IHInwk64htuMH29L6B6T">
+    <div class="logo" data-page-node-id="FYYSF5xg2Ra6xSw0NF4Qfo">OP</div>
+    <div data-page-node-id="0Ew4slCGj8nNWC1WChwBqN">
+      <div class="title" data-page-node-id="qX3zRFFZcRFvsAmaJAXY1V">数据库配置</div>
+      <div class="subtitle" data-page-node-id="9LiXiOnwmfFgF94Vw6GxjY">OpenPrint 本地打印客户端 · 改完保存即生效，无需重启</div>
     </div>
-    <div class="spacer"></div>
-    <span class="pill" id="pill-status"><span class="dot" id="pill-dot"></span><span id="pill-text">连接中…</span></span>
-    <button class="sm" id="btn-reload">重新加载</button>
+    <div class="spacer" data-page-node-id="MiwWh0ayuBFzazkWutBAiK"></div>
+    <span class="pill" id="pill-status" data-page-node-id="rYjABEwL2Y8yNtK1OIhWr6"><span class="dot" id="pill-dot" data-page-node-id="o8fY07iXEH95xSAaY3tw0n"></span><span id="pill-text" data-page-node-id="cbRE4qxsha8NJHOAoDeJI7">连接中…</span></span>
+    <button class="sm" id="btn-reload" data-page-node-id="IlfBRQcG63SVLxB1GYpDG8">重新加载</button>
   </div>
 </header>
 
-<main>
-  <section>
-    <div class="sec-head"><h2>运行状态</h2><span class="desc">来自服务 /health 与当前进程</span></div>
-    <div class="sec-body">
-      <div class="grid-stats" id="stats"></div>
+<main data-page-node-id="GZXb4JRhVkNVlnFLAHkHDy">
+  <section data-page-node-id="qNACEMIXGrfk60cHWtDE8Z">
+    <div class="sec-head" data-page-node-id="oFD0Do4g7B3GpQgyuHzmbQ"><h2 data-page-node-id="z1fHllT2EW4SQ1fKesCqNX">运行状态</h2><span class="desc" data-page-node-id="OWpRxBJhFjSe0E9SZyAnZX">来自服务 /health 与当前进程</span></div>
+    <div class="sec-body" data-page-node-id="kSEBpnWeXmJ7iPNXQ5Z41t">
+      <div class="grid-stats" id="stats" data-page-node-id="CyhIDtSw3yy8zivvABFKDF"></div>
     </div>
   </section>
 
-  <section>
-    <div class="sec-head">
-      <h2>数据库连接</h2>
-      <span class="desc">postgres / sqlite 均为只读访问；保存后立即出现在设计器数据源面板</span>
-      <div class="spacer"></div>
-      <button class="primary sm" id="btn-add">+ 新增连接</button>
+  <section data-page-node-id="heEnpe4cSIeZAk88RzrtPn">
+    <div class="sec-head" data-page-node-id="4DvpQTnnO3DXLtDDvEeVr4">
+      <h2 data-page-node-id="RqXn8qEvWv1Y3JruCmy0f9">数据库连接</h2>
+      <span class="desc" data-page-node-id="zyOsnGXBihR0SGuZ1tL3p1">postgres / sqlite 均为只读访问；保存后立即出现在设计器数据源面板</span>
+      <div class="spacer" data-page-node-id="aT5MFssOAx0ItjZLeBK2hH"></div>
+      <button class="primary sm" id="btn-add" data-page-node-id="VCxsgN7akfUl1D6wtgq3p0">+ 新增连接</button>
     </div>
-    <div class="sec-body" id="conn-list"></div>
+    <div class="sec-body" id="conn-list" data-page-node-id="MVekihgxWQcM9VwoNEGjhv"></div>
   </section>
 
-  <section>
-    <div class="sec-head">
-      <h2>自动扫描目录</h2>
-      <span class="desc">目录下的 *.db / *.sqlite / *.sqlite3 会自动作为数据源出现</span>
-      <div class="spacer"></div>
-      <button class="sm" id="btn-add-scan">+ 添加目录</button>
+  <section data-page-node-id="GjDSQQPYwMfumsCblrDy1P">
+    <div class="sec-head" data-page-node-id="Q9zOdi55AkgbcMDwXsFxHS">
+      <h2 data-page-node-id="SIxon1JNa6NCAvbMktuKOl">自动扫描目录</h2>
+      <span class="desc" data-page-node-id="wTZcCTVlY2mDgTtOdCGsLu">目录下的 *.db / *.sqlite / *.sqlite3 会自动作为数据源出现</span>
+      <div class="spacer" data-page-node-id="lFZWtOqkC491Z9sBqBj1ZF"></div>
+      <button class="sm" id="btn-add-scan" data-page-node-id="3R1eXbqlosm6E1WjpliFRW">+ 添加目录</button>
     </div>
-    <div class="sec-body" id="scan-list"></div>
+    <div class="sec-body" id="scan-list" data-page-node-id="161Wfi1REEYtgDSjHLMTWT"></div>
   </section>
 
-  <section>
-    <div class="sec-head"><h2>打印落盘目录</h2><span class="desc">打印任务中间文件（PDF）落盘位置，留空则用 ./spool</span></div>
-    <div class="sec-body">
-      <div class="row">
-        <input id="spool-input" placeholder="spool" />
-        <button class="sm" id="btn-spool-browse">浏览…</button>
+  <section data-page-node-id="TFNtGxUJ0Hi6PfUnnMGd7S">
+    <div class="sec-head" data-page-node-id="GtlENA6UOABcZvcFZMhdBo"><h2 data-page-node-id="wJL2gK4GZhwTm1YdOvLxAF">打印落盘目录</h2><span class="desc" data-page-node-id="hvbJzBt49acOkpSzsUXEIM">打印任务中间文件（PDF）落盘位置，留空则用 ./spool</span></div>
+    <div class="sec-body" data-page-node-id="beAlBZzEJ1e3B4GyvHF6VQ">
+      <div class="row" data-page-node-id="zumd337uE8UUfvgCg7mFl6">
+        <input id="spool-input" placeholder="spool" data-page-node-id="IkaMpa0v31PFpEvHRG4Lcy" />
+        <button class="sm" id="btn-spool-browse" data-page-node-id="tse6SFAltkEEo9PFomxPTH">浏览…</button>
       </div>
     </div>
   </section>
 
-  <section>
-    <div class="sec-head">
-      <h2>扫描发现的库</h2>
-      <span class="desc">文件已存在但还没配成连接，可一键加进来</span>
-      <div class="spacer"></div>
-      <button class="sm" id="btn-rescan">刷新</button>
+  <section data-page-node-id="ipArQPnPZU8C75QdKtPVTF">
+    <div class="sec-head" data-page-node-id="HZSN9mOHKLlmFS6fyIgB4u">
+      <h2 data-page-node-id="Klu90DNOOIgpj8dmCmSz5v">扫描发现的库</h2>
+      <span class="desc" data-page-node-id="ovi37lYkt4gSmSkrw3APqq">文件已存在但还没配成连接，可一键加进来</span>
+      <div class="spacer" data-page-node-id="RvDSeXDuSEUHkNv9GMNUGV"></div>
+      <button class="sm" id="btn-rescan" data-page-node-id="j3rwng5oZtfCljTAuGfV2w">刷新</button>
     </div>
-    <div class="sec-body" id="found-list"></div>
+    <div class="sec-body" id="found-list" data-page-node-id="JnNGUODyyi9gXa0G6zUDAK"></div>
   </section>
 </main>
 
-<footer class="savebar">
-  <div class="savebar-inner">
-    <span class="saved-hint" id="dirty-hint"><span class="dot" id="dirty-dot"></span><span id="dirty-text">加载中…</span></span>
-    <div class="spacer"></div>
-    <button id="btn-revert">还原</button>
-    <button class="primary" id="btn-save">保存配置</button>
+<footer class="savebar" data-page-node-id="aU7vOWnjzkzQYExuZACiR9">
+  <div class="savebar-inner" data-page-node-id="UrQ2PvzSEjV1FQ2k6mrXnF">
+    <span class="saved-hint" id="dirty-hint" data-page-node-id="gxNRQZ1jtkwx3qR5DxGyNo"><span class="dot" id="dirty-dot" data-page-node-id="owhybQdl3rsHDE7en0dhlX"></span><span id="dirty-text" data-page-node-id="G3ka2tLxT9OwFAkxVVqtmx">加载中…</span></span>
+    <div class="spacer" data-page-node-id="IIdoafmpfHniEjoMsWzFof"></div>
+    <button id="btn-revert" data-page-node-id="c7iOZQt71VKmAAvM4tB6Va">还原</button>
+    <button class="primary" id="btn-save" data-page-node-id="1AQN8MmNgeVPcecwHyOUqp">保存配置</button>
   </div>
 </footer>
 
 <!-- 连接编辑弹窗 -->
-<div class="mask" id="conn-mask">
-  <div class="modal">
-    <div class="modal-head"><h3 id="conn-title">新增连接</h3></div>
-    <div class="modal-body">
-      <div class="test-banner" id="conn-banner"></div>
+<div class="mask" id="conn-mask" data-page-node-id="8OeqaQ6hZqdYyw1FK4Q39x">
+  <div class="modal" data-page-node-id="qmV5tFELFUjysYE9ei26By">
+    <div class="modal-head" data-page-node-id="dw4eRIL5BuaJGuuEXGPvIJ"><h3 id="conn-title" data-page-node-id="nsiRoqPiHHhlQkjNEYsUcs">新增连接</h3></div>
+    <div class="modal-body" data-page-node-id="7L0CGGWb684hAhqkoYCTrw">
+      <div class="test-banner" id="conn-banner" data-page-node-id="WyF7PJOLLEGaVuGJ175MuO"></div>
 
-      <div class="field">
-        <label>数据库引擎</label>
-        <div class="seg" id="eng-seg">
-          <button data-eng="sqlite">SQLite</button>
-          <button data-eng="postgres">PostgreSQL</button>
-          <button data-eng="odbc">ODBC</button>
+      <div class="field" data-page-node-id="teNOlt6DeLqUF1kYWf2wKw">
+        <label data-page-node-id="1BLzA0RSuVHeMBYEi4Cdz2">数据库引擎</label>
+        <div class="seg" id="eng-seg" data-page-node-id="OvdbRUaQAd5TKuSFpclcqR">
+          <button data-eng="sqlite" data-page-node-id="fHfziRwUD36hA7Idb5SZDu">SQLite</button>
+          <button data-eng="postgres" data-page-node-id="w6wYRosaaegfkYrXLaDh9m">PostgreSQL</button>
+          <button data-eng="odbc" data-page-node-id="nE4TagUPfyfvUUXjQG7eFP">ODBC</button>
         </div>
       </div>
 
-      <div class="two">
-        <div class="field">
-          <label>显示名称</label>
-          <input data-field="label" placeholder="例如：财政工资库" />
+      <div class="two" data-page-node-id="i4COCmnSq7PKN6ifN9Azbk">
+        <div class="field" data-page-node-id="J99RgVkMZxNDRKMBhxGOfQ">
+          <label data-page-node-id="szTL2wy3UJHkIT7Bf3iWJA">显示名称</label>
+          <input data-field="label" placeholder="例如：财政工资库" data-page-node-id="xGMaPW0HOSKb6Mbx5wxT02" />
         </div>
-        <div class="field">
-          <label>连接 ID <span class="req">*</span></label>
-          <input data-field="id" class="mono" placeholder="例如：czgz" />
-          <div class="sub" id="id-hint">字母 / 数字 / 下划线 / 短横线；保存后不可修改</div>
+        <div class="field" data-page-node-id="FPiVULUUnLHRY8JtGrn123">
+          <label data-page-node-id="iIPkFsxGCQlpi7p5mAf46B">连接 ID <span class="req" data-page-node-id="krRkb0mvqXOZAlmWeHe0zB">*</span></label>
+          <input data-field="id" class="mono" placeholder="例如：czgz" data-page-node-id="wfRHGFEKQJiTAZvzKRS0GI" />
+          <div class="sub" id="id-hint" data-page-node-id="WXccBQ0zEPmc2WcuvY3M9Q">字母 / 数字 / 下划线 / 短横线；保存后不可修改</div>
         </div>
       </div>
 
       <!-- SQLite -->
-      <div data-eng-block="sqlite">
-        <div class="field">
-          <label>数据库文件路径 <span class="req">*</span></label>
-          <div class="row" style="margin:0">
-            <input data-field="path" class="mono" placeholder="F:\data\byb.db" />
-            <button class="sm" id="btn-browse-file">浏览…</button>
+      <div data-eng-block="sqlite" data-page-node-id="CXe7iOBJea3hYOmXPOXsg8">
+        <div class="field" data-page-node-id="WUgF4yPuT8909kNH2rJ6Py">
+          <label data-page-node-id="J1CUZ99utiZLzmLdBo0Ndy">数据库文件路径 <span class="req" data-page-node-id="aQEm1kcwvBsQFGtjLyaghr">*</span></label>
+          <div class="row" style="margin:0" data-page-node-id="oFchcABFwb0sp3CtV9iVF0">
+            <input data-field="path" class="mono" placeholder="F:\data\byb.db" data-page-node-id="NaKk9nFJcHelYAKvEQbu4e" />
+            <button class="sm" id="btn-browse-file" data-page-node-id="p8E70qMtFFkYKBzarkgm8w">浏览…</button>
           </div>
-          <div class="sub">以只读方式打开（SQLITE_OPEN_READ_ONLY），不会写库</div>
+          <div class="sub" data-page-node-id="UvAJWDwdscMXunS5jLtfkl">以只读方式打开（SQLITE_OPEN_READ_ONLY），不会写库</div>
         </div>
       </div>
 
       <!-- PostgreSQL -->
-      <div data-eng-block="postgres">
-        <div class="field">
-          <label>连接方式</label>
-          <div class="seg" id="pgmode-seg">
-            <button data-pgm="fields">分项填写</button>
-            <button data-pgm="url">连接串</button>
+      <div data-eng-block="postgres" data-page-node-id="u8W7rFwnvFFHgPGvqdTCD0">
+        <div class="field" data-page-node-id="pD0qNcou3lbLwLpwaTrIL1">
+          <label data-page-node-id="fjifo79XON45G267tkY5BF">连接方式</label>
+          <div class="seg" id="pgmode-seg" data-page-node-id="hpKs3rXfAVITKtVmg0mCoR">
+            <button data-pgm="fields" data-page-node-id="dfy2yn4DYEJPA1QVXn6Jxw">分项填写</button>
+            <button data-pgm="url" data-page-node-id="TtGPASDkf7hiWIG2LR6x1x">连接串</button>
           </div>
         </div>
-        <div data-pgm-block="fields">
-          <div class="two">
-            <div class="field">
-              <label>主机 <span class="req">*</span></label>
-              <input data-field="host" class="mono" placeholder="127.0.0.1" />
+        <div data-pgm-block="fields" data-page-node-id="HcKuypHZazvT9MHDpWtLoV">
+          <div class="two" data-page-node-id="k8qE69wq5C9Fw3a2EJDgVZ">
+            <div class="field" data-page-node-id="aMsb00Tm9WVKw6wCTlU0sH">
+              <label data-page-node-id="7ytUklUZDGEHxZ6BToOBMT">主机 <span class="req" data-page-node-id="bHhs6dVNaLgCHy96m9FqK9">*</span></label>
+              <input data-field="host" class="mono" placeholder="127.0.0.1" data-page-node-id="nPHGwYn4B3hNPjrGWpeyHR" />
             </div>
-            <div class="field">
-              <label>端口</label>
-              <input data-field="port" class="mono" placeholder="5432" inputmode="numeric" />
+            <div class="field" data-page-node-id="LBA4qYnpmET6tuM3dHQuDM">
+              <label data-page-node-id="DbyyPwKt4Q2JTaQaXYs9CZ">端口</label>
+              <input data-field="port" class="mono" placeholder="5432" inputmode="numeric" data-page-node-id="CyAbSrRwWomNL3KzwXBF1Q" />
             </div>
           </div>
-          <div class="two">
-            <div class="field">
-              <label>用户名 <span class="req">*</span></label>
-              <input data-field="user" class="mono" placeholder="readonly" />
+          <div class="two" data-page-node-id="PP5RxY4fQ79IuawXUkCA04">
+            <div class="field" data-page-node-id="F2oyYRFVoaTTvSwGwOOEFR">
+              <label data-page-node-id="TYZyAbw1AvqgSpyb76NA6j">用户名 <span class="req" data-page-node-id="socVwYGzk2EsiENAhPMEyO">*</span></label>
+              <input data-field="user" class="mono" placeholder="readonly" data-page-node-id="jgAHRXVvBi3Touwwp0dopD" />
             </div>
-            <div class="field">
-              <label>密码</label>
-              <div class="row" style="margin:0">
-                <input data-field="password" type="password" id="f-password" placeholder="密码" />
-                <button class="sm" id="btn-clear-pw" title="清空已保存的密码">清空</button>
+            <div class="field" data-page-node-id="BrmEY2o25gsggmrUhTR77G">
+              <label data-page-node-id="cEb0tHE8f5J5YW8xdvat7V">密码</label>
+              <div class="row" style="margin:0" data-page-node-id="tVgQNJ3ISVTnDm2VtXG1N6">
+                <input data-field="password" type="password" id="f-password" placeholder="密码" data-page-node-id="zbO3BOVfNBVaagavAL0c3z" />
+                <button class="sm" id="btn-clear-pw" title="清空已保存的密码" data-page-node-id="5lXFiPhMgYIhLEooaCvIs5">清空</button>
               </div>
-              <div class="sub" id="pw-hint">留空 = 不修改已保存的密码</div>
+              <div class="sub" id="pw-hint" data-page-node-id="r6gZDCEAsbhIT25UfzzF6q">留空 = 不修改已保存的密码</div>
             </div>
           </div>
-          <div class="two">
-            <div class="field">
-              <label>数据库名 <span class="req">*</span></label>
-              <input data-field="dbname" class="mono" placeholder="finance" />
+          <div class="two" data-page-node-id="gqvyVk5WwjhAsSIEzpNrEK">
+            <div class="field" data-page-node-id="CUzl3MAka3FKpk0CMDdBKy">
+              <label data-page-node-id="uWP3DlBxPjAPsp0ZvP0CDJ">数据库名 <span class="req" data-page-node-id="ghW892Xc5z9XeI1ATWpCz7">*</span></label>
+              <input data-field="dbname" class="mono" placeholder="finance" data-page-node-id="eA71JRJGodycQk9w9z7Xx6" />
             </div>
-            <div class="field">
-              <label>Schema</label>
-              <input data-field="schema" class="mono" placeholder="public" />
-              <div class="sub">留空 = 全部非系统 schema</div>
+            <div class="field" data-page-node-id="xXj23PTbvmvIyr8rPB7Wg6">
+              <label data-page-node-id="UZySIlzXqyCHlTuldsL9Mr">Schema</label>
+              <input data-field="schema" class="mono" placeholder="public" data-page-node-id="vvTAAhqTNK37SMGtVk57Fh" />
+              <div class="sub" data-page-node-id="m55pJRjP0ZFVJ8ptMVPVid">留空 = 全部非系统 schema</div>
             </div>
           </div>
         </div>
-        <div data-pgm-block="url" style="display:none">
-          <div class="field">
-            <label>连接串 <span class="req">*</span></label>
-            <input data-field="url" class="mono" placeholder="postgres://user:pass@127.0.0.1:5432/finance" />
-            <div class="sub">含密码，请留意不要外发该配置文件</div>
+        <div data-pgm-block="url" style="display:none" data-page-node-id="dElOgxyIsJKiHgYOtzzGpH">
+          <div class="field" data-page-node-id="awa0ZcgeVlXSwB60iEXRcL">
+            <label data-page-node-id="U83rXt3mavufzRw8mBMAe7">连接串 <span class="req" data-page-node-id="qGbB8G9RosgKooTLkpRokJ">*</span></label>
+            <input data-field="url" class="mono" placeholder="postgres://user:pass@127.0.0.1:5432/finance" data-page-node-id="HhL2E1fPn1UMyHDYjCgH7Z" />
+            <div class="sub" data-page-node-id="9jW0D6RQ6IuCfLitSDfGuS">含密码，请留意不要外发该配置文件</div>
           </div>
         </div>
       </div>
 
       <!-- ODBC -->
-      <div data-eng-block="odbc">
-        <div class="field">
-          <label>DSN 名称 <span class="req">*</span></label>
-          <input data-field="dsn" class="mono" placeholder="erp_dsn" />
-          <div class="sub">Rust 版客户端暂未实现 ODBC，配置可以保存，但暂时连不上</div>
+      <div data-eng-block="odbc" data-page-node-id="jgASA1N9nDrhFpbr7utwFC">
+        <div class="field" data-page-node-id="YhkXpkuNsetNuJCjP3qVCW">
+          <label data-page-node-id="Senk1U1rTSoGzJcRBKKzFr">DSN 名称 <span class="req" data-page-node-id="iAEX21x9t0Jma6SRBsvTFS">*</span></label>
+          <input data-field="dsn" class="mono" placeholder="erp_dsn" data-page-node-id="FvY0b9zL9SlG0uJ4ySxwM6" />
+          <div class="sub" id="odbc-hint" data-page-node-id="cNixXwPqFyrlGFoDKf1Vfe"></div>
         </div>
       </div>
     </div>
-    <div class="modal-foot">
-      <button id="btn-test">测试连接</button>
-      <div class="spacer"></div>
-      <button id="btn-cancel">取消</button>
-      <button class="primary" id="btn-confirm">确定</button>
+    <div class="modal-foot" data-page-node-id="X6FYyF1iB0T47ARoWuoxFO">
+      <button id="btn-test" data-page-node-id="kE7GYU3GjC3u8wulEIECHh">测试连接</button>
+      <div class="spacer" data-page-node-id="PedxoAE5Dc48GDfnRBdq7g"></div>
+      <button id="btn-cancel" data-page-node-id="HN0qxOodkxEGNwnbxfZZta">取消</button>
+      <button class="primary" id="btn-confirm" data-page-node-id="Ln9n4XvRJ9ImFrXvRJhA0r">确定</button>
     </div>
   </div>
 </div>
 
 <!-- 目录浏览器 -->
-<div class="mask" id="fs-mask">
-  <div class="modal wide">
-    <div class="modal-head"><h3 id="fs-title">选择路径</h3></div>
-    <div class="modal-body">
-      <div class="fs-path">
-        <input id="fs-input" class="mono" placeholder="直接粘贴路径后回车" />
-        <button class="sm" id="fs-go">跳转</button>
+<div class="mask" id="fs-mask" data-page-node-id="AkbJq8xc9uqApyAywIQJz6">
+  <div class="modal wide" data-page-node-id="cEHBZ9eYsVInXjLddeLEIp">
+    <div class="modal-head" data-page-node-id="kvuUocMVIxlX1YkYfy1kGn"><h3 id="fs-title" data-page-node-id="EwMyJJjPUGt7KAtJcAGFZS">选择路径</h3></div>
+    <div class="modal-body" data-page-node-id="4cocEh3aYyrm5vQCLonR9d">
+      <div class="fs-path" data-page-node-id="t4BPEZalJu4cFtqA1V7JBz">
+        <input id="fs-input" class="mono" placeholder="直接粘贴路径后回车" data-page-node-id="5uK9aVHC5gNpSqOQYoSteq" />
+        <button class="sm" id="fs-go" data-page-node-id="ZLuEjHfYquGPpbjAkill8A">跳转</button>
       </div>
-      <div class="fs-list" id="fs-list"></div>
-      <div class="fs-bar">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="checkbox" id="fs-all" style="width:auto;height:auto" /> 显示全部文件
+      <div class="fs-list" id="fs-list" data-page-node-id="So4BWlqyxM8wH5NlD47hd3"></div>
+      <div class="fs-bar" data-page-node-id="3KQjO7sndSYDOqDoYAW6yY">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer" data-page-node-id="Z6ASDQS3Fgqj0B2De7l4qL">
+          <input type="checkbox" id="fs-all" style="width:auto;height:auto" data-page-node-id="PFtjH47xK35V3sIPVv6bvV" /> 显示全部文件
         </label>
-        <span id="fs-count"></span>
+        <span id="fs-count" data-page-node-id="rLO5UcG84tcAmKKoZDUVaO"></span>
       </div>
     </div>
-    <div class="modal-foot">
-      <button id="fs-use-dir">选用当前目录</button>
-      <div class="spacer"></div>
-      <button id="fs-cancel">取消</button>
+    <div class="modal-foot" data-page-node-id="NtBNf0vGhWCCB9JSeHp9PL">
+      <button id="fs-use-dir" data-page-node-id="AXraJPq3YG0YhIVtQw7opS">选用当前目录</button>
+      <div class="spacer" data-page-node-id="7PTWqLMdPKblLdqJDGmtDP"></div>
+      <button id="fs-cancel" data-page-node-id="FJ43DBVgJw4Q68BItEA1Ov">取消</button>
     </div>
   </div>
 </div>
 
-<div class="toasts" id="toasts"></div>
+<div class="toasts" id="toasts" data-page-node-id="idaECFwZAhPAPPfBCylAci"></div>
 
 <script>
 (function () {
@@ -459,6 +459,29 @@
 
   function dirty() { return sig(S.draft) !== sig(S.original); }
 
+  // ODBC 是**可选 feature**，页面必须按「这个构建到底编没编」显示。
+  // 早先这里写死「Rust 版客户端暂未实现 ODBC」—— 开了 feature 之后那句话就是在说谎：
+  // 用户看着「暂未实现」去换驱动 / 提需求，其实只要重新编译一次。
+  // /health 里的 `odbc` 字段就是 `cfg!(feature = "odbc")`，跟着构建走。
+  //
+  // 三态，不是布尔：读不到 /health 时是**未知**，不能当成「未编入」——
+  // 那会把一次网络抖动说成「这个构建没有 ODBC」，又是一个会骗人的显示。
+  function odbcBuiltIn() {
+    if (!S.health || typeof S.health.odbc !== 'boolean') return null;
+    return S.health.odbc;
+  }
+
+  function renderOdbcHint() {
+    const el = $('#odbc-hint');
+    if (!el) return;
+    const built = odbcBuiltIn();
+    el.textContent = built === true
+      ? '本构建已编入 ODBC 引擎。需要本机装好 unixODBC，并在 odbc.ini 里配好同名 DSN（服务端启动时读 ODBCINI）。'
+      : built === false
+        ? '本构建未编入 ODBC 引擎：配置可以保存，但暂时连不上。要用请先装 unixODBC 再重新编译（cargo build --features odbc），详见 README。'
+        : '读不到服务状态（/health），无法确认本构建是否编入 ODBC 引擎。';
+  }
+
   /* ------------------------------ 渲染 ------------------------------ */
   function renderStats() {
     const h = S.health || {};
@@ -509,7 +532,7 @@
       const pills = [];
       if (c.engine === 'postgres' && c.passwordSet) pills.push('<span class="chip ok">已存密码</span>');
       if (c.password) pills.push('<span class="chip warn">密码待保存</span>');
-      if (c.engine === 'odbc') pills.push('<span class="chip warn">暂未实现</span>');
+      if (c.engine === 'odbc' && odbcBuiltIn() === false) pills.push('<span class="chip warn">本构建未编入</span>');
       return '' +
         '<div class="conn">' +
           '<div class="conn-main">' +
@@ -587,6 +610,7 @@
     renderFound();
     renderSpool();
     renderDirty();
+    renderOdbcHint();
   }
 
   /* ------------------------------ 加载 / 保存 ------------------------------ */
@@ -677,6 +701,7 @@
       ? '已保存密码，留空则不修改；点「清空」可删除'
       : '尚未设置密码，留空则不使用密码';
     $('#btn-clear-pw').disabled = !M.conn.passwordSet && !M.conn.password;
+    renderOdbcHint();
   }
 
   function syncForm() {
