@@ -290,3 +290,43 @@ RFC 4180 转义 + UTF-8 BOM（缺了 Excel 开中文乱码）+ CRLF。
 「region 必填」，把人往错的方向带。先报离用户真实错误最近的那条。
 
 老报表没有 params 时照旧跑（`no_params_declared_still_runs` 钉住）。
+
+## 票据 / 标签指令（`print-server/src/ticket/`）
+
+`/print` 的 `esc` / `tsc` / `zpl` 三种载荷已实现（原为「待实现」）。
+输入 = 前端 `raw-sanitize.ts` 净化过的画布 JSON（颜色 / 字体样式 / 设计器元数据已裁掉，
+**别假设 `fill` / `fontWeight` 一定在**）。形状
+`{ version, document: { page, sections: [{ components }] }, data? }`；
+几何单位跟 `page.unit`，原点 = 所属 Section 左上角，多节纵向堆叠。
+
+`mod.rs` 出 IR（`Text/Barcode/Qr/Rule/Box`，坐标统一 mm），`esc.rs` / `tspl.rs` /
+`zpl.rs` 各自发射。**加新控件类型时记得往 `unsupported()` 那条兜底走**，
+不能静默 `_ => {}`。
+
+硬约束（踩过的）：
+- ESC/POS 只有「行」：`ESC 3 24` **必须显式钉行距**，否则 `ESC d n` 推进多少点
+  由机型默认值定 → 行号全错。中文必须 **GBK**（`encoding_rs::GBK`）。
+- TSPL / ZPL 有真 x/y 但**都没有对齐参数** → 居中 / 右对齐要自己按估宽挪 x，
+  不挪会静默变靠左。
+- ZPL 内容里的 `^` / `~` 必须 `^FH` 转义（`^`→`_5E`）；没这两个字符时**不要**加 `^FH`。
+- 旋转只认 90 倍数（TSPL 0/90/180/270，ZPL N/R/I/B），否则报警告并 snap。
+- **203dpi = 7.9921 点/mm**，80mm = 639 点（不是 640）。
+
+**位置类断言要断整条序列**。第一版 `cur_row += 1` 让同行多图元把后面的内容
+整体上移一行；只数 `ESC d` 次数的用例抓不住，改成断言喂行序列才红。
+（与「只断言 last()」同一类错误。）
+
+**文本取值顺序**：`contentType` 在场就照它办；缺省回退是
+**expression > binding > value**。`binding` 是**数据路径**、`value` 是**字面量**，
+搞反会把 `customer.name` 原样印出来（看着"有内容"，不报错）。
+真理源是前端 `data-binder.resolveTextValue`。
+
+**`service_error` 是 HTTP 200 + `{ok:false, message}`**，不是 5xx ——
+写探针别只看状态码。（报表导出那条路才是 500。）
+
+真机探针：`scripts/verify-ticket-print.py`（走真实 `/print`，拆开落盘的指令文件
+核对喂行序列 / GBK 字节 / 二维码五段长度 / `^CI28` / `^PW639`）。改翻译层就跑它。
+
+**designer-react 的 `tsc --noEmit` 现在是干净的（0 错误）** ——
+原来记的「有 6 处既有报错」已作废。要判断新错是不是自己引入的，
+直接看错误总数是不是 0。
