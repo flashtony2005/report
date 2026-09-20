@@ -73,6 +73,7 @@ import {
   type AggType,
   type CellFormatSpec,
   type CellModel,
+  type CellStyle,
   type CellTpl,
   type ExpandDir,
   type MergeRect,
@@ -354,7 +355,8 @@ function ParentTree({
  * **没法用格子里的文字表达**，必须有独立的属性面板。三个向导构造器碰不到它们，
  * 所以「手写模板」此前只能靠手写 JSON。
  */
-function CellModelEditor({
+/** 导出以便单测（格子属性面板是纯受控组件，不需要整个 modal 就能验） */
+export function CellModelEditor({
   pos,
   cell,
   columns,
@@ -422,6 +424,16 @@ function CellModelEditor({
   // model 之外的 CellTpl 字段（如 merge_to_end）走这条，不动 model
   const patchCell = (p: Partial<CellTpl>): void => {
     onChange({ ...cell, ...p })
+  }
+  /**
+   * 样式单独一层：`style` 里每一项都是可选的，全清掉要把整个 `style` 摘掉，
+   * 留个 `{}` 会让 model 看着「有样式」其实一项没设。
+   */
+  const st = m?.style ?? undefined
+  const patchStyle = (p: Partial<CellStyle>): void => {
+    const next: CellStyle = { ...(st ?? {}), ...p }
+    const empty = Object.values(next).every((v) => v === undefined || v === null)
+    patch({ style: empty ? undefined : next })
   }
   const text = formatCellText(cell)
 
@@ -658,6 +670,116 @@ function CellModelEditor({
             />
           </Space>
         </Tooltip>
+      </Space>
+
+      {/*
+        格子样式 —— **唯一**会导出到 xlsx 的样式来源。
+        网格里那些底色 / 字色是语义高亮（标「这格什么角色」），不进导出，别混为一谈。
+
+        刻意**没有边框开关**：Univer 的 `bd` 实测完全不渲染，设了在网格里看不见，
+        那就是「设了没反应」的静默失败。宁可不给，也不给看不见的开关。
+        颜色只认 #RRGGBB；写成 red / rgb(...) 会在导出时明确报错，不静默丢弃。
+      */}
+      <Space wrap size="small" align="center">
+        <Typography.Text style={{ fontSize: 12 }}>样式</Typography.Text>
+        <Tooltip title="加粗">
+          <Space size={2}>
+            <Typography.Text style={{ fontSize: 12 }}>B</Typography.Text>
+            <Switch
+              size="small"
+              checked={st?.bold === true}
+              onChange={(v) => patchStyle({ bold: v || undefined })}
+              data-testid="free-cell-style-bold"
+            />
+          </Space>
+        </Tooltip>
+        <Tooltip title="斜体">
+          <Space size={2}>
+            <Typography.Text style={{ fontSize: 12, fontStyle: 'italic' }}>I</Typography.Text>
+            <Switch
+              size="small"
+              checked={st?.italic === true}
+              onChange={(v) => patchStyle({ italic: v || undefined })}
+              data-testid="free-cell-style-italic"
+            />
+          </Space>
+        </Tooltip>
+        <Tooltip title="字号（磅）">
+          <InputNumber
+            size="small"
+            style={{ width: 62 }}
+            min={1}
+            max={409}
+            placeholder="字号"
+            value={st?.font_size ?? null}
+            onChange={(v) => patchStyle({ font_size: v ?? undefined })}
+            data-testid="free-cell-style-font-size"
+          />
+        </Tooltip>
+        <Tooltip title="水平对齐">
+          <Select
+            size="small"
+            style={{ width: 82 }}
+            allowClear
+            placeholder="横"
+            value={st?.h_align ?? undefined}
+            options={[
+              { label: '左', value: 'left' },
+              { label: '居中', value: 'center' },
+              { label: '右', value: 'right' },
+            ]}
+            onChange={(v) => patchStyle({ h_align: v ?? undefined })}
+            data-testid="free-cell-style-h-align"
+          />
+        </Tooltip>
+        <Tooltip title="垂直对齐">
+          <Select
+            size="small"
+            style={{ width: 82 }}
+            allowClear
+            placeholder="纵"
+            value={st?.v_align ?? undefined}
+            options={[
+              { label: '上', value: 'top' },
+              { label: '居中', value: 'middle' },
+              { label: '下', value: 'bottom' },
+            ]}
+            onChange={(v) => patchStyle({ v_align: v ?? undefined })}
+            data-testid="free-cell-style-v-align"
+          />
+        </Tooltip>
+      </Space>
+      <Space wrap size="small" align="center">
+        {[
+          { key: 'color' as const, label: '字色', tid: 'free-cell-style-color' },
+          { key: 'bg' as const, label: '底色', tid: 'free-cell-style-bg' },
+        ].map((f) => {
+          const v = (f.key === 'color' ? st?.color : st?.bg) ?? ''
+          return (
+            <Space key={f.key} size={4}>
+              <Typography.Text style={{ fontSize: 12 }}>{f.label}</Typography.Text>
+              <span
+                data-testid={`${f.tid}-swatch`}
+                style={{
+                  display: 'inline-block',
+                  width: 14,
+                  height: 14,
+                  border: '1px solid #d9d9d9',
+                  borderRadius: 2,
+                  background: /^#[0-9a-fA-F]{6}$/.test(v) ? v : 'transparent',
+                }}
+              />
+              <Input
+                size="small"
+                style={{ width: 96 }}
+                placeholder="#RRGGBB"
+                value={v}
+                onChange={(e) => patchStyle({ [f.key]: e.target.value || undefined })}
+                data-testid={f.tid}
+              />
+            </Space>
+          )
+        })}
       </Space>
 
       {/*
