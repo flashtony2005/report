@@ -383,6 +383,48 @@ def run_checks() -> None:
     h = get("/health")
     check(h.get("odbc") is True, "/health.odbc === true", repr(h.get("odbc")))
 
+    print("\n[14] DSN 写错时要有能看懂的报错（这是最常见的用户错误）")
+    # 单测和前面的用例都在验「连得上」，没人验「连不上时说了什么」——
+    # 而 DSN 拼错恰恰是用户最常踩的。要验三件事：
+    #   ① 明确失败 ② **驱动原话要透传**（只说「连接失败」等于没说）
+    #   ③ 不崩（没有 panic / 空消息）
+    #
+    # 注意报错点名的是「连接 id」不是「DSN」—— 这是全项目统一的约定，
+    # postgres 一样（`连接 postgres 失败（{conn.id}）`）。下面第一条之所以能
+    # 断言到 DSN，是因为**内联路径把 id 直接设成了 DSN**（`db.rs::odbc_inline`），
+    # 不是因为它特意报 DSN。别照抄这条去要求配置路径也报 DSN。
+    bad_dsn = "openprint_no_such_dsn"
+    r5 = post(
+        "/api/data/rows",
+        {"engine": "odbc", "database": bad_dsn, "table": "orders"},
+    )
+    check(r5.get("ok") is False, "不存在的 DSN 被明确拒绝", str(r5)[:300])
+    m5 = str(r5.get("message", ""))
+    check(m5.strip() != "", "报错消息不是空的（空消息等于没说）", repr(m5))
+    check(bad_dsn in m5, "内联路径点名了 DSN（此处 id 就是 DSN）", m5[:300])
+    check("panic" not in m5.lower(), "没有崩（不带 panic）", m5[:300])
+    check(
+        "State:" in m5 or "unixODBC" in m5,
+        "报错里带着驱动的原话（没被吞成一句「连接失败」）",
+        m5[:300],
+    )
+
+    # 配置页的试连走的是另一条路（admin.rs），点名的是连接 id（全项目约定）
+    r6 = post(
+        "/api/config/test",
+        {"id": "bogus", "engine": "odbc", "dsn": bad_dsn},
+        admin=True,
+    )
+    check(r6.get("ok") is False, "试连不存在的 DSN 也被明确拒绝", str(r6)[:300])
+    m6 = str(r6.get("message", ""))
+    check("bogus" in m6, "试连报错点名了连接 id（与 postgres 同约定）", m6[:300])
+    check("panic" not in m6.lower(), "试连也没有崩", m6[:300])
+    check(
+        "State:" in m6 or "unixODBC" in m6,
+        "试连也透传了驱动原话",
+        m6[:300],
+    )
+
 
 if __name__ == "__main__":
     sys.exit(main())

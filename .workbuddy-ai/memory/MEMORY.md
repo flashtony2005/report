@@ -84,6 +84,17 @@
 - 起 vite：`cd designer-react && NODE_OPTIONS="--require .../scripts/vite-safe-delete-bypass.cjs $NODE_OPTIONS" npx vite --host 127.0.0.1 --port 5200 --strictPort`。
   必须 `run_in_background=true`（`(cmd &)` / `nohup &` 随 shell 一起死）；
   日志写 `scripts/.vite-dev.log`；curl 加 `--noproxy '*'`。
+- **`vitest` 也要挂同样的 preload，不是只有 vite**（2026-09-20 踩到，浪费了十几分钟）。
+  不挂的症状很有迷惑性：只打印 `RUN v3.2.4 <dir>` 然后**一直不动**（单文件也一样），
+  或者进程被 **SIGKILL（退出码 137）**，看着像 OOM。
+  → 判据：`npx vitest --version` 能出、但 `vitest run` 卡在 `RUN` 那行，
+  **先怀疑没挂 preload，别去查测试代码**。
+  实测对照（同一文件）：不挂 = 卡死 12 分钟 / SIGKILL；挂上 = `Duration 407ms`。
+  ```bash
+  cd <pkg> && NODE_OPTIONS="--require $PWD/../scripts/vite-safe-delete-bypass.cjs \
+    --require $PWD/../scripts/broker-mkdir-throttle.cjs" npx vitest run
+  ```
+  **凡是走 vite 工具链的（`vite` / `vitest` / `vue-tsc`）都挂上**，别每次现判。
 - **浏览器 harness 在沙箱里跑不动键盘 E2E**：CDP `Input.insertText` 对多字符串报
   `Invalid 'text' parameter`（`hello` 控制实验也失败，确认是 harness 问题）。
   应对：逻辑抽纯函数 + 单测 + 探针；**画到脸上的那一步走右侧面板 `agent-browser fill`**
@@ -294,6 +305,28 @@ xlsx 通道 + 设计器面板）。
 `join_on` 754）；分页三配置都生效；多 sheet 导出支持（`xlsx.rs:37` 循环
 `add_worksheet`）；行/列测试已有设计器入口。
 
+## 对照积木报表的差距分析（`引擎差距分析-对照积木报表.md`）
+
+对标的是 `jeecgboot/JimuReport`（Java 在线报表平台）。**结论：不是一个物种** ——
+它做广度（填报 / 大屏 / AI / 权限 / 移动端），我们做深度（打印版面 + 非线性内核）。
+
+四条别忘的结论：
+
+1. **A 类 5 项建议明确不做**：填报回写 / 大屏 / AI / 权限分享 / 移动端。
+   其中**填报**是唯一业务上真会被问的 —— 我们三个引擎全只读打开，是**架构取舍**。
+   对外口径必须是「按只读设计，不支持回写」，**不能说「暂未实现」**。
+2. **B 类 6 项才是真该补的**，前两项（图表 / 条码进服务端）**同根因**：
+   `CellTpl` 缺「非文本格子」通道。图片那次已经走通一遍（两个槽都认 + 只收 data URI
+   + 失败进 `warnings`），照抄即可。
+3. **数据源 3 vs 30+ 别追数量**。真差距是「没有非 SQL 数据集抽象」；
+   信创库用 ODBC DSN 接就行，别逐个写适配。
+4. **⚠️ 许可**：它的补充条款**禁止同类竞争** + 必须保留版权标识。
+   本项目就是报表引擎，属同类 → **可以读 README 对标功能，不能抄代码 /
+   兼容它的模板格式**。想兼容先找法务，别自己判断。
+
+写「条件格式」时注意：Univer 样式通道**只有底色 + 字色能画**，`bd` 边框完全不渲染 ——
+别设计依赖边框的条件格式（已实测）。
+
 ## 数据源现状
 
 sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。
@@ -326,6 +359,20 @@ MySQL **归一成 sqlite**（`normalizeDbEngine('mysql')==='sqlite'`，有测试
 `PrimaryKeysRow` 字段是 **`column`** 不是 `column_name`；**`bool` 没实现 `Pod`**
 → 用 `Nullable::<u8>` 判 `!= 0`；`col_data_type` 要 **`ResultSetMetadata` trait 在作用域**；
 是 `VarCharArray<const L: usize>`（没有 `VarArrayLen`）；同步 API 全包 `spawn_blocking`。
+
+### 报错点名的是「连接 id」不是「DSN」（约定，别当 bug 修）
+
+`连接 ODBC 失败（{conn.id}）` —— **postgres 一模一样**
+（`连接 postgres 失败（{conn.id}）`）。这是全项目统一约定，别只改 odbc 那一处。
+
+容易看错的地方：**内联路径**（`engine=odbc&database=<DSN>`）报错里会出现 DSN ——
+但那是因为 `db.rs::odbc_inline` **把 `c.id` 直接设成了 DSN**，不是它特意报 DSN。
+配置路径（`/api/config/test`）报的是配置里那个 id。
+→ 写断言时别要求配置路径也报 DSN；要断言的是「**驱动原话透传**」
+（消息里带 `State:` / `[unixODBC]`），那才是真正会退化、也真正有用的性质。
+
+**通用教训**：断言失败时先查 house convention 再改代码 ——
+本次差点把一条**约定**当成 bug 去「修」，那样会让 odbc 与 postgres 不一致。
 
 ## 盘点方法（可复用）
 
