@@ -63,6 +63,7 @@ mod tests {
             raw_number: None,
             num_format: None,
             formula: None,
+            style: None,
         }
     }
 

@@ -1184,6 +1184,7 @@ pub fn sample_template() -> ReportTemplate {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            style: None,
             join_on: None,
         })
     };
@@ -1271,6 +1272,7 @@ pub fn cross_tab_template() -> ReportTemplate {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            style: None,
             join_on: None,
         })
     };
@@ -1331,6 +1333,7 @@ pub fn cross_tab_two_metrics_template() -> ReportTemplate {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            style: None,
             join_on: None,
         })
     };
@@ -1409,6 +1412,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            style: None,
             join_on: None,
         })
     };
@@ -1493,6 +1497,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            style: None,
             join_on: None,
         })
     };
@@ -1597,6 +1602,7 @@ pub fn cross_tab_multi_level_template() -> ReportTemplate {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            style: None,
             join_on: None,
         })
     };
@@ -1912,6 +1918,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let mut datasets = BTreeMap::new();
@@ -1991,6 +1998,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2053,6 +2061,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2123,6 +2132,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2204,6 +2214,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2282,6 +2293,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2565,6 +2577,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             }),
             ..Default::default()
         };
@@ -3337,6 +3350,7 @@ mod tests {
                     raw_number: None,
                     num_format: None,
                     formula: None,
+                    style: None,
                 }]
             })
             .collect();
@@ -3357,6 +3371,7 @@ mod tests {
             raw_number: None,
             num_format: None,
             formula: None,
+            style: None,
         }
     }
 
@@ -3465,6 +3480,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let build = |model: Option<CellModel>| {
@@ -3671,6 +3687,7 @@ mod tests {
                                     col_test_expr: None,
                                     export_formula: None,
                                     join_on: None,
+                                    style: None,
                                 }),
                                 merge_across: 0,
                                 merge_down: 0,
@@ -3733,6 +3750,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let tpl = ReportTemplate {
@@ -3800,6 +3818,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let tpl = ReportTemplate {
@@ -4047,6 +4066,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
@@ -4409,6 +4429,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let c = |model| CellTpl {
@@ -4814,6 +4835,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
 
@@ -4872,6 +4894,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let sheet = SheetTpl {
@@ -4933,6 +4956,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let run = |max: Option<usize>| {
@@ -5046,6 +5070,7 @@ mod tests {
                 col_test_expr: None,
                 export_formula: None,
                 join_on: None,
+                style: None,
             })
         };
         let sheet = SheetTpl {

@@ -3,9 +3,66 @@
 //! 只依赖 rust_xlsxwriter，不经过 Excel COM，因此服务端/无头环境同样可用。
 //! 数值列写 number（保留可计算性），文本写 string；跨行跨列还原为 merge_range。
 
-use crate::report::model::RenderedSheet;
+use crate::report::model::{CellStyle, HAlign, RenderedSheet, VAlign};
 use rust_xlsxwriter::{Format, FormatAlign, FormatBorder, Workbook};
 use std::collections::HashSet;
+
+/// 只认 `#RRGGBB`。不猜 `rgb()` / 颜色名 / `#RGB` 简写 —— 猜错了是静默的，
+/// 作者会以为自己设的颜色生效了。认不出来就报错，让人当场改对。
+fn is_hex_color(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 7 && b[0] == b'#' && b[1..].iter().all(|c| c.is_ascii_hexdigit())
+}
+
+/// 在导出器的基础格式（表头 / 正文 / 换行）上叠加**作者定义的**样式
+///
+/// 为什么这里报错而不是「认不出来就跳过」：静默丢弃样式等于没设，
+/// 作者在设计器里改半天看不到任何变化。宁可导出失败并说清是哪一格哪个值。
+fn with_style(base: &Format, st: &CellStyle, pos: &str) -> Result<Format, String> {
+    let mut f = base.clone();
+    if st.bold == Some(true) {
+        f = f.set_bold();
+    }
+    if st.italic == Some(true) {
+        f = f.set_italic();
+    }
+    if let Some(sz) = st.font_size {
+        if !(0.0..=409.0).contains(&sz) || sz <= 0.0 {
+            return Err(format!(
+                "格子 {pos} 的 style.font_size「{sz}」不合法（Excel 允许 0~409 磅，且须大于 0）"
+            ));
+        }
+        f = f.set_font_size(sz);
+    }
+    if let Some(c) = st.color.as_deref() {
+        if !is_hex_color(c) {
+            return Err(format!("格子 {pos} 的 style.color「{c}」不是 #RRGGBB"));
+        }
+        f = f.set_font_color(c);
+    }
+    if let Some(b) = st.bg.as_deref() {
+        if !is_hex_color(b) {
+            return Err(format!("格子 {pos} 的 style.bg「{b}」不是 #RRGGBB"));
+        }
+        f = f.set_background_color(b);
+    }
+    // 水平 / 垂直分开设：`set_align` 一次只动一个维度，不会互相覆盖
+    if let Some(h) = st.h_align {
+        f = f.set_align(match h {
+            HAlign::Left => FormatAlign::Left,
+            HAlign::Center => FormatAlign::Center,
+            HAlign::Right => FormatAlign::Right,
+        });
+    }
+    if let Some(v) = st.v_align {
+        f = f.set_align(match v {
+            VAlign::Top => FormatAlign::Top,
+            VAlign::Middle => FormatAlign::VerticalCenter,
+            VAlign::Bottom => FormatAlign::Bottom,
+        });
+    }
+    Ok(f)
+}
 
 /// 生成 xlsx 二进制
 ///
@@ -107,6 +164,12 @@ pub fn to_xlsx(sheets: &[RenderedSheet], repeat_rows: usize) -> Result<Vec<u8>, 
                     (false, true, false) => body_center.clone(),
                     (false, false, true) => body_wrap.clone(),
                     (false, false, false) => body.clone(),
+                };
+                // 作者定义的样式叠在基础格式**之上**：表头的加粗底色、正文的细边框
+                // 都保留，作者只覆盖他显式设了的那几项（没设的字段是 None，不动）。
+                let fmt = match &cell.style {
+                    Some(st) => with_style(&fmt, st, &cell.pos)?,
+                    None => fmt,
                 };
                 if merged {
                     for rr in r0..r0 + rs as u32 {
@@ -263,6 +326,7 @@ mod tests {
             raw_number: num,
             num_format: None,
             formula: None,
+            style: None,
         }
     }
 
@@ -304,6 +368,95 @@ mod tests {
     #[test]
     fn line_height_matches_excel_default() {
         assert_eq!(LINE_HEIGHT, 15.0);
+    }
+
+    /* ------------------------------ 作者定义的样式 ------------------------------ */
+
+    #[test]
+    fn hex_color_only_accepts_rrggbb() {
+        assert!(is_hex_color("#D9E1F2"));
+        assert!(is_hex_color("#000000"));
+        assert!(is_hex_color("#ABCDEF"));
+        // 简写、rgb()、颜色名一律不认 —— 猜错是静默的
+        assert!(!is_hex_color("#abc"));
+        assert!(!is_hex_color("D9E1F2"));
+        assert!(!is_hex_color("rgb(217,225,242)"));
+        assert!(!is_hex_color("red"));
+        assert!(!is_hex_color("#GGGGGG"));
+        assert!(!is_hex_color(""));
+    }
+
+    /// 认不出来的颜色**必须报错**，不能静默跳过 —— 静默等于作者设了没反应
+    #[test]
+    fn bad_style_color_errors_instead_of_being_dropped() {
+        let base = Format::new();
+        let bad = CellStyle { color: Some("red".into()), ..Default::default() };
+        let err = with_style(&base, &bad, "A3").unwrap_err();
+        assert!(err.contains("A3") && err.contains("style.color"), "{err}");
+
+        let bad_bg = CellStyle { bg: Some("#abc".into()), ..Default::default() };
+        let err = with_style(&base, &bad_bg, "B3").unwrap_err();
+        assert!(err.contains("B3") && err.contains("style.bg"), "{err}");
+
+        let bad_size = CellStyle { font_size: Some(-1.0), ..Default::default() };
+        assert!(with_style(&base, &bad_size, "C3").is_err());
+    }
+
+    /// 样式是**叠加**在基础格式上的：作者没设的项不能把导出的表头/边框洗掉。
+    ///
+    /// `Format` 没有公开的属性读取接口，所以验它序列化出来的 Debug 结构。
+    /// 注意颜色在里面是 `RGB(十进制)`，不是 `#RRGGBB` 字符串。
+    ///
+    /// 故障注入：把 `with_style` 改成「直接返回 `base.clone()`」，
+    /// 第 1 条断言（字色生效）应当红。
+    #[test]
+    fn style_layers_on_top_of_base_format() {
+        let base = Format::new().set_bold().set_border(FormatBorder::Thin);
+        let st = CellStyle { color: Some("#FF0000".into()), ..Default::default() };
+        let out = with_style(&base, &st, "A1").unwrap();
+        let dbg = format!("{out:?}");
+        // #FF0000 = 16711680
+        assert!(dbg.contains("RGB(16711680)"), "字色应生效: {dbg}");
+        // 只设了字色 → 基础格式的加粗、边框都得还在
+        assert!(dbg.contains("bold: true"), "基础格式的加粗不该被洗掉: {dbg}");
+        assert!(dbg.contains("bottom_style: Thin"), "基础格式的边框不该被洗掉: {dbg}");
+    }
+
+    /// 作者设的每一项都要落到 Format 上
+    #[test]
+    fn style_applies_every_field() {
+        let base = Format::new();
+        let st = CellStyle {
+            bold: Some(true),
+            italic: Some(true),
+            font_size: Some(16.0),
+            color: Some("#FF0000".into()),
+            bg: Some("#D9E1F2".into()),
+            h_align: Some(HAlign::Center),
+            v_align: Some(VAlign::Middle),
+        };
+        let dbg = format!("{:?}", with_style(&base, &st, "A1").unwrap());
+        assert!(dbg.contains("bold: true"), "{dbg}");
+        assert!(dbg.contains("italic: true"), "{dbg}");
+        assert!(dbg.contains("size: \"16\""), "字号: {dbg}");
+        assert!(dbg.contains("RGB(16711680)"), "字色 #FF0000: {dbg}");
+        assert!(
+            dbg.contains("background_color: RGB(14279154)"),
+            "底色 #D9E1F2 = 14279154: {dbg}"
+        );
+        assert!(dbg.contains("horizontal: Center"), "水平居中: {dbg}");
+        assert!(dbg.contains("vertical: VerticalCenter"), "垂直居中: {dbg}");
+    }
+
+    /// 没设的项保持不动（`None` 不等于「关掉」）
+    #[test]
+    fn style_leaves_unset_fields_alone() {
+        let base = Format::new().set_bold();
+        let st = CellStyle { italic: Some(true), ..Default::default() };
+        let dbg = format!("{:?}", with_style(&base, &st, "A1").unwrap());
+        assert!(dbg.contains("italic: true"), "{dbg}");
+        assert!(dbg.contains("bold: true"), "没设 bold 就不该动它: {dbg}");
+        assert!(dbg.contains("horizontal: General"), "没设对齐就不该动它: {dbg}");
     }
 
     #[test]

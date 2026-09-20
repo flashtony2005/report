@@ -51,6 +51,53 @@ pub struct NumFmt {
     pub code: Option<String>,
 }
 
+/// 水平对齐
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HAlign {
+    Left,
+    Center,
+    Right,
+}
+
+/// 垂直对齐
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VAlign {
+    Top,
+    Middle,
+    Bottom,
+}
+
+/// 格子样式 —— **作者定义的**，不是设计器那套语义高亮
+///
+/// 刻意**不含边框**：Univer 的 `bd` 实测完全不渲染，作者设了在设计器里看不见，
+/// 那就成了「设了没反应」的静默失败。宁可不给，也不给一个看不见的开关。
+/// （同理也不给下划线：`ul` 会画但永远用字色，写了 `c:0` 也改不了。）
+///
+/// 颜色统一 `#RRGGBB`。只认这一种写法，不猜 `rgb()` / 颜色名 —— 猜错了是静默的。
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CellStyle {
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    /// 字号，单位 pt
+    pub font_size: Option<f64>,
+    /// 字色，`#RRGGBB`
+    pub color: Option<String>,
+    /// 底色，`#RRGGBB`
+    pub bg: Option<String>,
+    pub h_align: Option<HAlign>,
+    pub v_align: Option<VAlign>,
+}
+
+impl CellStyle {
+    /// 全空（等于没设样式）
+    pub fn is_empty(&self) -> bool {
+        *self == CellStyle::default()
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CellModel {
@@ -124,6 +171,11 @@ pub struct CellModel {
     /// 只在该格有 `value_expr`、且表达式能翻译时生效（见 `Engine::excel_formula`），
     /// 翻不出来就回落写值并告警——静态值不会算错，静默丢公式才难查。
     pub export_formula: Option<bool>,
+    /// 作者定义的格子样式（粗体 / 斜体 / 字号 / 字色 / 底色 / 对齐）。
+    ///
+    /// 这是**唯一**能导出到 xlsx 的样式来源。设计器网格里那些颜色是语义高亮
+    /// （扩展黄、字段蓝…），标的是「这格什么角色」，不会进这里，也不会导出。
+    pub style: Option<CellStyle>,
 }
 
 impl CellModel {
@@ -303,6 +355,8 @@ pub struct CellInst {
     pub row_test_expr: Option<String>,
     /// 列测试表达式（见 CellModel::col_test_expr）
     pub col_test_expr: Option<String>,
+    /// 作者定义的样式，原样带到输出格（见 CellModel::style）
+    pub style: Option<CellStyle>,
     /// 导出 xlsx 时写公式而不是值（见 CellModel::export_formula）
     pub export_formula: bool,
     /// 自身行测试的结果（`row_test_expr`）
@@ -366,6 +420,7 @@ impl CellInst {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: false,
+            style: None,
             row_test_passed: true,
             col_test_passed: true,
             hidden: false,
@@ -390,6 +445,10 @@ pub struct GridCell {
     /// xlsx 导出时用它替代静态值；HTML 预览仍用 `text`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formula: Option<String>,
+    /// 作者定义的样式；`None` 表示该格没设样式，走导出器的默认外观。
+    /// HTML 预览目前不用它（预览的配色是语义高亮，两套东西别混）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style: Option<CellStyle>,
 }
 
 /// 展开结果

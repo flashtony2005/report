@@ -1034,6 +1034,9 @@ impl Engine {
                 raw_number: num,
                 num_format: inst.format.as_ref().and_then(excel_num_format),
                 formula,
+                // 全空的样式不往下带（`skip_serializing_if` 也不发），省得导出器
+                // 为每个格子都判一遍「是不是设了样」
+                style: inst.style.clone().filter(|s| !s.is_empty()),
             });
         }
 
@@ -1155,6 +1158,7 @@ impl Engine {
                 inst.merge_down = cell.merge_down;
                 inst.merge_to_end = cell.merge_to_end;
                 inst.format = model.format.clone();
+                inst.style = model.style.clone();
                 inst.value_expr = model.value_expr.clone();
                 // 展示值与测试表达式：**展开格这条分支同样要拷**。
                 // 只拷非展开分支的话，挂在分组格上的字典（编码 → 名称）会静默失效。
@@ -1179,6 +1183,7 @@ impl Engine {
             inst.merge_down = cell.merge_down;
             inst.merge_to_end = cell.merge_to_end;
             inst.format = model.format.clone();
+            inst.style = model.style.clone();
             inst.value = match &model.field {
                 Some(f) => view.first().and_then(|r| ds.get(*r)).and_then(|row| row.get(f)).cloned().unwrap_or(JsonValue::Null),
                 None => cell.value.clone().unwrap_or(JsonValue::Null),
@@ -3319,6 +3324,7 @@ fn empty_cell() -> GridCell {
         raw_number: None,
         num_format: None,
         formula: None,
+        style: None,
     }
 }
 
@@ -3351,6 +3357,7 @@ mod parent_tests {
             col_test_expr: None,
             export_formula: None,
             join_on: None,
+            style: None,
         })
     }
 

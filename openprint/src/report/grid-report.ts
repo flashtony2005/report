@@ -8,6 +8,36 @@
  * 真正的展开/分组/汇总算法在 print-server（Rust）里，前端只做描述与展示。
  */
 
+/** 水平对齐（与 Rust `HAlign` 同名同值） */
+export type HAlign = 'left' | 'center' | 'right'
+
+/** 垂直对齐（与 Rust `VAlign` 同名同值） */
+export type VAlign = 'top' | 'middle' | 'bottom'
+
+/**
+ * 作者定义的格子样式 —— **不是**设计器那套语义高亮。
+ *
+ * 设计器网格里的颜色标的是「这格什么角色」（扩展 / 字段 / 表达式…），
+ * 不会导出；这里设的才会真的写进 xlsx。
+ *
+ * 刻意**不含边框**：Univer 的 `bd` 实测完全不渲染，设了在设计器里看不见，
+ * 那就成了「设了没反应」的静默失败。宁可不给，也不给一个看不见的开关。
+ *
+ * 颜色只认 `#RRGGBB`；写成 `red` / `rgb(...)` 会在导出时**报错**（不静默丢弃）。
+ */
+export interface CellStyle {
+  bold?: boolean | null
+  italic?: boolean | null
+  /** 字号，单位 pt */
+  font_size?: number | null
+  /** 字色，`#RRGGBB` */
+  color?: string | null
+  /** 底色，`#RRGGBB` */
+  bg?: string | null
+  h_align?: HAlign | null
+  v_align?: VAlign | null
+}
+
 export interface GridCell {
   text: string
   pos: string
@@ -18,6 +48,11 @@ export interface GridCell {
   num_format?: string | null
   /** Excel 公式（仅 cell.model.export_formula 且表达式可翻译时非空）；HTML 预览用 text */
   formula?: string | null
+  /**
+   * 作者定义的样式；空表示该格没设样式，走导出器的默认外观。
+   * HTML 预览目前不用它（预览的配色是语义高亮，两套东西别混）。
+   */
+  style?: CellStyle | null
 }
 
 export interface RenderedSheet {
@@ -122,6 +157,11 @@ export interface CellModel {
    * 翻不出来（如 PROPORTION / 条件表达式）会回落写值并告警。
    */
   export_formula?: boolean | null
+  /**
+   * 作者定义的格子样式（粗体 / 斜体 / 字号 / 字色 / 底色 / 对齐）。
+   * 这是**唯一**会导出到 xlsx 的样式来源，语义高亮不算。
+   */
+  style?: CellStyle | null
 }
 
 export interface CellTpl {
