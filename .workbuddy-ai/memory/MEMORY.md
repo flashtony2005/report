@@ -1,6 +1,9 @@
-# 项目长期记忆（report）
+# 项目长期记忆（report）· 核心
 
-引擎：Rust `print-server`（非线性报表展开）+ TS `openprint`（引擎层，被 React 版 alias 引用）+ `designer-react`（UI）。
+引擎：Rust `print-server`（非线性报表展开 + 服务端导出）+ TS `openprint`（引擎层，被 designer-react alias 引用）+ `designer-react`（UI）。
+
+> **细节在 `REFERENCE.md`**（验证方法论 / 沙箱环境 / print-server 硬事实 / UI 测试配方 / Excel 单位换算 / 图片·odbc·票据 细节）。需要时读它，别凭记忆。
+> 本文件只放「几乎每个任务都用得上」的东西，**必须保持在 ~12KB 以内** —— 超了会在注入时被截断，等于后半段不存在。
 
 ## 三个「表格」不是一回事（问「能不能合到 Univer」前先分清）
 
@@ -14,496 +17,72 @@
 
 ## Univer 硬约束（实测，别再试）
 
-1. 列宽单位 **px 不是 mm**（`setColumnWidths` 文档明写）。打印侧 mm，要自己映射。
-2. 同页面只能有一个活 Univer：再 `createUniver()` **不抛异常但完全不渲染**（0 canvas）。
-   → 只能单例 + 跟随选中切换，不能每个表格各嵌一个。
-3. 样式通道只有「底色 + 字色」能画：`bg` `cl` `bl` `it` ✅；`bd` 边框 **完全不渲染** ❌；
-   `ul` 下划線会画但**永远用字色**（`ITextDecoration.c` 缺省 TRUE，写 `c:0` 也无效）。
-   → 别设计依赖边框/下划线的第三个视觉维度。
-4. **单测证明不了 Univer 画得出某样式**（曾带着画不出的橙色边框过了 11 条单测并提交）。
-   要验渲染只能截图数像素：`scripts/verify-semantic-colors.py`。
-5. 剥公式引擎要连带改四件事，漏一个就静默坏：
-   docs+docs-ui 插件不能省（sheets-ui 编辑器依赖 `univer.editor.service`，
-   异步抛 `[redi] Expect 1 ... but get 0`，**try/catch 接不到**）；CSS 不能省
-   （原子类 `univer-h-full`，没 CSS 根塌成 22px）；`presets: []` 占位；
-   **语言包要自己带**（否则 `LocaleService` 没初始化 → 一改格子就在
-   `SheetPermissionCheckController` 抛错，界面完全看不出来）。
-   配方见 `univerFormulaFree.ts` 顶部注释。
-6. `FWorksheet` **没有 `getCell`**。`sheet?.getCell?.(r,c)` 可选链 + 不存在的方法 =
-   `undefined`，TS 不报、运行期不报，整段死代码。调新方法前先核 facade `.d.ts`。
+1. 列宽单位 **px 不是 mm**（打印侧 mm，要自己映射）。
+2. 同页面只能有一个活 Univer：再 `createUniver()` **不抛异常但完全不渲染**（0 canvas）→ 只能单例 + 跟随选中切换。
+3. 样式通道只有「底色 + 字色」：`bg` `cl` `bl` `it` ✅；`bd` 边框**完全不渲染** ❌；`ul` 下划线会画但**永远用字色**。→ 别设计依赖边框的第三个视觉维度。
+4. **单测证明不了 Univer 画得出某样式**（曾带着画不出的橙色边框过了 11 条单测并提交）。验渲染只能截图数像素（skill `canvas-pixel-verify`）。
+5. 剥公式引擎要连带改四件事，漏一个就静默坏：docs+docs-ui 插件 / CSS（原子类 `univer-h-full`）/ `presets: []` / **语言包**（缺了 `LocaleService` 没初始化 → 一改格子就抛错，且界面完全看不出来）。配方与报错原文见 `univerFormulaFree.ts` 顶部注释 + REFERENCE.md。
+6. `FWorksheet` **没有 `getCell`**。`sheet?.getCell?.(r,c)` = `undefined`，TS 不报、运行期不报，整段死代码。调新方法前先核 facade `.d.ts`。
 
-## 报表文件 = ReportDef（架构速查）
+## 报表文件 = ReportDef
 
-存 `print-server/reports/<id>.json`（**配置文件同级**，见下条）。
-顶层 `format version id name description updatedAt template sources options`。
-**存的是「模板 + 数据源声明 + 渲染选项」，不是数据快照**，打开/执行时按 sources 现查。
+存 `print-server/reports/<id>.json`（**配置文件同级**）。顶层 `format version id name description updatedAt template sources options`。**存的是「模板 + 数据源声明 + 渲染选项」，不是数据快照**，打开/执行时按 sources 现查。
 
-- 五种定义入口（`GridReportModal` 的 Segmented）：内置样例 / 分组汇总 / 交叉表 /
-  画布表格 / 自由模板。前四种是**生成器**；自由模板是**通用表达**。
-  → 单向漏斗：`openReport` 一律 `setMode('free')`。
-- 一格 = `CellTpl` 两层：自身 `value` + 合并；`model?: CellModel` 二十余字段分四组
-  （数据绑定 / 展开 / 主格关系 / 表达式）。
-- **主格关系不画进格子**（没有第三个样式通道）：网格旁常显主格树 `parentTreeOf`，
-  选中点亮整条链 `parentChainOf`。
-- 存/开/跑：`PUT /api/reports/save` · `GET /api/reports/:id` → `templateToGrid`
-  · `POST /api/reports/:id/run`。模板**存原样**，`options` 单独存；
-  `withExportFormula`/`withExpandControl` 渲染前才套，且自由模板**刻意不套**
-  withExpandControl（它按最内/最外层猜层级，会覆盖手工主格）。
+- 五种定义入口（`GridReportModal` Segmented）：内置样例 / 分组汇总 / 交叉表 / 画布表格 / 自由模板。前四种是**生成器**，自由模板是**通用表达** → `openReport` 一律 `setMode('free')`。
+- 一格 = `CellTpl` 两层：自身 `value` + 合并；`model?: CellModel` 二十余字段分四组（数据绑定 / 展开 / 主格关系 / 表达式）。
+- **主格关系不画进格子**：网格旁常显主格树 `parentTreeOf`，选中点亮 `parentChainOf`。
+- 存/开/跑：`PUT /api/reports/save` · `GET /api/reports/:id` → `templateToGrid` · `POST /api/reports/:id/run`。模板**存原样**，`options` 单独存；`withExportFormula`/`withExpandControl` 渲染前才套，自由模板**刻意不套** withExpandControl。
 - `id` 白名单 `[A-Za-z0-9_-]` ≤80 是安全边界（直接拼文件名）。
-- 样例：`print-server/reports/sales-by-region.json`（A3 region → B3 city → C3 salesman；
-  小计 `D3[B3:+0].sum()`、合计 `D3.sum()`）。
+- 样例：`print-server/reports/sales-by-region.json`（A3 region → B3 city → C3 salesman；小计 `D3[B3:+0].sum()`、合计 `D3.sum()`）。
 
-## 报表目录跟着 cwd 走（起服务必须 `cd print-server/`）
+## 三条「静默失败」红线（改了必自查）
 
-`store::reports_dir(config_path)` = 配置文件同级的 `reports/`，默认配置路径是**相对**的
-`print-server.json`。从仓库根启动 → `/api/reports` 返回 `[]`，**没有任何报错**。
-目录跟着配置文件走是刻意设计，只做披露（启动横幅 / `/health.reportsDir` /
-`x-reports-dir` 响应头 / 设计器行内提示）。
-自定义响应头跨域下默认读不到，需服务端 expose（本项目 `CorsLayer::permissive()` 自带）。
-**curl 证明不了浏览器能读**，必须页面里 `fetch().then(r=>r.headers.get())` 才算验过。
-`HeaderValue` 只收可见 ASCII → 中文路径要 percent 编码（`store::header_safe`）。
+1. **报表目录跟着 cwd 走**：`store::reports_dir(config_path)` = 配置文件同级的 `reports/`，默认配置路径是**相对**的 `print-server.json`。从仓库根启动 → `/api/reports` 返回 `[]`，**没有任何报错**。刻意设计，只做披露（启动横幅 / `/health.reportsDir` / `x-reports-dir` 响应头）。自定义响应头跨域下默认读不到，需服务端 expose（`CorsLayer::permissive()` 自带）；**curl 证明不了浏览器能读**，必须页面里 `fetch()` 读。`HeaderValue` 只收可见 ASCII → 中文路径 percent 编码。
+2. **预览与导出是两套口径**：`buildRenderRequest` 在前端算 `headerRows`（TS `headerRowCount`）；xlsx 导出在 Rust 侧另算一遍（`ReportTemplate::header_row_count()`，判据：从第一行起连续「既没有 `expand_type=r` 也没有 `row_parent」的行；`row_parent: ""` 也算没主格）。**不一致是静默的**：预览 2 行表头、导出只有标题行有表头样式、打印列头不跨页重复，界面完全看不出来。生成器产出的模板第一行是**标题**、第二行才是列头 → 典型值 **2 / 2 / 2 / 3**。改任一侧都要同步另一侧；`sample_template_has_two_header_rows` 是那颗钉子。
+3. **`ReportSource` 是 `rename_all = "camelCase"`** → JSON 里是 **`connId`**。写成 `conn_id` 被 serde 忽略、静默落到第一个连接，报「sqlite 文件不存在: F:\...\data.db」—— 看着像配置没加载，其实是字段名错了。
 
-## 写断言的规矩
-
-- **位置相关的断言，断言整条序列**。反例：只断言 `grid[1].last()=="行合计"`，
-  注入 bug 后变成 `["地区","1月","行合计"]`（2月被挤掉），`last()` 依然绿。
-  → 「目标元素还在」抓不住「旁边元素被挤掉/吞掉」。
-- **只查「有属性」的，别忘了「没属性」的那种**：xlsx 边框校验脚本只查带 `s` 属性的格，
-  去掉边框后无格式的格压根不写 `s`，脚本反而变绿。是故障注入探针暴露的。
-- 写完检查脚本**必须注入已知错误反向验证**，确认它真能红。
-- xlsx 是 zip，Rust 断言读不到内容 → 用 `scripts/verify-xlsx-export.py` 解压校验。
-  `fitToWidth="1"` 是 XML **默认值会被省掉**，真正的开关是 `pageSetUpPr fitToPage="1"`
-  + `fitToHeight="0"`。
-
-## 沙箱 / 环境
-
-- npm / vite 两个绕行脚本**已入库**，别再写 /tmp（上一版被系统清掉，vite 起不来）：
-  `scripts/broker-mkdir-throttle.cjs`（fs broker 是**并发**限流 ~120，不是数量配额）、
-  `scripts/vite-safe-delete-bypass.cjs`（必须在 **setImmediate** 里装，
-  同步段装会让 shim 捕获 wrapper → 无限递归）。
-- 起 vite：`cd designer-react && NODE_OPTIONS="--require .../scripts/vite-safe-delete-bypass.cjs $NODE_OPTIONS" npx vite --host 127.0.0.1 --port 5200 --strictPort`。
-  必须 `run_in_background=true`（`(cmd &)` / `nohup &` 随 shell 一起死）；
-  日志写 `scripts/.vite-dev.log`；curl 加 `--noproxy '*'`。
-- **`vitest` 也要挂同样的 preload，不是只有 vite**（2026-09-20 踩到，浪费了十几分钟）。
-  不挂的症状很有迷惑性：只打印 `RUN v3.2.4 <dir>` 然后**一直不动**（单文件也一样），
-  或者进程被 **SIGKILL（退出码 137）**，看着像 OOM。
-  → 判据：`npx vitest --version` 能出、但 `vitest run` 卡在 `RUN` 那行，
-  **先怀疑没挂 preload，别去查测试代码**。
-  实测对照（同一文件）：不挂 = 卡死 12 分钟 / SIGKILL；挂上 = `Duration 407ms`。
-  ```bash
-  cd <pkg> && NODE_OPTIONS="--require $PWD/../scripts/vite-safe-delete-bypass.cjs \
-    --require $PWD/../scripts/broker-mkdir-throttle.cjs" npx vitest run
-  ```
-  **凡是走 vite 工具链的（`vite` / `vitest` / `vue-tsc`）都挂上**，别每次现判。
-- **浏览器 harness 在沙箱里跑不动键盘 E2E**：CDP `Input.insertText` 对多字符串报
-  `Invalid 'text' parameter`（`hello` 控制实验也失败，确认是 harness 问题）。
-  应对：逻辑抽纯函数 + 单测 + 探针；**画到脸上的那一步走右侧面板 `agent-browser fill`**
-  （antd `Input` 上能用，不像 canvas 击键），再 eval 读多个相关字段确认模型。
-- **本仓库 `tsc --noEmit` 不是干净的**（`designer-react` 有 6 处既有报错，
-  且 package.json 里没有 typecheck 脚本）。判断类型错是不是自己引入的：
-  `git stash push -- <文件>` → 重跑 → `git stash pop`，对比错误集合与行号偏移。
-- **沙箱的删除拦截是「按轮累计」的**（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，一轮里
-  超过阈值后**每一次**删除都要人工确认）。`shutil.rmtree` 直接被拒。
-  危害：连跑十几次探针的故障注入脚本会在第 N 次挂掉，**报错长得像探针自己坏了**
-  （踩过：误判成「未注入时探针就是红的」）。
-  → **脚本一律不删文件**：建目录用 `mkdir(exist_ok=True)`，清数据用
-  `DROP TABLE IF EXISTS`，写文件直接覆盖（`write_text` 自带截断）。
-- **ESM 裸包解析按脚本自己的位置**往上找 `node_modules`，**跟 cwd 无关**。
-  脚本放 `scripts/` 而依赖在 `designer-react/node_modules` 时（jsdom 就是），
-  必须 `createRequire(join(ROOT, 'designer-react/package.json'))`，不能指望 `cd` 过去。
-- **jsdom 里 `body.textContent` 会把 `<script>` 源码也算进去**。
-  查「页面上有没有某个词」时必须 `cloneNode(true)` 后
-  `querySelectorAll('script, style').remove()`，否则**源码注释会被当成页面上的字**
-  → 假红（踩过：注释里正好写了那句要消灭的话，3 条断言全假红）。
-- **同一个文件的两个 `Edit` 放一条消息里会竞态**，前一个可能被**静默丢掉**
-  （踩过两次：`db.rs` 的 `resolve_target` 那处）。靠「变量报 unused」才发现。
-  → 同一个文件的多个改动**一条一条发**，改完 grep 复核。
-
-## 预览与导出是两套口径 —— 预览算出来的东西，导出要么复用要么移植
-
-`buildRenderRequest` 在前端算出 `headerRows`（`headerRowCount`，TS 纯函数）；
-xlsx 导出在 Rust 侧另算一遍。**两边一旦不一致是静默的**：预览 2 行表头、
-导出只有标题行有表头样式、打印时列头不跨页重复，界面上完全看不出来。
-
-现已把 `headerRowCount` 移植成 `ReportTemplate::header_row_count()`
-（判据：从第一行起，连续「既没有 `expand_type=r` 也没有 `row_parent」的行；
-`row_parent: ""` 也算没主格）。生成器产出的模板第一行是**标题**、第二行才是列头，
-所以典型值 **2 / 2 / 2 / 3**（双指标交叉表 3）。
-→ 改任一侧都要同步另一侧；`sample_template_has_two_header_rows` 是那颗钉子。
-
-**配套教训（真机探针要按 handler 分别覆盖）**：把 `xlsx_handler` 改回写死 1 后，
-POST 探针如期变红（`$1:$1`），但 **sample 探针仍然绿** —— 它走的是
-`sample_xlsx_handler`，另一条路。别以为一个探针守住了全部导出路径。
-
-## 改 xlsx 导出的固定套路（这套动作已经跑了四遍，别再临时发挥）
-
-导出物是 zip，**Rust 侧断言读不到内容**，所以：
-
-1. **先把逻辑抽成纯函数**（`column_widths` / `lines_needed` / `header_row_count`），
-   否则只能断言「不报错」，等于没测。
-2. 单测写**具体数值**，并把前提也断言上（「这段文本是 48 宽」）。
-   注意 `display_width` 末尾有 **+2 内边距**，第一次写断言就栽在这。
-3. **故障注入 ≥3 次**：改错算法、改错常量、改错接线（handler 级）。
-4. **真机探针**：`cd print-server && <binary> --port 189xx`（必须 `run_in_background`），
-   curl 导出 → `scripts/verify-xlsx-export.py` 拆 zip 读 XML。
-5. **handler 级注入单独做一次**：单测守不到 handler 接线，而且
-   注入 `xlsx_handler` 后 sample 探针**仍然绿**（走的是另一条路径）——
-   一个探针守不住全部导出路径。
-6. **探针自己也要做注入**：探针是「读 XML 下断言」的代码，它算错了照样一片绿。
-   加一条「改 Rust → 重新 build → **重启服务** → 重跑探针」的注入驱动，
-   每条注入都必须让探针变红。**服务是常驻进程，不重启就是拿旧 binary 测**。
-   （本次 6 条，见 `scripts/fault-inject-image-probe.py`。）
-
-## print-server（Rust 侧）硬事实
-
-- 默认端口 **18888**；binary 在 `~/.cargo/target/debug/print-server`（项目里**没有** `target/`）。
-- **不是 rustfmt-clean**（`cargo fmt --check` 有 4483 行差异）→ **千万别 `cargo fmt`**，
-  手改保持局部风格。
-- `ReportSource` 是 `rename_all = "camelCase"` → JSON 里是 **`connId`**。写成 `conn_id`
-  被 serde 忽略、静默落到第一个连接，报「sqlite 文件不存在: F:\...\data.db」——
-  看着像配置没加载，其实是字段名错了。
-- 渲染输出的格子字段是 **`text`**（`GridCell.text`）；`value` 是模板侧 `CellTpl` 的。
-  拿 `value` 读渲染结果会一片空，容易误判成「渲染坏了」。
-- `SheetTpl` **不在** mirror-check 的 `CAMEL_CASED` 白名单里（白名单是
-  ReportSource/ReportDef/ReportOptions/ReportSummary）→ 新字段两端都用 snake_case。
-- 批量给 struct 加字段：正则要排除 `-> Foo {`（长得和结构体字面量一样），
-  用 `(?<!-> )SheetTpl\s*\{`。改完**插入数要和编译器报的错数对得上**，多出来就是误伤。
-
-## 前端 UI 测试（antd v6 + jsdom，实测可用）
-
-`designer-react` 有 5+ 个 modal 规格，用 `createRoot` + `act` 挂载，模式见
-`p55-modals.spec.tsx` / `data-import.spec.tsx`。**antd Select 在 jsdom 里能正常驱动**，
-但有两个坑：
-1. 触发器是 **`.ant-select-content`**（v6），不是 v5 的 `.ant-select-selector`。
-   开下拉：`mousedown`（bubbles）→ 等一拍 → 点 `.ant-select-item-option`。
-2. **上一个下拉不会从 DOM 摘掉**，只加 `-hidden` 类。在 `document` 里搜选项会点到
-   上一个 Select 的项去。必须只在「最后一个未 hidden 的 `.ant-select-dropdown`」里找。
-   （踩过：分组字段选完 city，再选数值字段时点中的还是分组字段的下拉，
-   `valueField` 一直空、请求一直发不出去，且不报错。）
-3. `data-testid` 落哪层随组件而异（InputNumber 可能在 input 本身也可能在外层 div），
-   查询要 `matches('input') ?? querySelector('input') ?? parentElement.querySelector`。
-4. 受控输入用原生 setter 触发（绕过 React valueTracker）。
-5. **预览有 400ms 去抖**，等请求要轮询到 6s；去抖靠 `doRender` 身份变化触发，
-   所以「state 变了但没进依赖数组」= 请求根本不发。
-
-**UI 层用例要断言请求体，不是「没报错」** —— 见 `grid-report-paging.spec.tsx`
-（分页开关接线；四个用例各自做了故障注入验证）。
-纯函数 `buildRenderRequest` 的用例在 `grid-report-request.spec.ts`，
-它测不到 state → 入参 → 依赖数组那段接线，两层都要有。
-
-## xlsx 列宽：`clamp(8, 60)`，两个数都有理由，别随手改
-
-`column_widths()`（xlsx.rs）= 该列最长文本的 `display_width`（全角算 2，
-**末尾 +2 内边距**）再 clamp。
-
-- 下限 8：「备注」「编码」两字词只有 6 宽，不抬会挤成一条缝。
-- 上限 60（原 40）：实测 23 个汉字的备注是 48 宽，40 会截断 ——
-  相邻列有内容时 Excel 是**裁掉**不是溢出，所以是真的看不见。
-- **为什么不去掉上限**：导出同时开了 `set_print_fit_to_pages(1, 0)`，
-  列越宽 → 缩放越狠 → 打印出来整张表字越小。实测样例总宽 55 / 带长备注 64，
-  一页宽约 92（≈11 个默认列），都还在里面。
-- 超过 60 仍截断；要完整显示得走「换行 + 设行高」，那会改行高，是产品取舍。
-
-**配套**：列宽写进 zip，从 `to_xlsx` 的返回值上根本看不出来 ——
-所以列宽逻辑抽成了纯函数 `column_widths()` 才能单测，终局仍要
-`scripts/verify-xlsx-export.py` 拆包验。
-
-## 能力边界：画布有、服务端报表没有的东西（别再搞混）
+## 能力边界：画布有、服务端报表没有的东西
 
 | 能力 | 自由画布 | 服务端非线性报表（`CellTpl`） |
 | --- | --- | --- |
-| 图片 | 有 | **有**（`CellTpl.image` / `CellModel.image`，只收 data URI，见下节） |
+| 图片 | 有 | **有**（`CellTpl.image` / `CellModel.image`，只收 data URI） |
+| 样式（字色/底色/粗斜/字号/对齐） | 有 | **有**（`CellStyle`） |
 | 条码 / 二维码 | 有（`PrintQrcode`、`data-binder` barcode） | **无** |
-| 图表 | 有，**自研** `openprint/src/core/chartkit`（bar/line/pie，纯函数出 SVG、零第三方依赖） | **无**（`print-server/src` grep `chart` 零命中） |
+| 图表 | 有，**自研** `openprint/src/core/chartkit`（bar/line/pie，纯函数出 SVG、零第三方依赖） | **有**（`CellTpl.chart`；声明的是**模板坐标**不是数据；HTML 出内联 SVG，xlsx 嵌**原生可编辑**图表） |
 | 导出 | 客户端 `export-engine/`（PDF/SVG/图片） | 服务端 xlsx / HTML / CSV |
 
-**教训**：`package.json` 里没装第三方图表库 ≠ 没有图表能力 —— 是自己写的。
-判断某能力有没有，**先 grep 源码，别先看依赖清单**。（我据此误判过一次。）
-
-## 格子图片：`CellTpl.image`（2026-09-20 补上）
-
-**两个槽都认**：`CellTpl.image`（手写模板 / 导入）与 `CellModel.image`（**设计器面板写的是这个**）。
-服务端按 `cell.image.or(model.image)` 合并 —— 只认一个就会出「面板里设了但没生效」。
-TS 侧 `gridToWorkbookData` 同理：`!!(cell.image || cell.model?.image)`，只看 `cell.image`
-的话**面板里设的图在网格里完全看不见**（实测踩过）。
-
-`{from: "literal", src: "<data URI>"}` / `{from: "value", src: ""}`（逐行不同，值取本格字段文本）。
-
-- **只收 data URI，刻意不收文件路径**：模板是用户可编辑、可分享的 JSON，
-  允许路径 = 把模板变成「任意读本地文件」的原语（导出时把内容塞进 xlsx 带走）。
-  设计器选文件是浏览器端 `FileReader` 读成 data URI 再进模板。
-- 白名单 **png / jpeg / gif / bmp**（正好是 xlsx 能嵌的四种）；webp / svg **指名报错**。
-- 取不到图**不静默**：该格 `text` → `[图片: 原因]` + 进 `warnings`，表照常出。
-- **`rust_xlsxwriter 0.99.0` 没有 `image` feature**，PNG/JPEG/GIF/BMP 头解析是纯 Rust 内置的。
-  别凭 crate 名字猜依赖树（我先前误判成要引 `rust_image`）。
-
-## Excel 单位换算（写 xlsx 布局前先看这里，别凭记忆）
-
-```
-px = round(chars × 7) + 5          // chars → 像素（7 = max_digit_width, 5 = cell_padding）
-chars = ceil((px − 5.5) / 7)       // 反解，**ceil 不是 round**
-px = round(pts × 4/3)              // 磅 → 像素（15pt = 20px）
-XML width = floor(px × 256/7)/256  // 写进 <cols> 的形式
-px = round(width_xml × 7)          // 反解**不带 +5**（探针第一版就是这么算错的）
-1 px = 9525 EMU；1 dxa = EMU/635
-```
-
-- **列宽上限 60 字符 / 行高上限 409.5 磅**（= 546px）。行高超上限 Excel **直接拒开文件**。
-- **图片必须按 DPI 折显示尺寸**：Excel 按物理尺寸显示，203dpi 的 120×80 只显示约 57×38px。
-  不折就是 2.1 倍大 —— 而**设计器里看着是好的**（设计器用像素）。
-- 图**不放大**，只缩到不超格宽；合并格按**整段**算可用空间。
-- **`insert_image_with_offset` 插的是原始尺寸**：只算偏移不调
-  `.set_scale_to_size(w, h, true)`，大图会盖到右边那一列去（真机探针抓到的）。
-
-## 故障注入驱动器：两个必须避开的坑
-
-1. **永远不加 `--exact`**：`cargo test <name> -- --exact` 要**完整路径**，只给函数名
-   匹配到 0 个用例而**退出码仍是 0** → 每条注入都被读成「仍然是绿的」（12 条全假绿）。
-2. 解析 `test result:` 行，**`0 passed` 一律算「没验到」**，不能只看退出码。
-
-**注入全绿先怀疑注入，不是怀疑代码**：有一条「按宽高两个方向缩」真的是绿的，
-查下来是**宽度驱动 + 高度夹取**在缩小场景下与 min-fit **等价**（只差在放不放大）。
-改判据、补 `very_tall_image_is_shrunk_by_the_height_limit`、重新对准高度夹取后才全红。
-
-## 静默失败：图片格整格消失
-
-「纯占位空格」判据原为 `value.is_none() && model.is_none()`，且在
-`resolve_parents` 与 `expand` **各写了一遍**。只有图片的格子被当空占位跳过 → 整格消失，
-**表照样出得来，只是数据悄悄变少**。
-
-修法：抽成**一个** `fn is_placeholder(cell)`（含 `&& cell.image.is_none()`），两处共用。
-→ 通用规律：**同一判据出现两次就一定要抽函数**，否则迟早只改一处。
-
-
-## 非线性报表：格子没有「作者定义的样式」
-
-`GridCell`（`model.rs:379`）只有 7 个字段：`text / pos / rowspan / colspan /
-raw_number / num_format / formula`。**字体、字号、颜色、边框、对齐、条件样式
-一个都没有**，也导不出。
-
-设计器里的彩色是**语义高亮**（`grid-report.ts:661-666`：纵向扩展黄、横向扩展绿、
-字段蓝、表达式紫斜体，+ 表头/选中/主格高亮）—— 标的是「这格什么角色」，
-不是「这格长什么样」。xlsx 里的样全靠导出器写死（表头加粗+底色、全体细边框、
-按需换行行高）。**用户改不了任何一个。**
-
-→ 这是和润乾观感差距最大的一块；要补是完整链路（模型 + mirror-check +
-xlsx 通道 + 设计器面板）。
-
-## 分页不认分组
-
-`paginate()`（`mod.rs:319`）是**渲染完之后**按固定行数切拍平网格，
-不知道哪几行同组 → 一组明细跨页时，第二页只有重复的表头，**补不出主格**
-（表头重复只重复模板前 N 行，重复不了运行期展开出来的地区名）。
-`mod.rs:313` 注释已声明不做润乾 9 类带区模型。要「组内不跨页」得引入带区
-或「行后分页」标记。
-
-## 已核对：这些不是缺口（别重复查）
-
-表达式函数集（官方 11 个 + MAP/FILTER/REDUCE/FLATMAP）全在；
-`CellModel` 19 个字段**无死字段**（逐个统计引用，`engine.rs` 都有真实读点：
-`expand_max_count` 1127 / `keep_expand_empty` 1131 / `expand_expr` 1113 /
-`join_on` 754）；分页三配置都生效；多 sheet 导出支持（`xlsx.rs:37` 循环
-`add_worksheet`）；行/列测试已有设计器入口。
-
-## 对照积木报表的差距分析（`引擎差距分析-对照积木报表.md`）
-
-对标的是 `jeecgboot/JimuReport`（Java 在线报表平台）。**结论：不是一个物种** ——
-它做广度（填报 / 大屏 / AI / 权限 / 移动端），我们做深度（打印版面 + 非线性内核）。
-
-四条别忘的结论：
-
-1. **A 类 5 项建议明确不做**：填报回写 / 大屏 / AI / 权限分享 / 移动端。
-   其中**填报**是唯一业务上真会被问的 —— 我们三个引擎全只读打开，是**架构取舍**。
-   对外口径必须是「按只读设计，不支持回写」，**不能说「暂未实现」**。
-2. **B 类 6 项才是真该补的**，前两项（图表 / 条码进服务端）**同根因**：
-   `CellTpl` 缺「非文本格子」通道。图片那次已经走通一遍（两个槽都认 + 只收 data URI
-   + 失败进 `warnings`），照抄即可。
-3. **数据源 3 vs 30+ 别追数量**。真差距是「没有非 SQL 数据集抽象」；
-   信创库用 ODBC DSN 接就行，别逐个写适配。
-4. **⚠️ 许可**：它的补充条款**禁止同类竞争** + 必须保留版权标识。
-   本项目就是报表引擎，属同类 → **可以读 README 对标功能，不能抄代码 /
-   兼容它的模板格式**。想兼容先找法务，别自己判断。
-
-写「条件格式」时注意：Univer 样式通道**只有底色 + 字色能画**，`bd` 边框完全不渲染 ——
-别设计依赖边框的条件格式（已实测）。
+**教训**：`package.json` 里没装第三方图表库 ≠ 没有图表能力 —— 是自己写的。判断某能力有没有，**先 grep 源码，别先看依赖清单**。
 
 ## 数据源现状
 
-sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。
-MySQL **归一成 sqlite**（`normalizeDbEngine('mysql')==='sqlite'`，有测试钉住），
-但 UI 下拉只有 sqlite/postgres/odbc 三项（`admin.html:407`），**手改配置才会踩**。
-`/print` 只支持 pdf/html。
+sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。MySQL **归一成 sqlite**（`normalizeDbEngine('mysql')==='sqlite'`，有测试钉住），但 UI 下拉只有 sqlite/postgres/odbc 三项（`admin.html:407`），**手改配置才会踩**。`/print` 只支持 pdf/html。
 
-（这一节以前还写着「票据指令待实现 / 无 CSV 导出 / 参数表单整块缺失」——
-**都补完了，见下节「已完成」**。别再照着旧记忆当缺口。）
+## 已完成（别再当缺口重复做）
 
-## odbc 引擎：可选 feature + 三条硬约束
+- **CSV 导出**：`POST /api/report/csv` + `GET /api/report/sample.csv`。RFC 4180 + UTF-8 BOM + CRLF。写 `text` 不写 `formula`。**CSV 注入（`=cmd|`）刻意不改写**：加 `'` 前缀会把 `+86` 手机号也改掉，拿正确性换安全不值（取舍写在 `csv.rs` 顶部）。
+- **分页不切合并格**：`merge_blocked_boundaries()`。**关键洞察：主格展开出来就是合并格** → 「不许在合并格中间切页」==「组内不跨页」，不用引入润乾 9 类带区模型。代价：页大小不再严格等于 `rows_per_page`，组超过一页时那页必然超（宁超不切）。
+- **格子样式 `CellStyle`**：bold / italic / font_size / color / bg / h_align / v_align。链路 `CellModel.style` → `CellInst.style` → `GridCell.style` → xlsx `with_style()`（**叠加**在基础格式上）。**刻意不给边框**（Univer 不渲染 = 静默失败）。**颜色只认 `#RRGGBB`，认不出来报 HTTP 500**（点名哪格哪个值）。清掉最后一项时整个 `style` 要摘掉（有 UI 用例钉住）。
+- **MySQL / MariaDB / SQL Server / Oracle 明确报错**：`unsupported_engine_name()`。注意 `ServerConfig::load()` **不调 `validate()`**（只有保存/试连调），手改配置写 mysql 会报误导性的「sqlite 文件不存在」。
+- **格子图片**：`CellTpl.image` / `CellModel.image`（**两个槽都认**）→ `GridCell.image` → xlsx 真嵌入 + HTML `<img>`。探针 `scripts/verify-xlsx-image.py`，由 `scripts/fault-inject-image-probe.py` 反证（6 条）。
+- **图表格**：`CellTpl.chart` / `CellModel.chart`（两个槽都认）→ `GridCell.chart` → HTML 内联 SVG（`chart_svg.rs`）+ xlsx **原生图表**（`xlsx.rs::write_charts`）。声明的是**模板坐标**（`categories: ["A3"]`、`series[].from: "B3"`），整个网格填完后才解析。三条硬约定：①**一个声明只画一份**（行展开会复制，N 份 = Excel 里 N 张图叠一起；**图片相反**）；②**空值是空档不是 0**；③xlsx 的数写在**表格下方的隐藏列**（展开后范围可能不连续）→ 图表是**导出那一刻的快照**。细节见 REFERENCE.md §十。探针 `verify-xlsx-chart.py` + `fault-inject-chart-probe.py`（10 条）。
+- **ODBC 引擎**（八项缺口最后一项，至此全清）：`db_odbc.rs`，可选 feature。
+- **票据 / 标签指令**：`/print` 的 `esc` / `tsc` / `zpl` 已实现。
+- **报表参数**：`ReportDef.params` 声明层 + `RunRequest.values`（按名字绑）；与老 `RunRequest.params`（数据集名 → 位置参数数组）是两条通道。未知参数 / 必填缺失 / 引用了解析不出值的参数**一律报错**，且**未知参数检查必须先于必填检查**（否则 typo 被报成「region 必填」）。老报表无 params 照旧跑。
 
-`odbc-api 29`，`default-features = false`（默认带的 `prompt` 会拖进 `winit` GUI 依赖）
-+ `features = ["odbc_version_3_80"]`，`[features] odbc = ["dep:odbc-api"]`。
-**不需要额外链接器环境变量**（odbc-sys 构建脚本自己问 `brew --prefix`）。
-本机依赖：`brew install unixodbc sqliteodbc`。
+## 局限 / 已知取舍
 
-1. **拿不到裸连接 handle** → 设不了 `SQL_ATTR_ACCESS_MODE`（**没有会话级只读**），
-   也调不了 `SQLGetInfo(SQL_IDENTIFIER_QUOTE_CHAR)`（引号符**写死 `"`**）。
-   原因：`Connection::into_handle(self)` **消费 self**、`Environment::allocate_connection`
-   **私有**。→ 只读降级到**语句级**，残余风险照实写进 README，靠**只读账号**兜底。
-   引号写死是可接受的：猜错得到**明确 SQL 语法错**，不是静默错数据。
-2. **目录函数的名字参数是「搜索模式」不是字面量**：`_` 匹配任意单字符、`%` 任意串、
-   `\` 转义。不转义 → `user_name` **连 `userXname` 一起匹配出来且不报错**。
-   探针里有 `userXname` 诱饵表守这条。
-3. **类型要原生解码**（整数/浮点/布尔），全按文本取的话报表 `sum()` 会在字符串上
-   **静默算错**。
+- **分页不认分组**：`paginate()`（`mod.rs:319`）是渲染完后按固定行数切拍平网格，不知道哪几行同组 → 一组明细跨页时第二页只有重复表头，**补不出主格**。（「组内不跨页」是靠合并格边界实现的。）
+- **`GridCell` 字段很少**：`text / pos / rowspan / colspan / raw_number / num_format / formula` + 后补的 `style` / `image` / `chart`。设计器里的彩色是**语义高亮**（`grid-report.ts:661-666`：纵向扩展黄、横向扩展绿、字段蓝、表达式紫斜体 + 表头/选中/主格高亮）—— 标的是「这格什么角色」，不是「这格长什么样」。xlsx 的基础样靠导出器写死。
+- **`GridCell.pos` 保留模板坐标** → 模板坐标可反查它展开后的输出范围。这是「服务端画图表」能成立的关键前提。
+- 已核对**不是**缺口的：表达式函数集（官方 11 个 + MAP/FILTER/REDUCE/FLATMAP）全在；`CellModel` 字段**无死字段**；分页三配置都生效；多 sheet 导出支持（`xlsx.rs:37`）；行/列测试已有设计器入口。
 
-编译器层面的坑：`odbc-api` 有**两个 `Connection`**（高层的没有 `as_sys`）；
-`PrimaryKeysRow` 字段是 **`column`** 不是 `column_name`；**`bool` 没实现 `Pod`**
-→ 用 `Nullable::<u8>` 判 `!= 0`；`col_data_type` 要 **`ResultSetMetadata` trait 在作用域**；
-是 `VarCharArray<const L: usize>`（没有 `VarArrayLen`）；同步 API 全包 `spawn_blocking`。
+## 对照积木报表的差距分析（`引擎差距分析-对照积木报表.md`）
 
-### 报错点名的是「连接 id」不是「DSN」（约定，别当 bug 修）
+对标 `jeecgboot/JimuReport`（Java 在线报表平台）。**结论：不是一个物种** —— 它做广度（填报 / 大屏 / AI / 权限 / 移动端），我们做深度（打印版面 + 非线性内核）。
 
-`连接 ODBC 失败（{conn.id}）` —— **postgres 一模一样**
-（`连接 postgres 失败（{conn.id}）`）。这是全项目统一约定，别只改 odbc 那一处。
+1. **A 类 5 项建议明确不做**：填报回写 / 大屏 / AI / 权限分享 / 移动端。其中**填报**是唯一业务上真会被问的 —— 我们三个引擎全只读打开，是**架构取舍**。对外口径必须是「按只读设计，不支持回写」，**不能说「暂未实现」**。
+2. **B 类 6 项才是真该补的**。图表 ✅ 已完成（见「已完成」）；**条码 / 二维码仍缺**，与图表**同根因**：`CellTpl` 缺「非文本格子」通道。图片那条路已走通三遍（两个槽都认 + 只收 data URI + 失败进 `warnings`），照抄即可。
+3. **数据源 3 vs 30+ 别追数量**。真差距是「没有非 SQL 数据集抽象」；信创库用 ODBC DSN 接就行，别逐个写适配。
+4. **⚠️ 许可**：它的补充条款**禁止同类竞争** + 必须保留版权标识。本项目就是报表引擎，属同类 → **可以读 README 对标功能，不能抄代码 / 兼容它的模板格式**。想兼容先找法务，别自己判断。
 
-容易看错的地方：**内联路径**（`engine=odbc&database=<DSN>`）报错里会出现 DSN ——
-但那是因为 `db.rs::odbc_inline` **把 `c.id` 直接设成了 DSN**，不是它特意报 DSN。
-配置路径（`/api/config/test`）报的是配置里那个 id。
-→ 写断言时别要求配置路径也报 DSN；要断言的是「**驱动原话透传**」
-（消息里带 `State:` / `[unixODBC]`），那才是真正会退化、也真正有用的性质。
-
-**通用教训**：断言失败时先查 house convention 再改代码 ——
-本次差点把一条**约定**当成 bug 去「修」，那样会让 odbc 与 postgres 不一致。
-
-## 盘点方法（可复用）
-
-判断「某字段是不是死字段」：写脚本统计每个字段在 `engine.rs`/`xlsx.rs` 里的
-`\.field\b` 或 `field:` 命中数，**但别只看总数** —— 命中里混着测试夹具的
-结构体字面量（`mod.rs` 里 19 个字段命中数清一色 23~28，看着像都用了，
-其实大半是夹具）。要打开看**读点所在的那几行**才算数。
-
-## 已完成（2026-09-20，别再当缺口重复做）
-
-**CSV 导出**：`POST /api/report/csv` + `GET /api/report/sample.csv`。
-RFC 4180 转义 + UTF-8 BOM（缺了 Excel 开中文乱码）+ CRLF。
-写 `text` 不写 `formula`（CSV 里 `=SUM(...)` 只是文本）。多 sheet 顺序拼接。
-**CSV 注入（`=cmd|`）刻意不改写**：加 `'` 前缀会把 `+86` 手机号也改掉，
-拿正确性换安全不值；数据来自自己配的库。取舍写在 `csv.rs` 顶部注释。
-
-**分页不切合并格**：`merge_blocked_boundaries()`（mod.rs）。
-**关键洞察：主格展开出来就是合并格** —— 一个地区跨几行，格 rowspan 就是几，
-所以「不许在合并格中间切页」==「组内不跨页」，不用引入润乾 9 类带区模型。
-落点被跨过时往两边找最近安全边界（先退后进）；剩下的够放一页就不再切。
-代价：页大小不再严格等于 rows_per_page，组超过一页时那页必然超（宁超不切）。
-
-**格子样式 `CellStyle`**：bold / italic / font_size / color / bg / h_align / v_align。
-链路 `CellModel.style` → `CellInst.style` → `GridCell.style` → xlsx `with_style()`。
-`with_style` 是**叠加**在基础格式上（表头加粗 + 全体细边框保留），没设的项不动。
-- **刻意不给边框**：Univer `bd` 完全不渲染 → 设了看不见 = 静默失败。
-- **颜色只认 `#RRGGBB`，认不出来报 HTTP 500**（点名哪格哪个值），不静默丢弃。
-- 清掉最后一项时整个 `style` 要摘掉，不能留 `{}`（有 UI 用例钉住）。
-
-**MySQL / MariaDB / SQL Server / Oracle 明确报错**：`unsupported_engine_name()`。
-注意 `ServerConfig::load()` **不调 `validate()`**（只有保存/试连调），
-所以手改配置写 mysql 是真能踩到的，会报误导性的「sqlite 文件不存在」。
-
-**格子图片**：`CellTpl.image` / `CellModel.image`（两处都认）→ `CellInst.image` →
-`GridCell.image`（data URI）→ xlsx 真嵌入 + HTML `<img>`。几何在服务端算，见上文
-「格子图片」与「Excel 单位换算」。真机探针 `scripts/verify-xlsx-image.py`，
-它的正确性由 `scripts/fault-inject-image-probe.py` 反证（6 条，含重建重启）。
-
-**ODBC 引擎**（八项缺口的最后一项，至此全清）：`db_odbc.rs`，可选 feature。
-元数据走 ODBC 目录函数（不写方言 SQL）；`where` 参数走驱动绑定；
-`where` 拒 `; -- /* */`；表名先目录校验。见上文「odbc 引擎」。
-探针 `scripts/verify-odbc.py`（正例 + `--expect-off`）、
-反证 `scripts/fault-inject-odbc-probe.py`（10 条 / 两组各编各的）、
-配置页 `scripts/verify-admin-odbc-display.mjs`（jsdom，自带 3 条反向对照）。
-
-## 可选 feature（默认不编）怎么改：三件事必须一起做
-
-以后再加这类「要原生依赖」的能力（ODBC 就是这么做的），照这个清单走：
-
-1. **默认构建必须仍然可用，且报错要说「没编进这个构建」+ 重编命令**。
-   说成「暂未实现」是**错**的 —— 听起来像永远没有，用户会去换驱动 / 提需求，
-   其实只要重编一次。见 `db.rs::odbc_not_built_in()`。
-2. **界面/接口不能写死能力状态**，要从后端读一个能力位。
-   `/health.odbc = cfg!(feature = "odbc")`，页面**三态**显示：
-   已编入 / 未编入 / **读不到服务状态**。
-   ⚠️ 第三态是必须的：**读不到 ≠ 没编入**，混为一谈就是换了个方向的谎。
-   判据：凡「某功能有没有」是**构建期决定**的，页面上就不许出现写死的说法。
-3. **验证要覆盖两种构建配置**：`cargo build` 和 `cargo build --features X` 都要跑
-   （本次 313 / 321）。**只测开着 feature 那条路会漏掉一半** ——
-   默认构建下接口和页面说什么，才是用户实际看到的。
-
-配套：反证脚本要**按构建配置分组**（每组自己的目标文件 / 编译参数 / 探针参数）。
-
-## 批量给 struct 加字段：两个构建都要跑
-
-只跑 `cargo build` 会漏掉**测试代码里**的字面量（本次：build 报 7 处，
-`cargo test --no-run` 又报 18 处）。**两边都跑**，且插入数要和错数对得上
-（多出来就是误伤了 `-> Foo {` 之类的形状）。
-
-## 受控组件的 UI 测试：必须把 onChange 结果喂回去
-
-`CellModelEditor` 是受控的，spec 里只点开关不重新 render，界面永远停在初始值
-（色块不跟着变、断言拿到旧值）。要像真实父组件那样 `sync()` 把新 cell 传回去。
-另：jsdom 对 `style.background` 有时保留 `#RRGGBB`、有时转 `rgb(...)`，断言两种都收。
-
-## 报表参数（ReportDef.params + RunRequest.values）
-
-`ReportDef.params: Vec<ReportParam>`（name/label/kind/default/required/options）
-是「执行前弹什么查询条件」的声明层，UI 据此自动生成表单；`kind=enum` 时
-`options` 就是下拉项。运行请求用 `values`（参数名 → 值）。
-
-与老的 `RunRequest.params`（数据集名 → 位置参数数组）是两条通道：
-这条按名字绑（人填），那条按数据集整体覆盖（程序填）。
-
-绑定：`resolve_params()` 解析出值 → `bind_params()` 把数据源 params 里
-**整体等于** `"$name"` 的字符串换成值。只认整体等于，不认「包含 `$`」。
-
-三种情况一律报错（静默的后果都是「筛选没生效，作者以为生效了」）：
-未知参数（typo）、必填缺失、引用了解析不出值的参数。
-
-**报错顺序也是正确性**：未知参数检查必须**先于**必填检查，否则 typo 会被报成
-「region 必填」，把人往错的方向带。先报离用户真实错误最近的那条。
-
-老报表没有 params 时照旧跑（`no_params_declared_still_runs` 钉住）。
-
-## 票据 / 标签指令（`print-server/src/ticket/`）
-
-`/print` 的 `esc` / `tsc` / `zpl` 三种载荷已实现（原为「待实现」）。
-输入 = 前端 `raw-sanitize.ts` 净化过的画布 JSON（颜色 / 字体样式 / 设计器元数据已裁掉，
-**别假设 `fill` / `fontWeight` 一定在**）。形状
-`{ version, document: { page, sections: [{ components }] }, data? }`；
-几何单位跟 `page.unit`，原点 = 所属 Section 左上角，多节纵向堆叠。
-
-`mod.rs` 出 IR（`Text/Barcode/Qr/Rule/Box`，坐标统一 mm），`esc.rs` / `tspl.rs` /
-`zpl.rs` 各自发射。**加新控件类型时记得往 `unsupported()` 那条兜底走**，
-不能静默 `_ => {}`。
-
-硬约束（踩过的）：
-- ESC/POS 只有「行」：`ESC 3 24` **必须显式钉行距**，否则 `ESC d n` 推进多少点
-  由机型默认值定 → 行号全错。中文必须 **GBK**（`encoding_rs::GBK`）。
-- TSPL / ZPL 有真 x/y 但**都没有对齐参数** → 居中 / 右对齐要自己按估宽挪 x，
-  不挪会静默变靠左。
-- ZPL 内容里的 `^` / `~` 必须 `^FH` 转义（`^`→`_5E`）；没这两个字符时**不要**加 `^FH`。
-- 旋转只认 90 倍数（TSPL 0/90/180/270，ZPL N/R/I/B），否则报警告并 snap。
-- **203dpi = 7.9921 点/mm**，80mm = 639 点（不是 640）。
-
-**位置类断言要断整条序列**。第一版 `cur_row += 1` 让同行多图元把后面的内容
-整体上移一行；只数 `ESC d` 次数的用例抓不住，改成断言喂行序列才红。
-（与「只断言 last()」同一类错误。）
-
-**文本取值顺序**：`contentType` 在场就照它办；缺省回退是
-**expression > binding > value**。`binding` 是**数据路径**、`value` 是**字面量**，
-搞反会把 `customer.name` 原样印出来（看着"有内容"，不报错）。
-真理源是前端 `data-binder.resolveTextValue`。
-
-**`service_error` 是 HTTP 200 + `{ok:false, message}`**，不是 5xx ——
-写探针别只看状态码。（报表导出那条路才是 500。）
-
-真机探针：`scripts/verify-ticket-print.py`（走真实 `/print`，拆开落盘的指令文件
-核对喂行序列 / GBK 字节 / 二维码五段长度 / `^CI28` / `^PW639`）。改翻译层就跑它。
-
-**designer-react 的 `tsc --noEmit` 现在是干净的（0 错误）** ——
-原来记的「有 6 处既有报错」已作废。要判断新错是不是自己引入的，
-直接看错误总数是不是 0。
+写「条件格式」时注意：Univer 样式通道**只有底色 + 字色能画**，`bd` 边框完全不渲染 —— 别设计依赖边框的条件格式（已实测）。

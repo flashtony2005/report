@@ -6,6 +6,8 @@
 //! - `GET  /api/report/sample`  内置「销售分组汇总」样例（可直接验证链路）
 //! - `GET  /api/report/sample-template`  样例模板（前端设计器的初始内容）
 
+pub mod chart;
+pub mod chart_svg;
 pub mod csv;
 pub mod engine;
 pub mod expr;
@@ -650,20 +652,25 @@ fn to_html(sheets: &[RenderedSheet]) -> String {
                 // 图片格：出 `<img>` 不出文本。`src` 是 data URI，HTML 天然自包含
                 //（不用另发一个静态资源请求，也不用担心导出物散成两半）。
                 // base64 字母表里没有 `&`/`<`/`"`，转义是白转，但转了更保险。
-                let inner = match cell.image.as_deref() {
-                    Some(src) => {
-                        let alt = if cell.text.trim().is_empty() {
-                            format!("图片 {}", cell.pos)
-                        } else {
-                            cell.text.clone()
-                        };
-                        format!(
-                            "<img src=\"{}\" alt=\"{}\" style=\"max-width:100%;height:auto\">",
-                            escape(src),
-                            escape(&alt)
-                        )
-                    }
-                    None => escape(&cell.text),
+                //
+                // 图表格：服务端直接画成内联 SVG。**不能**指望前端 ——
+                // `to_html` 产出的是自包含文档，里面没有 JS，也没法回头调设计器。
+                // 优先级：图片 > 图表 > 文本（两者都设时引擎已发过告警）。
+                let inner = if let Some(src) = cell.image.as_deref() {
+                    let alt = if cell.text.trim().is_empty() {
+                        format!("图片 {}", cell.pos)
+                    } else {
+                        cell.text.clone()
+                    };
+                    format!(
+                        "<img src=\"{}\" alt=\"{}\" style=\"max-width:100%;height:auto\">",
+                        escape(src),
+                        escape(&alt)
+                    )
+                } else if let Some(ch) = cell.chart.as_ref() {
+                    crate::report::chart_svg::render(ch)
+                } else {
+                    escape(&cell.text)
                 };
                 out.push_str(&format!(
                     "<td rowspan=\"{}\" colspan=\"{}\">{}</td>",
@@ -1276,6 +1283,7 @@ pub fn sample_template() -> ReportTemplate {
     datasets.insert("ds1".to_string(), sample_data());
 
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+        chart: None,
         image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
@@ -1286,6 +1294,7 @@ pub fn sample_template() -> ReportTemplate {
     };
     let m = |ds: &str, field: Option<&str>, expand: bool, row_parent: Option<&str>, value_expr: Option<&str>| {
         Some(CellModel {
+            chart: None,
             image: None,
             ds: Some(ds.to_string()),
             field: field.map(|s| s.to_string()),
@@ -1315,7 +1324,7 @@ pub fn sample_template() -> ReportTemplate {
         page: None,
         rows: vec![
             // 行 1：标题
-            RowTpl { cells: vec![CellTpl { image: None, pos: None, value: Some(JsonValue::from("2026 年销售分组汇总表")), model: None, merge_across: 0, merge_down: 0, merge_to_end: true }] },
+            RowTpl { cells: vec![CellTpl { image: None, chart: None, pos: None, value: Some(JsonValue::from("2026 年销售分组汇总表")), model: None, merge_across: 0, merge_down: 0, merge_to_end: true }] },
             // 行 2：表头
             RowTpl {
                 cells: vec![
@@ -1375,6 +1384,7 @@ pub fn cross_tab_template() -> ReportTemplate {
 
     let m = |field: Option<&str>, expand: Option<ExpandType>, row_parent: Option<&str>, col_parent: Option<&str>| {
         Some(CellModel {
+            chart: None,
             image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
@@ -1399,6 +1409,7 @@ pub fn cross_tab_template() -> ReportTemplate {
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+        chart: None,
         image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
@@ -1438,6 +1449,7 @@ pub fn cross_tab_two_metrics_template() -> ReportTemplate {
 
     let m = |field: Option<&str>, expand: Option<ExpandType>, row_parent: Option<&str>, col_parent: Option<&str>| {
         Some(CellModel {
+            chart: None,
             image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
@@ -1462,6 +1474,7 @@ pub fn cross_tab_two_metrics_template() -> ReportTemplate {
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+        chart: None,
         image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
@@ -1519,6 +1532,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
              col_after: Option<&str>,
              value_expr: Option<&str>| {
         Some(CellModel {
+            chart: None,
             image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
@@ -1543,6 +1557,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+        chart: None,
         image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
@@ -1558,6 +1573,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
         rows: vec![
             RowTpl {
                 cells: vec![CellTpl {
+                    chart: None,
                     image: None,
                     pos: None,
                     value: Some(JsonValue::from("地区 / 月份 销售交叉表")),
@@ -1607,6 +1623,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
              col_after: Option<&str>,
              value_expr: Option<&str>| {
         Some(CellModel {
+            chart: None,
             image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
@@ -1631,6 +1648,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
         })
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
+        chart: None,
         image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
@@ -1646,6 +1664,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
         rows: vec![
             RowTpl {
                 cells: vec![CellTpl {
+                    chart: None,
                     image: None,
                     pos: None,
                     value: Some(JsonValue::from("金额 / 数量 双指标交叉表")),
@@ -1715,6 +1734,7 @@ pub fn cross_tab_multi_level_template() -> ReportTemplate {
              col_after: Option<&str>,
              value_expr: Option<&str>| {
         Some(CellModel {
+            chart: None,
             image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
@@ -1742,6 +1762,7 @@ pub fn cross_tab_multi_level_template() -> ReportTemplate {
                 model: Option<CellModel>,
                 merge_down: usize,
                 merge_to_end: bool| CellTpl {
+        chart: None,
         image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
@@ -1901,6 +1922,7 @@ mod tests {
                         merge_across: 0,
                         merge_down: 0,
                         merge_to_end: false,
+                        chart: None,
                     }],
                 }],
                 loop_field: None,
@@ -2031,6 +2053,7 @@ mod tests {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         let m = |field: Option<&str>, expand: bool, row_parent: Option<&str>, value_expr: Option<&str>| {
             Some(CellModel {
@@ -2055,6 +2078,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let mut datasets = BTreeMap::new();
@@ -2136,6 +2160,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2145,9 +2170,9 @@ mod tests {
                 rows: vec![RowTpl {
                     // A1 -> B1 -> A1，以及 C1 自引用
                     cells: vec![
-                        CellTpl { image: None, pos: None, value: None, model: m("B1"), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { image: None, pos: None, value: None, model: m("A1"), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { image: None, pos: None, value: None, model: m("C1"), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { chart: None, image: None, pos: None, value: None, model: m("B1"), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { chart: None, image: None, pos: None, value: None, model: m("A1"), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { chart: None, image: None, pos: None, value: None, model: m("C1"), merge_across: 0, merge_down: 0, merge_to_end: false },
                     ],
                 }],
                 loop_field: None,
@@ -2177,6 +2202,7 @@ mod tests {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         let m = |field: Option<&str>, expand: bool, row_parent: Option<&str>| {
             Some(CellModel {
@@ -2201,6 +2227,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2250,6 +2277,7 @@ mod tests {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         let m = |field: Option<&str>, expand: bool, value_expr: Option<&str>| {
             Some(CellModel {
@@ -2274,6 +2302,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2334,6 +2363,7 @@ mod tests {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         let m = |field: Option<&str>, expand: bool| {
             Some(CellModel {
@@ -2358,6 +2388,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2415,6 +2446,7 @@ mod tests {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         let m = |field: &str, expand: bool, row_parent: Option<&str>| {
             Some(CellModel {
@@ -2439,6 +2471,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2724,6 +2757,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             }),
             ..Default::default()
         };
@@ -3498,6 +3532,7 @@ mod tests {
                     num_format: None,
                     formula: None,
                     style: None,
+                    chart: None,
                 }]
             })
             .collect();
@@ -3520,6 +3555,7 @@ mod tests {
             num_format: None,
             formula: None,
             style: None,
+            chart: None,
         }
     }
 
@@ -3760,6 +3796,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let build = |model: Option<CellModel>| {
@@ -3778,6 +3815,7 @@ mod tests {
                             merge_across: 0,
                             merge_down: 0,
                             merge_to_end: false,
+                            chart: None,
                         }],
                     }],
                     loop_field: None,
@@ -3942,6 +3980,7 @@ mod tests {
                                 merge_across: 0,
                                 merge_down: 0,
                                 merge_to_end: false,
+                                chart: None,
                             }],
                         },
                         RowTpl {
@@ -3971,10 +4010,12 @@ mod tests {
                                     export_formula: None,
                                     join_on: None,
                                     style: None,
+                                    chart: None,
                                 }),
                                 merge_across: 0,
                                 merge_down: 0,
                                 merge_to_end: false,
+                                chart: None,
                             }],
                         },
                     ],
@@ -4035,6 +4076,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let tpl = ReportTemplate {
@@ -4048,11 +4090,11 @@ mod tests {
                             let mut mm = m(Some("month"), true, None).expect("model");
                             mm.row_parent = None;
                             Some(mm)
-                        }, merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { image: None, pos: None, value: None, model: m(Some("amount"), false, None), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { image: None, pos: None, value: None, model: m(None, false, Some("PRODUCT(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { image: None, pos: None, value: None, model: m(None, false, Some("COUNTA(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { image: None, pos: None, value: None, model: m(None, false, Some("RANK(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        }, merge_across: 0, merge_down: 0, merge_to_end: false, chart: None },
+                        CellTpl { chart: None, image: None, pos: None, value: None, model: m(Some("amount"), false, None), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { chart: None, image: None, pos: None, value: None, model: m(None, false, Some("PRODUCT(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { chart: None, image: None, pos: None, value: None, model: m(None, false, Some("COUNTA(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { chart: None, image: None, pos: None, value: None, model: m(None, false, Some("RANK(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
                     ],
                 }],
                 loop_field: None,
@@ -4081,6 +4123,7 @@ mod tests {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         let cm = |field: Option<&str>, row_parent: Option<&str>, value_expr: Option<&str>| {
             Some(CellModel {
@@ -4105,6 +4148,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let tpl = ReportTemplate {
@@ -4165,6 +4209,7 @@ mod tests {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         let m = |field: Option<&str>, expand: bool, parent: Option<&str>, expr: Option<&str>| {
             Some(CellModel {
@@ -4355,6 +4400,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
@@ -4365,6 +4411,7 @@ mod tests {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         let sheet = SheetTpl {
             name: "聚合交叉表".to_string(),
@@ -4598,6 +4645,7 @@ mod tests {
                         merge_across: 0,
                         merge_down: 0,
                         merge_to_end: false,
+                        chart: None,
                     }],
                 }],
                 loop_field: None,
@@ -4721,6 +4769,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let c = |model| CellTpl {
@@ -4731,6 +4780,7 @@ mod tests {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
 
         ReportTemplate {
@@ -5102,6 +5152,7 @@ mod tests {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         let mk = |field: Option<&str>,
                   expand: Option<ExpandType>,
@@ -5130,6 +5181,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
 
@@ -5190,6 +5242,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let sheet = SheetTpl {
@@ -5204,6 +5257,7 @@ mod tests {
                     merge_across: 0,
                     merge_down: 0,
                     merge_to_end: false,
+                    chart: None,
                 }],
             }],
             loop_field: None,
@@ -5254,6 +5308,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let run = |max: Option<usize>| {
@@ -5272,6 +5327,7 @@ mod tests {
                             merge_across: 0,
                             merge_down: 0,
                             merge_to_end: false,
+                            chart: None,
                         },
                         CellTpl {
                             image: None,
@@ -5281,6 +5337,7 @@ mod tests {
                             merge_across: 0,
                             merge_down: 0,
                             merge_to_end: false,
+                            chart: None,
                         },
                     ],
                 }],
@@ -5371,6 +5428,7 @@ mod tests {
                 export_formula: None,
                 join_on: None,
                 style: None,
+                chart: None,
             })
         };
         let sheet = SheetTpl {
@@ -5386,6 +5444,7 @@ mod tests {
                         merge_across: 0,
                         merge_down: 0,
                         merge_to_end: false,
+                        chart: None,
                     },
                     CellTpl {
                         image: None,
@@ -5395,6 +5454,7 @@ mod tests {
                         merge_across: 0,
                         merge_down: 0,
                         merge_to_end: false,
+                        chart: None,
                     },
                 ],
             }],
@@ -5696,6 +5756,7 @@ mod tests {
                                 merge_across: 0,
                                 merge_down: 0,
                                 merge_to_end: false,
+                                chart: None,
                             })
                             .collect(),
                     })
@@ -5921,6 +5982,275 @@ mod tests {
         let html = to_html(&resp.sheets);
         assert!(html.contains("<img src=\"data:image/png;base64,"), "应当出 img，实际：{html}");
         assert!(html.contains("alt=\"logo\""), "text 应当当 alt，实际：{html}");
+    }
+
+    /* ------------------------------ 图表格 ------------------------------ */
+
+    /// 「地区 + 金额」两列纵向分组，外加一个放在 D 列的图表格。
+    ///
+    /// 布局刻意做成 `A3`（地区，纵向展开）→ `B3`（金额，`row_parent: A3`），
+    /// 这正是分组汇总报表最常见的形状，也是「模板坐标反查输出范围」要解决的那件事。
+    fn chart_tpl(chart: CellChart) -> ReportTemplate {
+        let mut ds = BTreeMap::new();
+        ds.insert(
+            "ds1".to_string(),
+            [("华东", 1200.0), ("华北", 980.0), ("华南", 1530.5)]
+                .into_iter()
+                .map(|(region, amount)| {
+                    let mut m = DataRow::new();
+                    m.insert("region".into(), JsonValue::from(region));
+                    m.insert("amount".into(), JsonValue::from(amount));
+                    m
+                })
+                .collect::<DataSet>(),
+        );
+        let region = CellTpl {
+            pos: Some("A3".into()),
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some("region".into()),
+                expand_type: Some(ExpandType::R),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let amount = CellTpl {
+            pos: Some("B3".into()),
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some("amount".into()),
+                row_parent: Some("A3".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let chart_cell = CellTpl { pos: Some("D3".into()), chart: Some(chart), ..Default::default() };
+        ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "t".into(),
+                page: None,
+                rows: vec![RowTpl {
+                    // C 列留个占位空格，图表格落在 D 列
+                    cells: vec![region, amount, CellTpl::default(), chart_cell],
+                }],
+                loop_field: None,
+            }],
+            datasets: ds,
+            ..Default::default()
+        }
+    }
+
+    fn series_decl(name: &str, from: &str) -> CellChartSeries {
+        CellChartSeries { name: Some(name.into()), from: from.into() }
+    }
+
+    fn bar_chart(cats: &[&str], series: Vec<CellChartSeries>) -> CellChart {
+        CellChart {
+            kind: Some("bar".into()),
+            categories: cats.iter().map(|s| s.to_string()).collect(),
+            series,
+            title: None,
+        }
+    }
+
+    /// **这一条守的是最阴的那个坑**：图表格天生没有 `value`，
+    /// 一旦 `is_placeholder` 漏判，它会被当成占位空格**整格消失** ——
+    /// 表照常出，只是图上什么都没有，且不报错。
+    #[test]
+    fn chart_only_cell_is_not_treated_as_a_placeholder() {
+        let tpl = chart_tpl(bar_chart(&["A3"], vec![series_decl("销售额", "B3")]));
+        let resp = render_tpl(tpl);
+        let g = &resp.sheets[0].rows[0][3];
+        assert_eq!(g.pos, "D3", "图表格必须占位，不能被当空格丢掉");
+        assert!(g.chart.is_some(), "图表格要带着解析好的图，实际：{:?}", g.chart);
+    }
+
+    /// 模板坐标 → 展开后的真实数据：3 个地区 → 3 个类目 + 3 个值
+    #[test]
+    fn chart_resolves_from_expanded_sibling_cells() {
+        let tpl = chart_tpl(bar_chart(&["A3"], vec![series_decl("销售额", "B3")]));
+        let resp = render_tpl(tpl);
+        let rows = &resp.sheets[0].rows;
+        assert_eq!(rows.len(), 3, "前提：应当展开成 3 行");
+
+        let ch = rows[0][3].chart.as_ref().expect("图表格要有解析结果");
+        assert_eq!(ch.kind, "bar");
+        assert_eq!(ch.categories, vec!["华东", "华北", "华南"], "类目要按展开顺序取");
+        assert_eq!(ch.series.len(), 1);
+        assert_eq!(ch.series[0].name, "销售额");
+        assert_eq!(
+            ch.series[0].data,
+            vec![Some(1200.0), Some(980.0), Some(1530.5)],
+            "值要跟展开出来的金额列一一对应"
+        );
+        assert_eq!(warns_of(&resp), "", "正常图表不该告警");
+    }
+
+    /// 图表格所在的行会跟着别的格子一起展开 → 同一个声明在网格里出现 N 次。
+    /// 图表只认**最上那一份**：复制 N 份的话，Excel 里就是 N 张图叠在同一格上
+    /// （**这条是拆包探针先发现的**，单测当时全绿 —— 因为老断言只看第 0 行）。
+    /// 图片不是这样：图片本来就该一行一张（`from: value` 那种一列产品图）。
+    #[test]
+    fn chart_in_an_expanding_row_is_drawn_once() {
+        let tpl = chart_tpl(bar_chart(&["A3"], vec![series_decl("销售额", "B3")]));
+        let resp = render_tpl(tpl);
+        let rows = &resp.sheets[0].rows;
+        assert_eq!(rows.len(), 3, "前提：图表格那一行应当展开成 3 行");
+        let drawn: Vec<usize> = (0..rows.len()).filter(|r| rows[*r][3].chart.is_some()).collect();
+        assert_eq!(drawn, vec![0], "图表格只能画在第一行，实际画在 {drawn:?}");
+        assert_eq!(warns_of(&resp), "", "这是正常展开，不该告警");
+    }
+
+    /// 数据来源**横向**展开（交叉表那种）也要解析得出，且按列序排
+    #[test]
+    fn chart_resolves_a_column_expanded_source_in_column_order() {
+        let mut ds = BTreeMap::new();
+        ds.insert(
+            "ds1".to_string(),
+            [("1月", 10.0), ("2月", 20.0), ("3月", 30.0)]
+                .into_iter()
+                .map(|(month, amount)| {
+                    let mut m = DataRow::new();
+                    m.insert("month".into(), JsonValue::from(month));
+                    m.insert("amount".into(), JsonValue::from(amount));
+                    m
+                })
+                .collect::<DataSet>(),
+        );
+        let header = CellTpl {
+            pos: Some("A1".into()),
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some("month".into()),
+                expand_type: Some(ExpandType::C),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let value = CellTpl {
+            pos: Some("A2".into()),
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some("amount".into()),
+                col_parent: Some("A1".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let chart_cell = CellTpl {
+            pos: Some("D4".into()),
+            chart: Some(bar_chart(&["A1"], vec![series_decl("金额", "A2")])),
+            ..Default::default()
+        };
+        let tpl = ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "t".into(),
+                page: None,
+                rows: vec![
+                    RowTpl { cells: vec![header] },
+                    RowTpl { cells: vec![value] },
+                    RowTpl { cells: vec![CellTpl::default(), CellTpl::default(), CellTpl::default(), chart_cell] },
+                ],
+                loop_field: None,
+            }],
+            datasets: ds,
+            ..Default::default()
+        };
+        let resp = render_tpl(tpl);
+        // 图表格在第 3 行（模板行下标 2）、D 列
+        let ch = resp.sheets[0].rows[2][3].chart.as_ref().expect("横向来源也要解析得出");
+        assert_eq!(ch.categories, vec!["1月", "2月", "3月"], "列序不能乱");
+        assert_eq!(ch.series[0].data, vec![Some(10.0), Some(20.0), Some(30.0)]);
+    }
+
+    /// 坐标写错：**表照常出**，该格写清原因并告警（与图片格同一套约定）
+    #[test]
+    fn bad_chart_coordinate_warns_and_puts_the_reason_in_text() {
+        let tpl = chart_tpl(bar_chart(&["Z9"], vec![series_decl("销售额", "B3")]));
+        let resp = render_tpl(tpl);
+        let g = &resp.sheets[0].rows[0][3];
+        assert!(g.chart.is_none(), "解析失败就不该当图表格输出");
+        assert!(g.text.starts_with("[图表:"), "原因要写在格子里，实际：{:?}", g.text);
+        assert!(g.text.contains("Z9"), "要点名写错的坐标，实际：{:?}", g.text);
+        let w = warns_of(&resp);
+        assert!(w.contains("D3"), "告警要带格位，实际：{w:?}");
+        // 表本身照常出
+        assert_eq!(resp.sheets[0].rows.len(), 3);
+        assert_eq!(resp.sheets[0].rows[0][0].text, "华东");
+    }
+
+    /// 类目与数值数量对不上 → 不出图（不截断也不补零）
+    #[test]
+    fn chart_count_mismatch_refuses_to_draw() {
+        // A3 展开 3 格，B3 也是 3 格 —— 故意把类目指到只展开一次的 D3（图表格自己）
+        // 用「引用了别的单格」来制造 1 vs 3 的错配
+        let mut tpl = chart_tpl(bar_chart(&["A3"], vec![series_decl("销售额", "B3")]));
+        // 把类目改成 A3 + B3（3 + 3 = 6）对上 3 个值 → 错配
+        if let Some(ch) = tpl.sheets[0].rows[0].cells[3].chart.as_mut() {
+            ch.categories = vec!["A3".into(), "B3".into()];
+        }
+        let resp = render_tpl(tpl);
+        let g = &resp.sheets[0].rows[0][3];
+        assert!(g.chart.is_none(), "数量对不上不许出图");
+        assert!(g.text.contains("一一对应"), "要说清要求，实际：{:?}", g.text);
+    }
+
+    /// 图表引用自己 → 单独一条能看懂的话
+    #[test]
+    fn chart_referencing_itself_is_reported_clearly() {
+        let tpl = chart_tpl(bar_chart(&["D3"], vec![series_decl("销售额", "B3")]));
+        let resp = render_tpl(tpl);
+        let g = &resp.sheets[0].rows[0][3];
+        assert!(g.chart.is_none());
+        assert!(g.text.contains("自己"), "实际：{:?}", g.text);
+    }
+
+    /// 同一格既声明图片又声明图表：图片优先，但**必须告警**说一声
+    #[test]
+    fn image_wins_over_chart_but_says_so() {
+        let mut tpl = chart_tpl(bar_chart(&["A3"], vec![series_decl("销售额", "B3")]));
+        tpl.sheets[0].rows[0].cells[3].image = img_decl(None, TINY_PNG);
+        let resp = render_tpl(tpl);
+        let g = &resp.sheets[0].rows[0][3];
+        assert!(g.image.is_some(), "图片优先");
+        let w = warns_of(&resp);
+        assert!(w.contains("同时声明"), "不许静默盖掉，实际：{w:?}");
+    }
+
+    /// HTML 预览要出**内联 SVG**（导出物是自包含文档，没有 JS 也没法回头调前端）
+    #[test]
+    fn html_preview_emits_inline_svg_for_chart_cells() {
+        let tpl = chart_tpl(bar_chart(&["A3"], vec![series_decl("销售额", "B3")]));
+        let resp = render_tpl(tpl);
+        let html = to_html(&resp.sheets);
+        assert!(html.contains("<svg "), "应当出内联 SVG，实际：{html}");
+        assert!(html.contains("华东"), "类目名要画进图里，实际：{html}");
+    }
+
+    /// 图表格在 xlsx 里要能导出（真断言在拆包探针里，Rust 侧读不到 zip 内容）
+    #[test]
+    fn xlsx_export_with_a_chart_succeeds() {
+        let tpl = chart_tpl(bar_chart(&["A3"], vec![series_decl("销售额", "B3")]));
+        let resp = render_tpl(tpl);
+        let buf = xlsx::to_xlsx(&resp.sheets, 1).expect("带图表的表也要导得出");
+        assert!(!buf.is_empty());
+    }
+
+    /// CSV 里图表格是空格子 —— 图表的数**本来就来自表里的格子**，
+    /// 那些数在 CSV 里一个不少，所以这里没有信息丢失。
+    #[test]
+    fn chart_cell_is_empty_in_csv_but_its_numbers_are_still_there() {
+        let tpl = chart_tpl(bar_chart(&["A3"], vec![series_decl("销售额", "B3")]));
+        let resp = render_tpl(tpl);
+        let csv = String::from_utf8(csv::to_csv(&resp.sheets).expect("CSV 要导得出")).unwrap();
+        // 来源数据一个都不能少（金额带千分位，CSV 里会被引号包住，所以不能断言 "1200"）
+        for want in ["华东", "华北", "华南", "1,200", "980", "1530.50"] {
+            assert!(csv.contains(want), "来源数据 {want} 应当还在 CSV 里：{csv}");
+        }
+        // 图表格本身不出字：每行都以 `,,` 收尾（C 列空 + 图表格那列空）
+        for line in csv.lines().filter(|l| !l.trim().is_empty()) {
+            assert!(line.ends_with(",,"), "图表格不该往 CSV 里写字：{line:?}");
+        }
     }
 }
 

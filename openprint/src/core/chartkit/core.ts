@@ -25,7 +25,13 @@ export function fmt(n: number): string {
 
 /**
  * 计算「好看」的坐标轴上限：取数据最大值，向上取整到 1/2/5×10ⁿ 量级。
- * 例如 max=73 → 80；max=250 → 300；max=0 → 1。
+ * 例如 max=73 → 100；max=250 → 500；max=0 → 1。
+ *
+ * ⚠️ 本注释曾写成「73 → 80；250 → 300」—— 那是「先算步长、再乘刻度数」的算法，
+ * 与下面的实现**不符**：实现取的是「1/2/5×10ⁿ 中第一个 ≥ max 的量级」，
+ * 所以 73 → 100、250 → 500。以实现为准。
+ * 服务端 `print-server/src/report/chart_svg.rs::nice_max` 是照**实现**镜像的
+ * （那边有单测钉住 100/500），改这里务必同步改那边，否则预览与打印刻度是两套。
  */
 export function niceMax(max: number): number {
   if (max <= 0) return 1

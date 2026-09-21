@@ -78,6 +78,7 @@ fn cell_of(raw: &str) -> CellTpl {
         Some(rest) if !rest.is_empty() => rest.trim(),
         _ => {
             return CellTpl {
+                chart: None,
                 image: None,
                 pos: None,
                 value: if t.is_empty() { None } else { Some(JsonValue::from(t)) },
@@ -144,6 +145,7 @@ fn cell_of(raw: &str) -> CellTpl {
     };
 
     CellTpl {
+        chart: None,
         image: None,
         pos: None,
         value: None,

@@ -6,6 +6,7 @@
 //! 2. 展开与求值分离：先 expand_value，再 value_expr
 //! 3. 层次坐标 `D3[B3:+0]` 中 `:+0` 表示「当前组」，不可省略（省略会解析为空集）
 
+use crate::report::chart;
 use crate::report::expr::{self, BinOp, CmpOp, Coord, Expr, Prop};
 use crate::report::model::*;
 use serde_json::Value as JsonValue;
@@ -137,7 +138,7 @@ fn default_col_parent(sheet: &SheetTpl, r: usize, c: usize, resolved: &Resolved)
     }
 }
 
-/// 纯占位空格（既无值、无模型、也无图片声明）不参与展开。
+/// 纯占位空格（既无值、无模型、也无图片 / 图表声明）不参与展开。
 ///
 /// **两处必须用同一个判据**：阶段 0 的父格解析（`resolve_parents`）和阶段 1 的
 /// 建实例（`expand`）。判据一旦不一致，后果是静默的：某格在一处算「存在」、
@@ -146,8 +147,10 @@ fn default_col_parent(sheet: &SheetTpl, r: usize, c: usize, resolved: &Resolved)
 ///
 /// 图片格必须算「有内容」：只放一张 logo、既不写 `value` 也不写 `model`
 /// 是很自然的写法，漏掉它那个格子会**整格消失**（实测，不是推的）。
+/// 图表格同理 —— 而且它更容易踩：图表格**天生就没有 `value`**
+/// （数据来自别的格子），漏判的话它 100% 会消失。
 fn is_placeholder(cell: &CellTpl) -> bool {
-    cell.value.is_none() && cell.model.is_none() && cell.image.is_none()
+    cell.value.is_none() && cell.model.is_none() && cell.image.is_none() && cell.chart.is_none()
 }
 
 /// 模板级父格解析（Pass 0）：按**行优先**顺序解析每格的父格，不建实例。
@@ -1069,6 +1072,9 @@ impl Engine {
                 // 为每个格子都判一遍「是不是设了样」
                 style: inst.style.clone().filter(|s| !s.is_empty()),
                 image,
+                // 图表要等**整个网格填完**才能解析（它读的是别的格子），
+                // 所以这里先留空，由 `expand_sheet` 末尾的 `resolve_charts` 补上。
+                chart: None,
             });
         }
 
@@ -1083,9 +1089,94 @@ impl Engine {
             self.warnings.push(msg.clone());
         }
 
-        grid.into_iter()
+        let mut out: Vec<Vec<GridCell>> = grid
+            .into_iter()
             .map(|row| row.into_iter().map(|c| c.unwrap_or_else(empty_cell)).collect())
-            .collect()
+            .collect();
+        // 图表必须在**整个网格填完之后**解析：它读的是别的格子。
+        // 放在 `grid` 还是 `Option<GridCell>` 的时候做不了，那会儿还有洞。
+        self.resolve_charts(&mut out);
+        out
+    }
+
+    /// 解析所有图表格：把模板坐标换成展开后的真实数据。
+    ///
+    /// 失败**不中断渲染**：该格文本改成 `[图表: 原因]` 并进 `warnings`，
+    /// 表照常出。与图片格同一套约定 —— 留白看不出是「没配」还是「配错了」。
+    ///
+    /// **一个声明只画一份**：图表格所在的行会跟着别的格子一起展开，同一个 `pos`
+    /// 于是在网格里出现 N 次。图片复制 N 份是对的（`from: value` 那种一列产品图），
+    /// 图表复制 N 份是错的 —— 它读的是**整列**的数据，N 份内容一模一样，
+    /// 落到 Excel 里就是 N 张图叠在同一格上。只认最上/最左的那一份。
+    fn resolve_charts(&mut self, grid: &mut [Vec<GridCell>]) {
+        // 先把声明收集出来（要可变借用 grid，不能一边迭代 insts 一边改）
+        let mut decls: Vec<(usize, usize, String, CellChart)> = self
+            .insts
+            .iter()
+            .filter(|i| !i.dropped)
+            .filter_map(|i| {
+                i.chart
+                    .as_ref()
+                    .map(|c| (i.row_start, i.col_start, i.pos.clone(), c.clone()))
+            })
+            .collect();
+        if decls.is_empty() {
+            return;
+        }
+        // `insts` 的顺序不是版面顺序，先按 (行, 列) 排好，第一份才是「最上最左」
+        decls.sort_by_key(|(r, c, _, _)| (*r, *c));
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        decls.retain(|(_, _, pos, _)| seen.insert(pos.clone()));
+
+        // 只给**被引用**的位置建索引：大表上把所有格子都克隆一遍文本是白费力气
+        let mut wanted: BTreeSet<String> = BTreeSet::new();
+        for (_, _, _, d) in &decls {
+            wanted.extend(chart::referenced_positions(d));
+        }
+        let mut index: chart::ChartIndex = BTreeMap::new();
+        for (r, row) in grid.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                if cell.pos.is_empty() || !wanted.contains(&cell.pos) {
+                    continue;
+                }
+                index.entry(cell.pos.clone()).or_default().push(chart::ChartCellRef {
+                    row: r,
+                    col: c,
+                    text: cell.text.clone(),
+                    number: chart::source_number(cell),
+                });
+            }
+        }
+        // 显式按 (行, 列) 排序，而不是依赖遍历顺序 —— 列向展开时
+        // 「同一行内列号递增」恰好让遍历顺序是对的，但这种巧合不该被依赖。
+        for v in index.values_mut() {
+            v.sort_by_key(|c| (c.row, c.col));
+        }
+
+        for (r, c, pos, decl) in decls {
+            let outcome = chart::resolve_chart(&decl, &pos, &index);
+            // 同时声明了图片和图表：渲染时图片优先，会**静默**盖掉图表 —— 说一声
+            if let Some(cell) = grid.get(r).and_then(|row| row.get(c)) {
+                if cell.image.is_some() {
+                    self.warnings.push(format!(
+                        "{pos} 同时声明了图片和图表，导出时图片优先，图表不会出现"
+                    ));
+                }
+            }
+            match outcome {
+                Ok(ch) => {
+                    if let Some(cell) = grid.get_mut(r).and_then(|row| row.get_mut(c)) {
+                        cell.chart = Some(ch);
+                    }
+                }
+                Err(e) => {
+                    self.warnings.push(format!("{pos} 的图表没出：{e}"));
+                    if let Some(cell) = grid.get_mut(r).and_then(|row| row.get_mut(c)) {
+                        cell.text = format!("[图表: {e}]");
+                    }
+                }
+            }
+        }
     }
 
     /// 对本实例覆盖的数据行按字段聚合（交叉表数值格的核心）
@@ -1194,6 +1285,9 @@ impl Engine {
                 // 图片格声明走**两条**分支都要拷：挂在展开格上的产品图列
                 // （`field: photo` + `image.from: value`）走的是上面那条。
                 inst.image = cell.image.clone().or_else(|| model.image.clone());
+                // 图表声明同样两条分支都要拷：挂在分组格上的「每组一张图」
+                // 走的就是这条展开分支。只拷一条的话图会**静默不出**。
+                inst.chart = cell.chart.clone().or_else(|| model.chart.clone());
                 inst.value_expr = model.value_expr.clone();
                 // 展示值与测试表达式：**展开格这条分支同样要拷**。
                 // 只拷非展开分支的话，挂在分组格上的字典（编码 → 名称）会静默失效。
@@ -1220,6 +1314,7 @@ impl Engine {
             inst.format = model.format.clone();
             inst.style = model.style.clone();
             inst.image = cell.image.clone().or_else(|| model.image.clone());
+            inst.chart = cell.chart.clone().or_else(|| model.chart.clone());
             inst.value = match &model.field {
                 Some(f) => view.first().and_then(|r| ds.get(*r)).and_then(|row| row.get(f)).cloned().unwrap_or(JsonValue::Null),
                 None => cell.value.clone().unwrap_or(JsonValue::Null),
@@ -3362,6 +3457,7 @@ fn empty_cell() -> GridCell {
         formula: None,
         style: None,
         image: None,
+        chart: None,
     }
 }
 
@@ -3396,6 +3492,7 @@ mod parent_tests {
             export_formula: None,
             join_on: None,
             style: None,
+            chart: None,
         })
     }
 
@@ -3417,6 +3514,7 @@ mod parent_tests {
                             merge_across: 0,
                             merge_down: 0,
                             merge_to_end: false,
+                            chart: None,
                         })
                         .collect(),
                 })
@@ -3637,6 +3735,7 @@ mod scale {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         SheetTpl {
             name: "表达式密集".to_string(),
@@ -3697,6 +3796,7 @@ mod scale {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         SheetTpl {
             name: "累计".to_string(),
@@ -4515,6 +4615,7 @@ mod scale {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         let d1 = match expr {
             Some(e) => m(None, None, Some("B1"), Some(e)),
@@ -4658,6 +4759,7 @@ mod scale {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         let d1 = match expr {
             Some(e) => m(None, None, Some("B1"), Some(e)),
@@ -4705,6 +4807,7 @@ mod scale {
             merge_across: 0,
             merge_down: 0,
             merge_to_end: false,
+            chart: None,
         };
         SheetTpl {
             name: "exp".to_string(),

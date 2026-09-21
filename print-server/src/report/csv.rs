@@ -65,6 +65,7 @@ mod tests {
             num_format: None,
             formula: None,
             style: None,
+            chart: None,
         }
     }
 

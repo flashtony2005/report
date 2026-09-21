@@ -176,8 +176,13 @@ pub struct CellModel {
     /// 这是**唯一**能导出到 xlsx 的样式来源。设计器网格里那些颜色是语义高亮
     /// （扩展黄、字段蓝…），标的是「这格什么角色」，不会进这里，也不会导出。
     pub style: Option<CellStyle>,
-    /// 把这格画成图片（logo / 产品图 / 二维码 / 客户端栅格化好的图表）。
+    /// 把这格画成图片（logo / 产品图 / 二维码）。
     pub image: Option<CellImage>,
+    /// 把这格画成图表（柱状 / 折线 / 饼图）。
+    ///
+    /// 与 `image` 是同一族「非文本格子」：这格不出文本，出图形。
+    /// 区别在于图表的数据是**从别的格子算出来的**，所以要带一组模板坐标。
+    pub chart: Option<CellChart>,
 }
 
 /// 图片格：这格不出文本，出图片。
@@ -263,6 +268,93 @@ pub fn parse_image_data_uri(src: &str) -> Result<(&'static str, Vec<u8>), String
     Ok((ext, bytes))
 }
 
+/// 图表格：这格不出文本，出一张图表（柱状 / 折线 / 饼图）。
+///
+/// ## 为什么数据来源写「模板位置名」而不是输出行列
+///
+/// 图表要画的是**展开之后**的数据（3 个地区 → 3 根柱子），而作者写模板时只知道
+/// 模板坐标（`A3` = 地区列）。`GridCell.pos` 保留了模板坐标，所以
+/// 「`A3` 展开成了哪几个输出格」是可以反查的 —— 图表因此能在**服务端**解析出
+/// 真实数据。这一条是整个特性成立的前提：没有它就只能让前端把图栅格化成
+/// PNG 再塞回来（那是 `image` 那条路，但那样导出到 xlsx 的是一张死图，
+/// 在 Excel 里既不能改数据也不能换图型）。
+///
+/// ## 坐标怎么解析
+///
+/// 每个位置名解析成「所有 `pos` 等于它的输出格」，按 `(行, 列)` 排序：
+/// - 纵向分组报表：`A3`（地区）→ 3 行；`B3`（金额）→ 同 3 行；
+/// - 横向交叉表：`B2`（月份，横向展开）→ 3 列；`B3`（金额）→ 同 3 列。
+/// 两种布局用**同一套机制**，因为排序后的顺序天然就是阅读顺序。
+///
+/// ## 数量对不上怎么办
+///
+/// 类目数与任一序列的点数必须**完全相等**，否则整张图不出，该格出
+/// `[图表: 原因]` 并进 `warnings`。**不做截断、不做补零** —— 那两种都是
+/// 「图看着是对的、数据是错的」，比不出图危险得多。
+///
+/// 这是最常见的作者错误：把类目指到了表头那种不展开的格子上（1 个 vs N 个）。
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CellChart {
+    /// 图表类型：`bar`（柱状）| `line`（折线）| `pie`（饼图）。
+    ///
+    /// 用 `String` 而不是 enum，是为了让**认不出来时只坏这一格**：写成 enum 的话
+    /// serde 会在解析整个模板时就报错，作者改一个错字整张表都出不来。
+    /// 与 `NumFmt::kind` 的处理方式一致。
+    pub kind: Option<String>,
+    /// 类目来源：模板位置名列表，如 `["A3"]`。取值格的 `text`（不是 `value`）。
+    ///
+    /// 留空则用序号 `1`、`2`… 当类目。
+    pub categories: Vec<String>,
+    /// 数据序列。`pie` 只用第一条（饼图只有一圈）。
+    pub series: Vec<CellChartSeries>,
+    /// 图表标题，画在顶部居中
+    pub title: Option<String>,
+}
+
+/// 一条数据序列的**声明**（数值还没解析出来）
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CellChartSeries {
+    /// 序列名（图例 / 饼图扇区名）。留空则回落用 `from` 那个位置名。
+    pub name: Option<String>,
+    /// 数值来源：模板位置名，如 `"B3"`。
+    ///
+    /// 取值优先用 `raw_number`（导出 xlsx 时写数字而不是文本），取不到再把
+    /// `text` 解析成数字。两者都没有（空串 / `-` / 纯文字）就是**缺测**，
+    /// 结果是 `null`（图上是个空档、xlsx 里是空格），**不补 0** ——
+    /// 「空着」和「就是 0」在图上长得一样，在报表里是两回事。
+    /// 交叉表里「某地区某月没有数据」是常态，所以缺测必须是一等公民而不是报错。
+    pub from: String,
+}
+
+/// 解析完成的图表：类目与各序列数值都已经是**展开后的真实数据**。
+///
+/// 与 `CellChart` 的区别是「声明 vs 结果」，正如 `CellImage` 之于
+/// `GridCell.image`（一个是模板里的 data URI 声明，一个是校验过的 data URI）。
+///
+/// **这是一份值快照，不是活引用**：分页把表切开之后，图表仍带着解析时的全量数据。
+/// 对预览 / HTML 是想要的行为（图不该因为跨页就少一半柱子）。
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ResolvedChart {
+    /// 已归一化的类型：`bar` | `line` | `pie`（小写）
+    pub kind: String,
+    pub categories: Vec<String>,
+    pub series: Vec<ResolvedChartSeries>,
+    pub title: Option<String>,
+}
+
+/// 解析完成的一条序列
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ResolvedChartSeries {
+    /// 序列名（已回落：作者没写就用 `from`）
+    pub name: String,
+    /// 与 `ResolvedChart.categories` **等长**；缺测的位置是 `None`（序列化成 `null`）。
+    pub data: Vec<Option<f64>>,
+}
+
 impl CellModel {
     pub fn is_row_expand(&self) -> bool {
         matches!(self.expand_type, Some(ExpandType::R))
@@ -294,6 +386,8 @@ pub struct CellTpl {
     /// 把这格画成图片。放在 `CellTpl` 上是为了让**静态图片**（logo / 二维码）
     /// 不必为了一个 data URI 去建 `CellModel`。
     pub image: Option<CellImage>,
+    /// 把这格画成图表。同样放在 `CellTpl` 上，让「一张固定图表」不必建 `CellModel`。
+    pub chart: Option<CellChart>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -447,6 +541,12 @@ pub struct CellInst {
     pub style: Option<CellStyle>,
     /// 图片格声明，原样带到输出格（见 CellModel::image）
     pub image: Option<CellImage>,
+    /// 图表格声明，原样带到输出格（见 CellModel::chart）。
+    ///
+    /// 注意与 `image` 的差别：`image` 在这一步就解析完了（校验 data URI），
+    /// 而图表的**数值要等整个网格填完**才能解析（它读的是别的格子），
+    /// 所以这里只是把声明带过去，真正的解析在 `expand_sheet` 末尾做。
+    pub chart: Option<CellChart>,
     /// 导出 xlsx 时写公式而不是值（见 CellModel::export_formula）
     pub export_formula: bool,
     /// 自身行测试的结果（`row_test_expr`）
@@ -512,6 +612,7 @@ impl CellInst {
             export_formula: false,
             style: None,
             image: None,
+            chart: None,
             row_test_passed: true,
             col_test_passed: true,
             hidden: false,
@@ -548,6 +649,13 @@ pub struct GridCell {
     /// 作者自己决定要不要每行内联图片。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// 图表格：**已解析**的图表（类目 + 各序列数值，数值已是展开后的真实数据）。
+    ///
+    /// 有值时这格出图表不出文本（`text` 降级成 alt / 失败原因）。
+    /// 与 `image` 不同，这里存的是**算好的数**而不是一个引用：预览、HTML、
+    /// xlsx 三边拿到的是同一份数据，不会各自再解析一遍坐标（那样迟早对不上）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chart: Option<ResolvedChart>,
 }
 
 /// 展开结果

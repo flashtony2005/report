@@ -3,8 +3,12 @@
 //! 只依赖 rust_xlsxwriter，不经过 Excel COM，因此服务端/无头环境同样可用。
 //! 数值列写 number（保留可计算性），文本写 string；跨行跨列还原为 merge_range。
 
-use crate::report::model::{parse_image_data_uri, CellStyle, GridCell, HAlign, RenderedSheet, VAlign};
-use rust_xlsxwriter::{Format, FormatAlign, FormatBorder, Image, Workbook};
+use crate::report::model::{
+    parse_image_data_uri, CellStyle, GridCell, HAlign, RenderedSheet, ResolvedChart, VAlign,
+};
+use rust_xlsxwriter::{
+    Chart, ChartType, Format, FormatAlign, FormatBorder, Image, Workbook, Worksheet,
+};
 use std::collections::{HashMap, HashSet};
 
 /// 只认 `#RRGGBB`。不猜 `rgb()` / 颜色名 / `#RGB` 简写 —— 猜错了是静默的，
@@ -293,6 +297,110 @@ fn place_images(
     out
 }
 
+/// 把本 sheet 里的图表格写成**原生 Excel 图表**。
+///
+/// ## 为什么数据要另写一块隐藏区域，而不是直接引用来源格
+///
+/// 图表的来源写的是**模板坐标**（`A3`），它展开出来的输出格**可能不连续** ——
+/// 嵌套分组下父格就是「隔几行出现一次」（3 个地区各带 2 行明细时，`A3` 落在
+/// 第 0、3、6 行）。而 Excel 原生图表的一条序列只能是**一个连续区域**，
+/// 直接引用会连中间夹着的别人的数据一起画进去。
+///
+/// 所以：把**解析好的数**写到表格下方的隐藏列里，再让图表引用那个块。
+/// 这样任何布局都画得出，且画的**一定是对的数据**。
+///
+/// ## 代价（照实说）
+///
+/// 图表是**导出那一刻的快照**：在 Excel 里改表体的数字，图不会跟着变。
+/// 换来的是「布局再怪也画得对」。数据块留在文件里（隐藏列），
+/// 想知道图是从哪几个数画的，取消隐藏就能看见。
+///
+/// ## 为什么不栅格化成 PNG
+///
+/// 那样图表在 Excel 里就是一张**死图**：改不了数据、换不了图型、缩放会糊。
+/// 原生图表是矢量的、可编辑的，这也是选它的全部理由。
+fn write_charts(
+    ws: &mut Worksheet,
+    sheet_name: &str,
+    rows: &[Vec<GridCell>],
+    col_count: u16,
+) -> Result<(), String> {
+    // 收集图表格，按行优先序（多个图表时数据块依次往下排，位置才稳定可预测）
+    let charts: Vec<(usize, usize, &ResolvedChart)> = rows
+        .iter()
+        .enumerate()
+        .flat_map(|(r, row)| {
+            row.iter()
+                .enumerate()
+                .filter_map(move |(c, cell)| cell.chart.as_ref().map(|ch| (r, c, ch)))
+        })
+        .collect();
+    if charts.is_empty() {
+        return Ok(());
+    }
+
+    // 数据块放在**表格下方**而不是第 0 行：第 0 行属于 `set_repeat_rows`
+    // 的表头区，混进去会让数据块被当成表头反复重复。
+    let helper_col: u16 = col_count + 1;
+    let mut cursor: u32 = rows.len() as u32 + 1;
+    let mut widest = 0u16;
+
+    for (r, c, ch) in charts {
+        let n = ch.categories.len() as u32;
+        // 表头行：序列名（图表图例从这里取字）
+        for (s, series) in ch.series.iter().enumerate() {
+            ws.write_string(cursor, helper_col + 1 + s as u16, &series.name)
+                .map_err(|e| e.to_string())?;
+        }
+        // 类目列
+        for (i, cat) in ch.categories.iter().enumerate() {
+            ws.write_string(cursor + 1 + i as u32, helper_col, cat).map_err(|e| e.to_string())?;
+        }
+        // 数值列。空值**不写**（留空），Excel 上就是空档 —— 不写 0
+        for (s, series) in ch.series.iter().enumerate() {
+            let cc = helper_col + 1 + s as u16;
+            for (i, v) in series.data.iter().enumerate() {
+                if let Some(x) = v {
+                    ws.write_number(cursor + 1 + i as u32, cc, *x).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        widest = widest.max(ch.series.len() as u16);
+
+        let data0 = cursor + 1;
+        let data1 = cursor + n;
+        let mut chart = Chart::new(match ch.kind.as_str() {
+            "line" => ChartType::Line,
+            "pie" => ChartType::Pie,
+            // 认不出来的类型在解析期就报错了，这里兜底成柱状
+            _ => ChartType::Column,
+        });
+        if let Some(t) = ch.title.as_deref() {
+            chart.title().set_name(t);
+        }
+        for (s, _series) in ch.series.iter().enumerate() {
+            let col = helper_col + 1 + s as u16;
+            chart
+                .add_series()
+                // 名字指向表头格（而不是塞一个字符串）—— 图例里显示的就是表头那个字
+                .set_name((sheet_name, cursor, col))
+                .set_categories((sheet_name, data0, helper_col, data1, helper_col))
+                .set_values((sheet_name, data0, col, data1, col));
+        }
+        // 锚在作者放图表格的那一格上（图表浮在网格之上，这是 Excel 图表的固有行为）
+        ws.insert_chart_with_offset(r as u32, c as u16, &chart, 4, 4)
+            .map_err(|e| e.to_string())?;
+
+        cursor = data1 + 2;
+    }
+
+    // 数据块是给图表用的，不该混进报表正文 —— 藏起来（隐藏列不参与打印）
+    for k in 0..=widest {
+        ws.set_column_hidden(helper_col + k).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// 生成 xlsx 二进制
 ///
 /// `repeat_rows`：打印时**每页顶部重复**的表头行数，同时决定前几行用表头样式。
@@ -489,6 +597,9 @@ pub fn to_xlsx(sheets: &[RenderedSheet], repeat_rows: usize) -> Result<Vec<u8>, 
             }
         }
 
+        // 图表：数据块要写在表格**下方**，所以得等所有格子都写完
+        write_charts(ws, &name, &sheet.rows, widths.len() as u16)?;
+
         // 打印时表头跨页重复 —— 多页报表没它就是「第 2 页起不知道每列是什么」
         ws.set_repeat_rows(0, head_n as u32 - 1).map_err(|e| e.to_string())?;
         // 缩放到「一页宽」：列多的时候否则会溢出到右侧多出半页，
@@ -613,6 +724,7 @@ mod tests {
             num_format: None,
             formula: None,
             style: None,
+            chart: None,
         }
     }
 
@@ -852,6 +964,7 @@ mod tests {
             num_format: None,
             formula: None,
             style: None,
+            chart: None,
         }
     }
 

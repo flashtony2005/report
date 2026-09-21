@@ -114,6 +114,67 @@ export function isValueImage(from: string | null | undefined): boolean {
   return (from ?? '').trim().toLowerCase() === 'value'
 }
 
+/** 服务端认的图表类型（= Rust 侧 `resolve_chart` 的白名单） */
+export type CellChartKind = 'bar' | 'line' | 'pie'
+
+/**
+ * 图表格：这格不出文本，出一张图表（柱状 / 折线 / 饼图）。
+ *
+ * ## 数据来源写的是「模板位置名」
+ *
+ * 图表画的是**展开之后**的数据（3 个地区 → 3 根柱子），但作者写模板时只知道
+ * 模板坐标（`A3` = 地区列）。服务端靠 `GridCell.pos` 反查「`A3` 展开成了哪几个
+ * 输出格」，所以这里填的是模板坐标而不是输出行列 —— 输出行列要等展开完才知道，
+ * 作者不可能写得出。
+ *
+ * - 纵向分组报表：`categories: ['A3']` + `series: [{ from: 'B3' }]` → 3 根柱子；
+ * - 横向交叉表：`categories: ['B2']` + `series: [{ from: 'B3' }]` → 同样是 3 根。
+ *
+ * ## 数量必须对得上
+ *
+ * 类目数与每条序列的点数**必须完全相等**，否则整张图不出，该格显示
+ * `[图表: 原因]` 并进 `warnings`。不截断也不补零 —— 那两种都是
+ * 「图看着对、数据是错的」。最常见的错法是把类目指到表头那种不展开的格子上。
+ */
+export interface CellChart {
+  /** 图表类型；认不出来只坏这一格（该格出 `[图表: 原因]`），不整表报错 */
+  kind?: string | null
+  /** 类目来源：模板位置名列表，如 `['A3']`；留空则用序号 `1`、`2`… */
+  categories?: string[]
+  /** 数据序列；`pie` 只用第一条 */
+  series?: CellChartSeries[]
+  /** 图表标题（画在顶部居中） */
+  title?: string | null
+}
+
+/** 一条数据序列的**声明**（数值还没解析出来） */
+export interface CellChartSeries {
+  /** 序列名（图例 / 饼图扇区名）；留空则回落用 `from` 那个位置名 */
+  name?: string | null
+  /** 数值来源：模板位置名，如 `'B3'` */
+  from: string
+}
+
+/** 解析完成的图表：类目与数值都是展开后的真实数据（服务端算好回传） */
+export interface ResolvedChart {
+  /** 已归一化的类型：`bar` | `line` | `pie`（小写） */
+  kind: string
+  categories: string[]
+  series: ResolvedChartSeries[]
+  title?: string | null
+}
+
+/** 解析完成的一条序列 */
+export interface ResolvedChartSeries {
+  /** 序列名（已回落：作者没写就用 `from`） */
+  name: string
+  /**
+   * 与 `ResolvedChart.categories` **等长**；缺测的位置是 `null`
+   * （图上画成空档，**不补 0** —— 「空着」和「就是 0」在报表里是两回事）。
+   */
+  data: (number | null)[]
+}
+
 export interface GridCell {
   text: string
   pos: string
@@ -137,6 +198,11 @@ export interface GridCell {
    * 且 HTML 天然自包含。代价是同一张图重复 N 行会在 JSON 里重复 N 份。
    */
   image?: string | null
+  /**
+   * 图表格：**已解析**的图表（类目 + 各序列数值，数值已是展开后的真实数据）。
+   * 有值时这格出图表不出文本（`text` 降级成 alt / 失败原因）。
+   */
+  chart?: ResolvedChart | null
 }
 
 export interface RenderedSheet {
@@ -251,6 +317,13 @@ export interface CellModel {
    *（`field: photo` + `image.from: 'value'`）能随展开逐行取源。
    */
   image?: CellImage | null
+  /**
+   * 把这格画成图表（柱状 / 折线 / 饼图）。
+   *
+   * 与 `image` 是同一族「非文本格子」，区别是图表的数据从**别的格子**算出来，
+   * 所以要带一组模板坐标（见 `CellChart`）。
+   */
+  chart?: CellChart | null
 }
 
 export interface CellTpl {
@@ -268,6 +341,8 @@ export interface CellTpl {
    * 不必为了一个 data URI 去建 `CellModel`。
    */
   image?: CellImage | null
+  /** 把这格画成图表。同样放在 `CellTpl` 上，让「一张固定图表」不必建 `CellModel`。 */
+  chart?: CellChart | null
 }
 
 export interface RowTpl {
