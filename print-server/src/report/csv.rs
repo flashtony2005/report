@@ -66,6 +66,7 @@ mod tests {
             formula: None,
             style: None,
             chart: None,
+            barcode: None,
         }
     }
 

@@ -149,8 +149,13 @@ fn default_col_parent(sheet: &SheetTpl, r: usize, c: usize, resolved: &Resolved)
 /// 是很自然的写法，漏掉它那个格子会**整格消失**（实测，不是推的）。
 /// 图表格同理 —— 而且它更容易踩：图表格**天生就没有 `value`**
 /// （数据来自别的格子），漏判的话它 100% 会消失。
+/// 条码格同理：一个固定二维码（扫码关注）也不写 `value`。
 fn is_placeholder(cell: &CellTpl) -> bool {
-    cell.value.is_none() && cell.model.is_none() && cell.image.is_none() && cell.chart.is_none()
+    cell.value.is_none()
+        && cell.model.is_none()
+        && cell.image.is_none()
+        && cell.chart.is_none()
+        && cell.barcode.is_none()
 }
 
 /// 模板级父格解析（Pass 0）：按**行优先**顺序解析每格的父格，不建实例。
@@ -1060,6 +1065,53 @@ impl Engine {
             if image.is_some() && inst.image.as_ref().is_some_and(|d| d.from_value()) {
                 text.clear();
             }
+            // 条码格：内容来自**本格自己**（`from: value` 时就是刚算出来的 text），
+            // 所以能在这里就地编码，不用像图表那样等整个网格填完。
+            //
+            // 注意顺序：图片在前。三种「非文本格子」同时声明时按
+            // 图片 > 图表 > 条码 取一个，其余的在 `resolve_charts` 里告警。
+            let mut barcode = None;
+            if let Some(decl) = &inst.barcode {
+                // 优先级 图片 > 图表 > 条码：被盖住时**连编都不编**。
+                // 省一次编码是次要的，主要是让「`GridCell.barcode` 有值 ⟹
+                // 它就是要画的那个」这个不变量恒成立 —— 渲染端因此不用再判一遍优先级。
+                if image.is_some() || inst.chart.is_some() {
+                    // `resolve_charts` 只在**声明了图表**的格子上跑，所以
+                    // 「图片 + 条码」这种组合得在这里说 —— 否则条码静默消失。
+                    // 带图表的组合交给 `resolve_charts`（它能看到三种声明），
+                    // 不加这个条件同一件事会报两遍。
+                    if image.is_some() && inst.chart.is_none() {
+                        self.warnings.push(format!(
+                            "{} 同时声明了图片和条码，导出时只出「图片」，条码不会出现",
+                            inst.pos
+                        ));
+                    }
+                } else {
+                    let payload =
+                        if decl.from_value() { text.trim().to_string() } else { decl.value.clone() };
+                    let sym = crate::report::barcode::normalise_symbology(decl.symbology.as_deref());
+                    match sym.and_then(|s| {
+                        crate::report::barcode::encode(&payload, Some(s), decl.gs1.unwrap_or(false))
+                            .map(|m| (s, m))
+                    }) {
+                        Ok((sym, m)) => {
+                            let mut resolved =
+                                ResolvedBarcode::from_matrix(&m, payload.clone());
+                            resolved.symbology = sym.to_string();
+                            barcode = Some(resolved);
+                        }
+                        Err(e) => {
+                            self.warnings.push(format!("{} 的条码没出：{e}", inst.pos));
+                            text = format!("[条码: {e}]");
+                        }
+                    }
+                }
+            }
+            // 与图片同理：`from: value` 的 text 就是条码原文，当 alt 是重复的噪音，清掉。
+            // 字面量条码保留 text —— 作者可能拿它当人眼可读的说明。
+            if barcode.is_some() && inst.barcode.as_ref().is_some_and(|d| d.from_value()) {
+                text.clear();
+            }
             grid[inst.row_start][inst.col_start] = Some(GridCell {
                 text,
                 pos: inst.pos.clone(),
@@ -1075,6 +1127,7 @@ impl Engine {
                 // 图表要等**整个网格填完**才能解析（它读的是别的格子），
                 // 所以这里先留空，由 `expand_sheet` 末尾的 `resolve_charts` 补上。
                 chart: None,
+                barcode,
             });
         }
 
@@ -1110,27 +1163,39 @@ impl Engine {
     /// 落到 Excel 里就是 N 张图叠在同一格上。只认最上/最左的那一份。
     fn resolve_charts(&mut self, grid: &mut [Vec<GridCell>]) {
         // 先把声明收集出来（要可变借用 grid，不能一边迭代 insts 一边改）
-        let mut decls: Vec<(usize, usize, String, CellChart)> = self
+        //
+        // 元组里带上「这个实例还声明了哪几种非文本格子」：三种同时声明时
+        // 只有一个能出，另外两个**静默**不出现，得在下面说一声。
+        let mut decls: Vec<(usize, usize, String, CellChart, Vec<&'static str>)> = self
             .insts
             .iter()
             .filter(|i| !i.dropped)
             .filter_map(|i| {
-                i.chart
-                    .as_ref()
-                    .map(|c| (i.row_start, i.col_start, i.pos.clone(), c.clone()))
+                i.chart.as_ref().map(|c| {
+                    // 优先级顺序：图片 > 图表 > 条码（与渲染端一致）
+                    let mut kinds: Vec<&'static str> = Vec::new();
+                    if i.image.is_some() {
+                        kinds.push("图片");
+                    }
+                    kinds.push("图表");
+                    if i.barcode.is_some() {
+                        kinds.push("条码");
+                    }
+                    (i.row_start, i.col_start, i.pos.clone(), c.clone(), kinds)
+                })
             })
             .collect();
         if decls.is_empty() {
             return;
         }
         // `insts` 的顺序不是版面顺序，先按 (行, 列) 排好，第一份才是「最上最左」
-        decls.sort_by_key(|(r, c, _, _)| (*r, *c));
+        decls.sort_by_key(|(r, c, _, _, _)| (*r, *c));
         let mut seen: BTreeSet<String> = BTreeSet::new();
-        decls.retain(|(_, _, pos, _)| seen.insert(pos.clone()));
+        decls.retain(|(_, _, pos, _, _)| seen.insert(pos.clone()));
 
         // 只给**被引用**的位置建索引：大表上把所有格子都克隆一遍文本是白费力气
         let mut wanted: BTreeSet<String> = BTreeSet::new();
-        for (_, _, _, d) in &decls {
+        for (_, _, _, d, _) in &decls {
             wanted.extend(chart::referenced_positions(d));
         }
         let mut index: chart::ChartIndex = BTreeMap::new();
@@ -1153,15 +1218,16 @@ impl Engine {
             v.sort_by_key(|c| (c.row, c.col));
         }
 
-        for (r, c, pos, decl) in decls {
+        for (r, c, pos, decl, kinds) in decls {
             let outcome = chart::resolve_chart(&decl, &pos, &index);
-            // 同时声明了图片和图表：渲染时图片优先，会**静默**盖掉图表 —— 说一声
-            if let Some(cell) = grid.get(r).and_then(|row| row.get(c)) {
-                if cell.image.is_some() {
-                    self.warnings.push(format!(
-                        "{pos} 同时声明了图片和图表，导出时图片优先，图表不会出现"
-                    ));
-                }
+            // 同时声明了多种非文本格子：渲染时只出优先级最高的那一个，
+            // 其余**静默**不出现 —— 作者看不出是「配错了」还是「被盖住了」，说一声
+            if kinds.len() > 1 {
+                self.warnings.push(format!(
+                    "{pos} 同时声明了{}，导出时只出「{}」，其余不会出现",
+                    kinds.join(" / "),
+                    kinds[0]
+                ));
             }
             match outcome {
                 Ok(ch) => {
@@ -1288,6 +1354,10 @@ impl Engine {
                 // 图表声明同样两条分支都要拷：挂在分组格上的「每组一张图」
                 // 走的就是这条展开分支。只拷一条的话图会**静默不出**。
                 inst.chart = cell.chart.clone().or_else(|| model.chart.clone());
+                // 条码声明同样**两条分支都要拷**：「一列订单号条码」
+                // （`field: order_no` + `barcode.from: value`）走的就是这条展开分支。
+                // 只拷一条的话条码会**静默不出**，而且整列都不出。
+                inst.barcode = cell.barcode.clone().or_else(|| model.barcode.clone());
                 inst.value_expr = model.value_expr.clone();
                 // 展示值与测试表达式：**展开格这条分支同样要拷**。
                 // 只拷非展开分支的话，挂在分组格上的字典（编码 → 名称）会静默失效。
@@ -1315,6 +1385,7 @@ impl Engine {
             inst.style = model.style.clone();
             inst.image = cell.image.clone().or_else(|| model.image.clone());
             inst.chart = cell.chart.clone().or_else(|| model.chart.clone());
+            inst.barcode = cell.barcode.clone().or_else(|| model.barcode.clone());
             inst.value = match &model.field {
                 Some(f) => view.first().and_then(|r| ds.get(*r)).and_then(|row| row.get(f)).cloned().unwrap_or(JsonValue::Null),
                 None => cell.value.clone().unwrap_or(JsonValue::Null),
@@ -3458,6 +3529,7 @@ fn empty_cell() -> GridCell {
         style: None,
         image: None,
         chart: None,
+        barcode: None,
     }
 }
 
@@ -3493,6 +3565,7 @@ mod parent_tests {
             join_on: None,
             style: None,
             chart: None,
+            barcode: None,
         })
     }
 
@@ -3515,6 +3588,7 @@ mod parent_tests {
                             merge_down: 0,
                             merge_to_end: false,
                             chart: None,
+                            barcode: None,
                         })
                         .collect(),
                 })
@@ -3736,6 +3810,7 @@ mod scale {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         SheetTpl {
             name: "表达式密集".to_string(),
@@ -3797,6 +3872,7 @@ mod scale {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         SheetTpl {
             name: "累计".to_string(),
@@ -4616,6 +4692,7 @@ mod scale {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         let d1 = match expr {
             Some(e) => m(None, None, Some("B1"), Some(e)),
@@ -4760,6 +4837,7 @@ mod scale {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         let d1 = match expr {
             Some(e) => m(None, None, Some("B1"), Some(e)),
@@ -4808,6 +4886,7 @@ mod scale {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         SheetTpl {
             name: "exp".to_string(),

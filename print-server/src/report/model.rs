@@ -183,6 +183,11 @@ pub struct CellModel {
     /// 与 `image` 是同一族「非文本格子」：这格不出文本，出图形。
     /// 区别在于图表的数据是**从别的格子算出来的**，所以要带一组模板坐标。
     pub chart: Option<CellChart>,
+    /// 把这格画成条码 / 二维码（见 `CellBarcode`）。
+    ///
+    /// 与 `image` / `chart` 一样**两个槽都认**（`CellTpl` 和这里）：
+    /// 挂在展开格上的「一列订单号条码」走的是 `CellModel` 这条路。
+    pub barcode: Option<CellBarcode>,
 }
 
 /// 图片格：这格不出文本，出图片。
@@ -266,6 +271,139 @@ pub fn parse_image_data_uri(src: &str) -> Result<(&'static str, Vec<u8>), String
         return Err("图片载荷解出来是 0 字节".to_string());
     }
     Ok((ext, bytes))
+}
+
+/// 条码格：这格不出文本，出条码 / 二维码。
+///
+/// ## 与 `image` / `chart` 的关系
+///
+/// 三个都是「非文本格子」，区别在**内容从哪来**：
+/// - `image`：内容是一段 data URI（图是作者给的，服务端只管嵌）；
+/// - `chart`：内容是**从别的格子算出来的**（读整列数据，一个声明画一份）；
+/// - `barcode`：内容是**本格自己的文本**编码成的（`from: value` 时就是本格算出来的值）。
+///
+/// 所以条码在展开行里的行为跟**图片**一样：N 行出 N 个条码。
+/// 这正是主场景 ——「一列订单号，每行一个条码」。图表那种「只画一份」的规矩
+/// 在这里是**错的**：那会变成「N 行订单只有一个条码」。
+///
+/// ## 为什么内容默认是字面量而不是取本格值
+///
+/// 写死一个固定二维码（比如「扫码关注」）是很自然的用法，不必为它建 `CellModel`。
+/// 要按数据走就写 `from: value`。
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CellBarcode {
+    /// 来源：`literal`（缺省，`value` 就是内容）/ `value`（取本格算出来的值当内容）。
+    ///
+    /// `value` 是为了「一列订单号条码」这种场景：`field: order_no` + `barcode.from: value`，
+    /// 每行的条码内容从数据里来。
+    pub from: Option<String>,
+    /// 要编码的原文（`from: value` 时忽略）
+    pub value: String,
+    /// 码制：`qr`（缺省）| `code128`。认不出来**只坏这一格**并告警，
+    /// 所以用 `String` 而不是 enum —— 理由同 `CellChart::kind`。
+    pub symbology: Option<String>,
+    /// Code128 的 GS1-128 模式（起始符后插一个 FNC1）。非 Code128 时忽略。
+    ///
+    /// 显式开关而不是靠内容前缀猜：GS1 的载荷里看不出来「我要不要 FNC1」，
+    /// 猜错了是**条码能扫但内容不对**，最难查。
+    pub gs1: Option<bool>,
+}
+
+impl CellBarcode {
+    /// 是否「取本格的值当条码内容」
+    pub fn from_value(&self) -> bool {
+        matches!(
+            self.from.as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+            Some("value")
+        )
+    }
+}
+
+/// 解析完成的条码：位矩阵已经算好了。
+///
+/// 与 `CellBarcode` 的区别是「声明 vs 结果」，正如 `ResolvedChart` 之于 `CellChart`。
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ResolvedBarcode {
+    /// 已归一化的码制：`qr` | `code128`（小写）
+    pub symbology: String,
+    /// 位矩阵：每行一个字符串，`'1'` = 黑。**静区已含在内**，一维码已拉伸成面。
+    ///
+    /// 用字符串而不是 `Vec<Vec<bool>>`：后者每格序列化出来是 `true,` 五个字符，
+    /// 而报表**每一行**都可能带条码，一张 65×65 的二维码就是 5 倍体积差。
+    /// 附带好处是 JSON 里肉眼能看出这是个二维码。
+    pub rows: Vec<String>,
+    /// 原文（给 HTML 的 `alt` / Excel 的替代文字 / 排查用）
+    pub text: String,
+}
+
+impl ResolvedBarcode {
+    pub fn width(&self) -> usize {
+        self.rows.first().map(|r| r.len()).unwrap_or(0)
+    }
+
+    pub fn height(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_dark(&self, row: usize, col: usize) -> bool {
+        self.rows
+            .get(row)
+            .and_then(|r| r.as_bytes().get(col))
+            .is_some_and(|b| *b == b'1')
+    }
+
+    /// 由编码器的位矩阵构造
+    pub fn from_matrix(m: &crate::report::barcode::BarcodeMatrix, text: String) -> Self {
+        ResolvedBarcode {
+            symbology: String::new(), // 由调用方补（它才知道归一化后的码制名）
+            rows: m.rows_as_strings(),
+            text,
+        }
+    }
+}
+
+/// 一格**最终**该画成什么：三种「非文本格子」的优先级仲裁。
+///
+/// ## 为什么要有这个东西
+///
+/// 图片 / 图表 / 条码可以同时声明，而渲染时只能出一个。原先三个渲染端
+/// （`to_html`、`decode_images`、`write_charts`）各自写了一遍优先级判断，
+/// 于是必然会分叉：
+/// - `to_html` 写了「图片 > 图表 > 文本」，条码加进来时得再想一遍；
+/// - `decode_images` 只看图片和条码，`write_charts` 只看图表 →
+///   **「图片 + 图表」的格子会在 Excel 里同时嵌一张图**和一张图表，
+///   两个东西叠在同一格上（这是加条码时才发现的，之前一直存在）；
+/// - 告警里说的优先级是第三份。
+///
+/// 本项目在「预览与导出两套口径」上吃过亏（表头行数那次，静默不一致），
+/// 所以这里把它收成**一个判据**：引擎决定，渲染端只画。
+#[derive(Debug)]
+pub enum Graphic<'a> {
+    Image(&'a str),
+    Chart(&'a ResolvedChart),
+    Barcode(&'a ResolvedBarcode),
+    None,
+}
+
+impl GridCell {
+    /// 这格该画什么。优先级：**图片 > 图表 > 条码 > 文本**。
+    ///
+    /// 三个渲染端都必须走这里，不许自己判 —— 各判各的就会出现
+    /// 「告警说图片优先、导出里画的却是条码」这种查不出来的偏差。
+    pub fn graphic(&self) -> Graphic<'_> {
+        if let Some(src) = self.image.as_deref() {
+            return Graphic::Image(src);
+        }
+        if let Some(ch) = self.chart.as_ref() {
+            return Graphic::Chart(ch);
+        }
+        if let Some(bc) = self.barcode.as_ref() {
+            return Graphic::Barcode(bc);
+        }
+        Graphic::None
+    }
 }
 
 /// 图表格：这格不出文本，出一张图表（柱状 / 折线 / 饼图）。
@@ -388,6 +526,8 @@ pub struct CellTpl {
     pub image: Option<CellImage>,
     /// 把这格画成图表。同样放在 `CellTpl` 上，让「一张固定图表」不必建 `CellModel`。
     pub chart: Option<CellChart>,
+    /// 把这格画成条码 / 二维码。同样放在 `CellTpl` 上，让「一个固定二维码」不必建 `CellModel`。
+    pub barcode: Option<CellBarcode>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -547,6 +687,11 @@ pub struct CellInst {
     /// 而图表的**数值要等整个网格填完**才能解析（它读的是别的格子），
     /// 所以这里只是把声明带过去，真正的解析在 `expand_sheet` 末尾做。
     pub chart: Option<CellChart>,
+    /// 条码格声明，原样带到输出格（见 `CellModel::barcode`）。
+    ///
+    /// 与 `chart` 不同、与 `image` 相同：条码的内容来自**本格自己**的文本，
+    /// 不需要等整个网格填完，所以可以在这里就地解析。
+    pub barcode: Option<CellBarcode>,
     /// 导出 xlsx 时写公式而不是值（见 CellModel::export_formula）
     pub export_formula: bool,
     /// 自身行测试的结果（`row_test_expr`）
@@ -613,6 +758,7 @@ impl CellInst {
             style: None,
             image: None,
             chart: None,
+            barcode: None,
             row_test_passed: true,
             col_test_passed: true,
             hidden: false,
@@ -656,6 +802,13 @@ pub struct GridCell {
     /// xlsx 三边拿到的是同一份数据，不会各自再解析一遍坐标（那样迟早对不上）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chart: Option<ResolvedChart>,
+    /// 条码格：**已编码**的位矩阵（`'1'` = 黑，静区已含）。
+    ///
+    /// 有值时这格出条码不出文本（`text` 降级成 alt / 失败原因）。
+    /// 与 `chart` 一样存**算好的结果**而不是声明：预览、HTML、xlsx
+    /// 三边拿到的是同一份位矩阵，不会各自再编一遍（那样迟早对不上）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub barcode: Option<ResolvedBarcode>,
 }
 
 /// 展开结果

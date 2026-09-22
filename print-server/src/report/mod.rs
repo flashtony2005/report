@@ -6,6 +6,8 @@
 //! - `GET  /api/report/sample`  内置「销售分组汇总」样例（可直接验证链路）
 //! - `GET  /api/report/sample-template`  样例模板（前端设计器的初始内容）
 
+pub mod barcode;
+pub mod barcode_svg;
 pub mod chart;
 pub mod chart_svg;
 pub mod csv;
@@ -13,6 +15,7 @@ pub mod engine;
 pub mod expr;
 pub mod import;
 pub mod model;
+pub mod png;
 pub mod store;
 pub mod xlsx;
 
@@ -655,22 +658,36 @@ fn to_html(sheets: &[RenderedSheet]) -> String {
                 //
                 // 图表格：服务端直接画成内联 SVG。**不能**指望前端 ——
                 // `to_html` 产出的是自包含文档，里面没有 JS，也没法回头调设计器。
-                // 优先级：图片 > 图表 > 文本（两者都设时引擎已发过告警）。
-                let inner = if let Some(src) = cell.image.as_deref() {
-                    let alt = if cell.text.trim().is_empty() {
-                        format!("图片 {}", cell.pos)
-                    } else {
-                        cell.text.clone()
-                    };
-                    format!(
-                        "<img src=\"{}\" alt=\"{}\" style=\"max-width:100%;height:auto\">",
-                        escape(src),
-                        escape(&alt)
-                    )
-                } else if let Some(ch) = cell.chart.as_ref() {
-                    crate::report::chart_svg::render(ch)
-                } else {
-                    escape(&cell.text)
+                //
+                // 条码格：同样服务端出内联 SVG（矢量，缩放 / 打印都清晰）。
+                //
+                // 优先级走 `GridCell::graphic()` 这**一个判据**（图片 > 图表 > 条码），
+                // 与 xlsx 导出端共用 —— 各写各的迟早分叉。
+                let inner = match cell.graphic() {
+                    Graphic::Image(src) => {
+                        let alt = if cell.text.trim().is_empty() {
+                            format!("图片 {}", cell.pos)
+                        } else {
+                            cell.text.clone()
+                        };
+                        format!(
+                            "<img src=\"{}\" alt=\"{}\" style=\"max-width:100%;height:auto\">",
+                            escape(src),
+                            escape(&alt)
+                        )
+                    }
+                    Graphic::Chart(ch) => crate::report::chart_svg::render(ch),
+                    Graphic::Barcode(bc) => {
+                        let svg = crate::report::barcode_svg::render(bc);
+                        // 空 SVG（矩阵为空）时回落显示 text，免得整格空白 ——
+                        // 留白看不出是「没配」还是「配错了」
+                        if svg.is_empty() {
+                            escape(&cell.text)
+                        } else {
+                            svg
+                        }
+                    }
+                    Graphic::None => escape(&cell.text),
                 };
                 out.push_str(&format!(
                     "<td rowspan=\"{}\" colspan=\"{}\">{}</td>",
@@ -1284,6 +1301,7 @@ pub fn sample_template() -> ReportTemplate {
 
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
         chart: None,
+        barcode: None,
         image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
@@ -1295,6 +1313,7 @@ pub fn sample_template() -> ReportTemplate {
     let m = |ds: &str, field: Option<&str>, expand: bool, row_parent: Option<&str>, value_expr: Option<&str>| {
         Some(CellModel {
             chart: None,
+            barcode: None,
             image: None,
             ds: Some(ds.to_string()),
             field: field.map(|s| s.to_string()),
@@ -1324,7 +1343,7 @@ pub fn sample_template() -> ReportTemplate {
         page: None,
         rows: vec![
             // 行 1：标题
-            RowTpl { cells: vec![CellTpl { image: None, chart: None, pos: None, value: Some(JsonValue::from("2026 年销售分组汇总表")), model: None, merge_across: 0, merge_down: 0, merge_to_end: true }] },
+            RowTpl { cells: vec![CellTpl { image: None, chart: None, barcode: None, pos: None, value: Some(JsonValue::from("2026 年销售分组汇总表")), model: None, merge_across: 0, merge_down: 0, merge_to_end: true }] },
             // 行 2：表头
             RowTpl {
                 cells: vec![
@@ -1385,6 +1404,7 @@ pub fn cross_tab_template() -> ReportTemplate {
     let m = |field: Option<&str>, expand: Option<ExpandType>, row_parent: Option<&str>, col_parent: Option<&str>| {
         Some(CellModel {
             chart: None,
+            barcode: None,
             image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
@@ -1410,6 +1430,7 @@ pub fn cross_tab_template() -> ReportTemplate {
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
         chart: None,
+        barcode: None,
         image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
@@ -1450,6 +1471,7 @@ pub fn cross_tab_two_metrics_template() -> ReportTemplate {
     let m = |field: Option<&str>, expand: Option<ExpandType>, row_parent: Option<&str>, col_parent: Option<&str>| {
         Some(CellModel {
             chart: None,
+            barcode: None,
             image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
@@ -1475,6 +1497,7 @@ pub fn cross_tab_two_metrics_template() -> ReportTemplate {
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
         chart: None,
+        barcode: None,
         image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
@@ -1533,6 +1556,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
              value_expr: Option<&str>| {
         Some(CellModel {
             chart: None,
+            barcode: None,
             image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
@@ -1558,6 +1582,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
         chart: None,
+        barcode: None,
         image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
@@ -1574,6 +1599,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
             RowTpl {
                 cells: vec![CellTpl {
                     chart: None,
+                    barcode: None,
                     image: None,
                     pos: None,
                     value: Some(JsonValue::from("地区 / 月份 销售交叉表")),
@@ -1624,6 +1650,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
              value_expr: Option<&str>| {
         Some(CellModel {
             chart: None,
+            barcode: None,
             image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
@@ -1649,6 +1676,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
     };
     let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
         chart: None,
+        barcode: None,
         image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
@@ -1665,6 +1693,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
             RowTpl {
                 cells: vec![CellTpl {
                     chart: None,
+                    barcode: None,
                     image: None,
                     pos: None,
                     value: Some(JsonValue::from("金额 / 数量 双指标交叉表")),
@@ -1735,6 +1764,7 @@ pub fn cross_tab_multi_level_template() -> ReportTemplate {
              value_expr: Option<&str>| {
         Some(CellModel {
             chart: None,
+            barcode: None,
             image: None,
             ds: Some("ds1".to_string()),
             field: field.map(|s| s.to_string()),
@@ -1763,6 +1793,7 @@ pub fn cross_tab_multi_level_template() -> ReportTemplate {
                 merge_down: usize,
                 merge_to_end: bool| CellTpl {
         chart: None,
+        barcode: None,
         image: None,
         pos: None,
         value: value.map(|v| JsonValue::from(v)),
@@ -1923,6 +1954,7 @@ mod tests {
                         merge_down: 0,
                         merge_to_end: false,
                         chart: None,
+                        barcode: None,
                     }],
                 }],
                 loop_field: None,
@@ -2054,6 +2086,7 @@ mod tests {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         let m = |field: Option<&str>, expand: bool, row_parent: Option<&str>, value_expr: Option<&str>| {
             Some(CellModel {
@@ -2079,6 +2112,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let mut datasets = BTreeMap::new();
@@ -2161,6 +2195,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2170,9 +2205,9 @@ mod tests {
                 rows: vec![RowTpl {
                     // A1 -> B1 -> A1，以及 C1 自引用
                     cells: vec![
-                        CellTpl { chart: None, image: None, pos: None, value: None, model: m("B1"), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { chart: None, image: None, pos: None, value: None, model: m("A1"), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { chart: None, image: None, pos: None, value: None, model: m("C1"), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { chart: None, barcode: None, image: None, pos: None, value: None, model: m("B1"), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { chart: None, barcode: None, image: None, pos: None, value: None, model: m("A1"), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { chart: None, barcode: None, image: None, pos: None, value: None, model: m("C1"), merge_across: 0, merge_down: 0, merge_to_end: false },
                     ],
                 }],
                 loop_field: None,
@@ -2203,6 +2238,7 @@ mod tests {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         let m = |field: Option<&str>, expand: bool, row_parent: Option<&str>| {
             Some(CellModel {
@@ -2228,6 +2264,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2278,6 +2315,7 @@ mod tests {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         let m = |field: Option<&str>, expand: bool, value_expr: Option<&str>| {
             Some(CellModel {
@@ -2303,6 +2341,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2364,6 +2403,7 @@ mod tests {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         let m = |field: Option<&str>, expand: bool| {
             Some(CellModel {
@@ -2389,6 +2429,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2447,6 +2488,7 @@ mod tests {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         let m = |field: &str, expand: bool, row_parent: Option<&str>| {
             Some(CellModel {
@@ -2472,6 +2514,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let tpl = ReportTemplate {
@@ -2758,6 +2801,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             }),
             ..Default::default()
         };
@@ -3533,6 +3577,7 @@ mod tests {
                     formula: None,
                     style: None,
                     chart: None,
+                    barcode: None,
                 }]
             })
             .collect();
@@ -3556,6 +3601,7 @@ mod tests {
             formula: None,
             style: None,
             chart: None,
+            barcode: None,
         }
     }
 
@@ -3797,6 +3843,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let build = |model: Option<CellModel>| {
@@ -3816,6 +3863,7 @@ mod tests {
                             merge_down: 0,
                             merge_to_end: false,
                             chart: None,
+                            barcode: None,
                         }],
                     }],
                     loop_field: None,
@@ -3981,6 +4029,7 @@ mod tests {
                                 merge_down: 0,
                                 merge_to_end: false,
                                 chart: None,
+                                barcode: None,
                             }],
                         },
                         RowTpl {
@@ -4011,11 +4060,13 @@ mod tests {
                                     join_on: None,
                                     style: None,
                                     chart: None,
+                                    barcode: None,
                                 }),
                                 merge_across: 0,
                                 merge_down: 0,
                                 merge_to_end: false,
                                 chart: None,
+                                barcode: None,
                             }],
                         },
                     ],
@@ -4077,6 +4128,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let tpl = ReportTemplate {
@@ -4090,11 +4142,11 @@ mod tests {
                             let mut mm = m(Some("month"), true, None).expect("model");
                             mm.row_parent = None;
                             Some(mm)
-                        }, merge_across: 0, merge_down: 0, merge_to_end: false, chart: None },
-                        CellTpl { chart: None, image: None, pos: None, value: None, model: m(Some("amount"), false, None), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { chart: None, image: None, pos: None, value: None, model: m(None, false, Some("PRODUCT(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { chart: None, image: None, pos: None, value: None, model: m(None, false, Some("COUNTA(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
-                        CellTpl { chart: None, image: None, pos: None, value: None, model: m(None, false, Some("RANK(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        }, merge_across: 0, merge_down: 0, merge_to_end: false, chart: None, barcode: None },
+                        CellTpl { chart: None, barcode: None, image: None, pos: None, value: None, model: m(Some("amount"), false, None), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { chart: None, barcode: None, image: None, pos: None, value: None, model: m(None, false, Some("PRODUCT(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { chart: None, barcode: None, image: None, pos: None, value: None, model: m(None, false, Some("COUNTA(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
+                        CellTpl { chart: None, barcode: None, image: None, pos: None, value: None, model: m(None, false, Some("RANK(B1)")), merge_across: 0, merge_down: 0, merge_to_end: false },
                     ],
                 }],
                 loop_field: None,
@@ -4124,6 +4176,7 @@ mod tests {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         let cm = |field: Option<&str>, row_parent: Option<&str>, value_expr: Option<&str>| {
             Some(CellModel {
@@ -4149,6 +4202,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let tpl = ReportTemplate {
@@ -4210,6 +4264,7 @@ mod tests {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         let m = |field: Option<&str>, expand: bool, parent: Option<&str>, expr: Option<&str>| {
             Some(CellModel {
@@ -4401,6 +4456,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let cell = |value: Option<&str>, model: Option<CellModel>| CellTpl {
@@ -4412,6 +4468,7 @@ mod tests {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         let sheet = SheetTpl {
             name: "聚合交叉表".to_string(),
@@ -4646,6 +4703,7 @@ mod tests {
                         merge_down: 0,
                         merge_to_end: false,
                         chart: None,
+                        barcode: None,
                     }],
                 }],
                 loop_field: None,
@@ -4770,6 +4828,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let c = |model| CellTpl {
@@ -4781,6 +4840,7 @@ mod tests {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
 
         ReportTemplate {
@@ -5153,6 +5213,7 @@ mod tests {
             merge_down: 0,
             merge_to_end: false,
             chart: None,
+            barcode: None,
         };
         let mk = |field: Option<&str>,
                   expand: Option<ExpandType>,
@@ -5182,6 +5243,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
 
@@ -5243,6 +5305,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let sheet = SheetTpl {
@@ -5258,6 +5321,7 @@ mod tests {
                     merge_down: 0,
                     merge_to_end: false,
                     chart: None,
+                    barcode: None,
                 }],
             }],
             loop_field: None,
@@ -5309,6 +5373,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let run = |max: Option<usize>| {
@@ -5328,6 +5393,7 @@ mod tests {
                             merge_down: 0,
                             merge_to_end: false,
                             chart: None,
+                            barcode: None,
                         },
                         CellTpl {
                             image: None,
@@ -5338,6 +5404,7 @@ mod tests {
                             merge_down: 0,
                             merge_to_end: false,
                             chart: None,
+                            barcode: None,
                         },
                     ],
                 }],
@@ -5429,6 +5496,7 @@ mod tests {
                 join_on: None,
                 style: None,
                 chart: None,
+                barcode: None,
             })
         };
         let sheet = SheetTpl {
@@ -5445,6 +5513,7 @@ mod tests {
                         merge_down: 0,
                         merge_to_end: false,
                         chart: None,
+                        barcode: None,
                     },
                     CellTpl {
                         image: None,
@@ -5455,6 +5524,7 @@ mod tests {
                         merge_down: 0,
                         merge_to_end: false,
                         chart: None,
+                        barcode: None,
                     },
                 ],
             }],
@@ -5757,6 +5827,7 @@ mod tests {
                                 merge_down: 0,
                                 merge_to_end: false,
                                 chart: None,
+                                barcode: None,
                             })
                             .collect(),
                     })
@@ -6250,6 +6321,226 @@ mod tests {
         // 图表格本身不出字：每行都以 `,,` 收尾（C 列空 + 图表格那列空）
         for line in csv.lines().filter(|l| !l.trim().is_empty()) {
             assert!(line.ends_with(",,"), "图表格不该往 CSV 里写字：{line:?}");
+        }
+    }
+
+    // ---------------------------------------------------------------- 条码格
+
+    fn bc_decl(from: Option<&str>, value: &str, sym: Option<&str>) -> Option<CellBarcode> {
+        Some(CellBarcode {
+            from: from.map(str::to_string),
+            value: value.to_string(),
+            symbology: sym.map(str::to_string),
+            gs1: None,
+        })
+    }
+
+    /// 与 `chart_tpl` 同一个布局，只是 D 列放条码格
+    fn barcode_tpl(barcode: CellBarcode) -> ReportTemplate {
+        let mut tpl = chart_tpl(bar_chart(&["A3"], vec![series_decl("销售额", "B3")]));
+        tpl.sheets[0].rows[0].cells[3].chart = None;
+        tpl.sheets[0].rows[0].cells[3].barcode = Some(barcode);
+        tpl
+    }
+
+    /// 与图表格同一个坑：条码格天生可能没有 `value`（一个固定二维码），
+    /// `is_placeholder` 漏判就会**整格消失**且不报错。
+    #[test]
+    fn barcode_only_cell_is_not_treated_as_a_placeholder() {
+        let tpl = barcode_tpl(CellBarcode {
+            value: "https://example.com".into(),
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+        let g = &resp.sheets[0].rows[0][3];
+        assert_eq!(g.pos, "D3", "条码格必须占位，不能被当空格丢掉");
+        let bc = g.barcode.as_ref().unwrap_or_else(|| panic!("条码要编出来，告警：{}", warns_of(&resp)));
+        assert_eq!(bc.symbology, "qr", "没写码制时缺省是二维码");
+        assert_eq!(bc.height(), bc.width(), "二维码应当是正方形");
+        assert!(bc.rows.iter().any(|r| r.contains('1')), "位矩阵不能全空");
+    }
+
+    /// **条码与图表在展开行里的行为相反**，这条把这个区别钉死：
+    /// 图表一个声明只画一份（它读整列数据，N 份是重复的），
+    /// 条码则**每行一个**（`from: value` 时每行内容不同）。
+    /// 照抄图表的去重逻辑会让「一列订单号条码」只剩第一行。
+    #[test]
+    fn barcode_from_value_is_drawn_once_per_row() {
+        // 用订单号而不是中文地区名：Code128 只收 ASCII（中文会**正确地**报错），
+        // 而且订单号长度不同 → 条码宽度不同，顺带验了「内容真的跟着行走」
+        let mut ds = BTreeMap::new();
+        ds.insert(
+            "ds1".to_string(),
+            [("SO-1", 1200.0), ("SO-22", 980.0), ("SO-3333", 1530.5)]
+                .into_iter()
+                .map(|(order, amount)| {
+                    let mut m = DataRow::new();
+                    m.insert("order_no".into(), JsonValue::from(order));
+                    m.insert("amount".into(), JsonValue::from(amount));
+                    m
+                })
+                .collect::<DataSet>(),
+        );
+        let order = CellTpl {
+            pos: Some("A3".into()),
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some("order_no".into()),
+                expand_type: Some(ExpandType::R),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // 每行的条码内容 = 本行订单号
+        let code = CellTpl {
+            pos: Some("B3".into()),
+            model: Some(CellModel {
+                ds: Some("ds1".into()),
+                field: Some("order_no".into()),
+                row_parent: Some("A3".into()),
+                ..Default::default()
+            }),
+            barcode: bc_decl(Some("value"), "", Some("code128")),
+            ..Default::default()
+        };
+        let tpl = ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "t".into(),
+                page: None,
+                rows: vec![RowTpl { cells: vec![order, code] }],
+                loop_field: None,
+            }],
+            datasets: ds,
+            ..Default::default()
+        };
+        let resp = render_tpl(tpl);
+        let rows = &resp.sheets[0].rows;
+        assert_eq!(rows.len(), 3, "前提：应当展开成 3 行");
+        let drawn: Vec<usize> = (0..rows.len()).filter(|r| rows[*r][1].barcode.is_some()).collect();
+        assert_eq!(
+            drawn,
+            vec![0, 1, 2],
+            "每一行都要有自己的条码，实际只在 {drawn:?}；告警：{}",
+            warns_of(&resp)
+        );
+
+        // 三行的条码内容必须**各不相同** —— 都一样的说明 `from: value` 没生效
+        let texts: Vec<String> = (0..3)
+            .map(|r| rows[r][1].barcode.as_ref().unwrap().text.clone())
+            .collect();
+        assert_eq!(texts, vec!["SO-1", "SO-22", "SO-3333"], "每行的条码内容要跟着本行走");
+        // 内容长度不同 → 宽度必须不同（宽度都一样说明三行用的是同一份数据）
+        let widths: Vec<usize> =
+            (0..3).map(|r| rows[r][1].barcode.as_ref().unwrap().width()).collect();
+        assert!(widths[0] < widths[1] && widths[1] < widths[2], "宽度应当递增，实际 {widths:?}");
+    }
+
+    /// 内容装不下要**明确报错**并把原因挂到 text 上，不能留白
+    #[test]
+    fn barcode_error_names_the_reason_and_stays_visible() {
+        let tpl = barcode_tpl(CellBarcode {
+            value: "x".repeat(300), // 超过 QR 的 213 字节上限
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+        let g = &resp.sheets[0].rows[0][3];
+        assert!(g.barcode.is_none(), "装不下就不该有结果");
+        assert!(g.text.contains("条码"), "留白看不出是配错了：{:?}", g.text);
+        assert!(g.text.contains("213"), "要说清上限是多少：{:?}", g.text);
+        assert!(warns_of(&resp).contains("条码"), "还要进告警");
+    }
+
+    /// 码制写错**只坏这一格**并列出支持的码制，不能让整张表出不来
+    #[test]
+    fn unknown_symbology_only_breaks_that_cell() {
+        let tpl = barcode_tpl(CellBarcode {
+            value: "ABC-123".into(),
+            symbology: Some("code39".into()),
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+        let g = &resp.sheets[0].rows[0][3];
+        assert!(g.barcode.is_none());
+        assert!(g.text.contains("code39"), "要点名作者写的值：{:?}", g.text);
+        assert!(g.text.contains("qr") && g.text.contains("code128"), "要列出支持的：{:?}", g.text);
+        // 其它格子照常出表
+        assert_eq!(resp.sheets[0].rows[0][0].text, "华东", "别的格子不该受影响");
+    }
+
+    /// 条码可以挂在 `CellModel` 上（两个槽都认）—— 只认 `CellTpl` 的话，
+    /// 挂在展开格上的条码会**静默不出**
+    #[test]
+    fn barcode_declared_on_the_model_slot_also_works() {
+        let mut tpl = barcode_tpl(CellBarcode::default());
+        let cell = &mut tpl.sheets[0].rows[0].cells[3];
+        cell.barcode = None;
+        cell.model = Some(CellModel {
+            barcode: Some(CellBarcode { value: "MODEL-SLOT".into(), ..Default::default() }),
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+        let g = &resp.sheets[0].rows[0][3];
+        let bc = g.barcode.as_ref().unwrap_or_else(|| panic!("CellModel 槽也要认：{}", warns_of(&resp)));
+        assert_eq!(bc.text, "MODEL-SLOT");
+    }
+
+    /// 三种非文本格子同时声明：按 图片 > 图表 > 条码 取一个，其余告警
+    #[test]
+    fn image_beats_chart_beats_barcode_and_says_so() {
+        // 图片 + 条码 → 出图片
+        let mut tpl = barcode_tpl(CellBarcode { value: "X".into(), ..Default::default() });
+        tpl.sheets[0].rows[0].cells[3].image = img_decl(None, TINY_PNG);
+        let resp = render_tpl(tpl);
+        let g = &resp.sheets[0].rows[0][3];
+        assert!(g.image.is_some(), "图片优先");
+        assert!(g.barcode.is_none(), "图片在时不该再编条码（白费力气）");
+        assert!(warns_of(&resp).contains("同时声明"), "不许静默盖掉");
+
+        // 图表 + 条码 → 出图表
+        let mut tpl = barcode_tpl(CellBarcode { value: "X".into(), ..Default::default() });
+        tpl.sheets[0].rows[0].cells[3].chart =
+            Some(bar_chart(&["A3"], vec![series_decl("销售额", "B3")]));
+        let resp = render_tpl(tpl);
+        let g = &resp.sheets[0].rows[0][3];
+        assert!(g.chart.is_some(), "图表优先于条码");
+        assert!(g.barcode.is_none(), "图表在时不该再编条码");
+        assert!(warns_of(&resp).contains("同时声明"), "不许静默盖掉");
+    }
+
+    /// HTML 预览要出**内联 SVG**，且与条码位矩阵一致
+    #[test]
+    fn html_preview_emits_inline_svg_for_barcode_cells() {
+        let tpl = barcode_tpl(CellBarcode { value: "ORDER-2026-0001".into(), ..Default::default() });
+        let resp = render_tpl(tpl);
+        let html = to_html(&resp.sheets);
+        assert!(html.contains("<svg "), "应当出内联 SVG，实际：{html}");
+        assert!(html.contains("shape-rendering=\"crispEdges\""), "条码必须关抗锯齿：{html}");
+        assert!(html.contains("fill=\"#000\""), "条必须是黑的：{html}");
+        assert!(html.contains("ORDER-2026-0001"), "原文要进无障碍标签：{html}");
+    }
+
+    /// 条码格在 xlsx 里要能导出（真断言在拆包探针里，Rust 侧读不到 zip 内容）
+    #[test]
+    fn xlsx_export_with_a_barcode_succeeds() {
+        let tpl = barcode_tpl(CellBarcode { value: "ORDER-2026-0001".into(), ..Default::default() });
+        let resp = render_tpl(tpl);
+        let buf = xlsx::to_xlsx(&resp.sheets, 1).expect("带条码的表也要导得出");
+        assert!(!buf.is_empty());
+    }
+
+    /// CSV 里条码格是空格子。**与图表不同**，这里确实丢了一次信息
+    /// （条码的原文不是从别的格子算出来的，它是本格自己的文本）。
+    /// 但 `from: value` 那种的原文本来就在数据里，所以只丢「字面量条码」那一份，
+    /// 作者要留就去旁边放个文本格 —— 这是有意的取舍，不是漏了。
+    #[test]
+    fn barcode_cell_is_empty_in_csv() {
+        let tpl = barcode_tpl(CellBarcode { value: "ORDER-2026-0001".into(), ..Default::default() });
+        let resp = render_tpl(tpl);
+        let csv = String::from_utf8(csv::to_csv(&resp.sheets).expect("CSV 要导得出")).unwrap();
+        assert!(!csv.contains("ORDER-2026-0001"), "条码格不该往 CSV 里写字：{csv}");
+        // 来源数据照旧一个不少
+        for want in ["华东", "华北", "华南"] {
+            assert!(csv.contains(want), "来源数据 {want} 应当还在：{csv}");
         }
     }
 }

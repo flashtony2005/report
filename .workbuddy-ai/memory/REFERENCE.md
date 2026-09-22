@@ -198,7 +198,43 @@ px = round(width_xml × 7)          // 反解**不带 +5**（探针第一版就�
 
 ---
 
-## 十一、Univer 剥公式引擎的报错原文（从 MEMORY.md 移来，查错时用）
+## 十一、条码格 `CellTpl.barcode`（2026-09-22 补上）
+
+**两个槽都认**：`CellTpl.barcode`（手写模板 / 导入）与 `CellModel.barcode`（设计器面板写这个）。合并顺序 `cell.barcode.or(model.barcode)`。
+
+声明 `CellBarcode {from: "literal"|"value", value, symbology: "qr"|"code128", gs1?}`；结果 `ResolvedBarcode {symbology, rows: Vec<String>, text}` —— `rows` 每行一个字符串、`'1'` = 黑、**静区已含**、一维码已拉伸成面。用字符串不用 `Vec<Vec<bool>>`：报表**每一行**都可能带条码，`true,` 序列化是 5 倍体积差。
+
+### 与图表**相反**的一条：N 行出 N 个条码
+图表「一个声明只画一份」（读整列数据，画 N 份会叠在同一格上）；条码内容来自**本格自己的文本**，展开行里跟**图片**一样一行一个。照抄图表的去重逻辑 = 「N 行订单只有一个条码」，是错的。
+
+### 优先级收成**一个判据** `GridCell::graphic()`
+`图片 > 图表 > 条码`。以前三个渲染端（`to_html` / `decode_images` / `write_charts`）各判一遍 → **「图片 + 图表」的格子在 Excel 里同时嵌了位图和原生图表**（老 bug，加条码时才挖出来）。现在渲染端只画、引擎决定；被盖住的在引擎里**连编都不编** → 不变式「`GridCell.barcode` 有值 ⟹ 它就是要画的那个」。
+- 告警分两处：`resolve_charts` 管**带图表**的组合（它能看到三种声明）；`expand_sheet` 的条码分支管「图片 + 条码」（`resolve_charts` 对没声明图表的格子不跑，不说就静默消失），用 `inst.chart.is_none()` 去重。
+
+### 自研编码器的边界（全部**明确报错**，不静默降级）
+- QR：**字节模式 + ECC M + 版本 1~10**（上限 213 字节）。数字 / 字母数字模式、L/Q/H、v11+ 都不做。
+- Code128：**不在符号中途切换码集**（切换是启发式，猜错 = **能扫但内容错**，比扫不出来更糟）；只收 ASCII，非 ASCII 报错并指向 `qr`；DEL(0x7F) 拒绝；偶数位纯数字且 ≥4 位走 C 集，控制符走 A 集，其余 B 集。
+- **没有 HRI**（条码下方人可读文字）：SVG 画得出、位图画不出，两边不一致比两边都没有更糟。
+- 码制只有 QR + Code128；`code39` 之类**明确拒绝**（不静默当二维码 —— 那也能扫，于是「我写的明明是条码」查不出来）。
+
+### 掩码是**质量**不是正确性
+8 个掩码全试、罚分最低者胜；掩码号写进格式信息、解码器按号反掩 → **8 个都能扫**。罚分规则 4 **绝不能 panic**：第一版照 `(diff+total-1)/total-1` 抄，恰好 50% 黑时 `usize` 下溢。
+
+### xlsx 只收位图 → 手写 1 位灰度 PNG（`png.rs`）
+`bit_depth=1, color_type=0`，**0 = 黑 / 1 = 白**（反了 PNG 仍是「像条码的图」，肉眼看不出来）。zlib 用 **stored block**（`BTYPE=00` + LEN/NLEN）+ 自写 CRC-32 / Adler-32，零依赖。代价照实说：**没压缩，文件比正常的大**。
+
+### `rust_xlsxwriter` 会**按字节去重** media
+12 个条码格 → **6 个** `xl/media/imageN.png`，但 drawing 里 **12 个**锚点。探针的期望值必须照这个写，否则会误判成 bug。
+
+### 探针 / 反证
+- `scripts/verify-barcode.py`（编码器级）：10 个样本交 **zxing** 解回原文（QR v1~v10 含 213 字节上限、中文 UTF-8；Code128 的 A/B/C 集 + GS1 + 0x0D 控制符）。zxing 的 `format` 是 `"QR Code"` / `"Code 128"`（**带空格**）不是 `qr_code` —— 比对前先归一成字母数字。
+- `scripts/verify-xlsx-barcode.py`（真机）：xlsx 位图 + HTML 内联 SVG（**librsvg `rsvg-convert`，独立渲染器**）两边都交 zxing 对原文；另验 1 位灰度 IHDR、锚点去重与跨行分布、颜色写死 `#000`/`#fff`、错误路径，以及**优先级必须从 xlsx 产物验**（JSON / HTML 都走 `graphic()`，渲染端分叉了它们看不出来）。
+- `scripts/fault-inject-barcode-probe.py`（**13 条**）。注入锚点必须**恰好匹配 1 处**，否则报「锚点失效」而不是算通过。
+- ⚠️ **注入点选错的教训**：第一版 priority 注入让图片格返回 `Graphic::None`（图片干脆不嵌位图），**这个差异在探针的断言上观察不到** → 探针没红，白得一条「检查是摆设」的结论。真正会分叉的只有「图片 + 图表」。**注入必须打在「行为差异能被断言观察到」的地方**，否则先怀疑注入，别先怀疑检查。
+
+---
+
+## 十二、Univer 剥公式引擎的报错原文（从 MEMORY.md 移来，查错时用）
 
 漏掉任一项都是**静默坏**：
 - 省 `docs` + `docs-ui` 插件 → sheets-ui 编辑器依赖 `univer.editor.service`，异步抛 `[redi] Expect 1 ... but get 0`，**try/catch 接不到**。

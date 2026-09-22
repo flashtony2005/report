@@ -4,7 +4,7 @@
 //! 数值列写 number（保留可计算性），文本写 string；跨行跨列还原为 merge_range。
 
 use crate::report::model::{
-    parse_image_data_uri, CellStyle, GridCell, HAlign, RenderedSheet, ResolvedChart, VAlign,
+    parse_image_data_uri, CellStyle, Graphic, GridCell, HAlign, RenderedSheet, ResolvedChart, VAlign,
 };
 use rust_xlsxwriter::{
     Chart, ChartType, Format, FormatAlign, FormatBorder, Image, Workbook, Worksheet,
@@ -189,17 +189,52 @@ fn span_pixels(widths: &[u16], c: usize, colspan: usize) -> u32 {
     widths.iter().skip(c).take(colspan.max(1)).map(|w| col_pixels(*w)).sum()
 }
 
-/// 解出本 sheet 所有图片格。解码失败**直接报错并带上格位** ——
-/// 和 `with_style` 一个道理：静默丢图 = 作者改半天看不到任何变化。
+/// 解出本 sheet 所有**需要位图**的格子：图片格 + 条码格。
+///
+/// ## 为什么条码也走这条路
+///
+/// Excel 只收位图（`Image::new_from_buffer` 认 PNG/JPEG/GIF/BMP 字节），
+/// 没有矢量通路。而条码在服务端是**位矩阵**，转 PNG 是纯几何变换
+/// （`png::encode_gray1`，自己写的，见那个模块的注释）。
+///
+/// 转成 `Image` 之后，**撑列宽 / 撑行高 / 居中落位 / 插入**这一整套
+/// 全部复用图片那套逻辑，一行都不用改 —— 这是「条码=位图」这个选择最大的好处：
+/// 它不需要在导出器里长出一条平行的代码路径（平行路径迟早会不一致）。
+///
+/// 一个格子同时有图片和条码时**图片优先**（与 HTML 侧同一顺序，引擎已告警），
+/// 所以这里 `continue` 掉，不覆盖已插入的图片。
+///
+/// 解码失败**直接报错并带上格位** —— 和 `with_style` 一个道理：
+/// 静默丢图 = 作者改半天看不到任何变化。
 fn decode_images(rows: &[Vec<GridCell>]) -> Result<HashMap<(usize, usize), DecodedImage>, String> {
     let mut out = HashMap::new();
     for (r, row) in rows.iter().enumerate() {
         for (c, cell) in row.iter().enumerate() {
-            let Some(src) = cell.image.as_deref() else { continue };
-            let (_, bytes) =
-                parse_image_data_uri(src).map_err(|e| format!("格子 {} 的图片: {e}", cell.pos))?;
+            // 走 `graphic()` 这**一个判据**（图片 > 图表 > 条码）。
+            // 自己判的话，「图片 + 图表」的格子会在这里嵌一张图，
+            // 而 `write_charts` 又画一张图表 —— 两个东西叠在同一格上。
+            let bytes: Vec<u8> = match cell.graphic() {
+                Graphic::Image(src) => {
+                    parse_image_data_uri(src)
+                        .map_err(|e| format!("格子 {} 的图片: {e}", cell.pos))?
+                        .1
+                }
+                Graphic::Barcode(bc) => {
+                    let scale = crate::report::barcode::PX_PER_MODULE;
+                    let (w, h) = (bc.width(), bc.height());
+                    if w == 0 || h == 0 {
+                        return Err(format!("格子 {} 的条码位矩阵是空的", cell.pos));
+                    }
+                    crate::report::png::encode_gray1(w * scale, h * scale, |x, y| {
+                        bc.is_dark(y / scale, x / scale)
+                    })
+                }
+                // 图表由 `write_charts` 画成**原生图表**（不是位图），这里不管；
+                // 纯文本格也没有位图
+                Graphic::Chart(_) | Graphic::None => continue,
+            };
             let img = Image::new_from_buffer(&bytes)
-                .map_err(|e| format!("格子 {} 的图片解不开: {e}", cell.pos))?;
+                .map_err(|e| format!("格子 {} 的位图解不开: {e}", cell.pos))?;
             let (dw, dh) = display_size(&img);
             out.insert(
                 (r, c),
@@ -325,14 +360,16 @@ fn write_charts(
     rows: &[Vec<GridCell>],
     col_count: u16,
 ) -> Result<(), String> {
-    // 收集图表格，按行优先序（多个图表时数据块依次往下排，位置才稳定可预测）
+    // 收集图表格，按行优先序（多个图表时数据块依次往下排，位置才稳定可预测）。
+    // 走 `graphic()` 这**一个判据**：被图片盖住的图表不该再画一张（会叠在同一格上）
     let charts: Vec<(usize, usize, &ResolvedChart)> = rows
         .iter()
         .enumerate()
         .flat_map(|(r, row)| {
-            row.iter()
-                .enumerate()
-                .filter_map(move |(c, cell)| cell.chart.as_ref().map(|ch| (r, c, ch)))
+            row.iter().enumerate().filter_map(move |(c, cell)| match cell.graphic() {
+                Graphic::Chart(ch) => Some((r, c, ch)),
+                _ => None,
+            })
         })
         .collect();
     if charts.is_empty() {
@@ -536,10 +573,10 @@ pub fn to_xlsx(sheets: &[RenderedSheet], repeat_rows: usize) -> Result<Vec<u8>, 
                         }
                     }
                 }
-                // 图片格：格子里**不写文本**，只留边框，图浮在上面。
+                // 图片格 / 条码格：格子里**不写文本**，只留边框，图浮在上面。
                 // 文本降级成 alt（Excel 里鼠标悬停能看），这也正是引擎侧
-                // 对 `from: value` 清空 text、对字面图保留 text 的用意。
-                if cell.image.is_some() {
+                // 对 `from: value` 清空 text、对字面值保留 text 的用意。
+                if matches!(cell.graphic(), Graphic::Image(_) | Graphic::Barcode(_)) {
                     if merged {
                         ws.merge_range(
                             r0,
@@ -555,7 +592,13 @@ pub fn to_xlsx(sheets: &[RenderedSheet], repeat_rows: usize) -> Result<Vec<u8>, 
                     }
                     if let (Some(pl), Some(d)) = (placed.get(&(r, c)), imgs.get(&(r, c))) {
                         let alt = if cell.text.trim().is_empty() {
-                            format!("图片 {}", cell.pos)
+                            // 条码格没有 text 时用原文当替代文字 ——
+                            // 在 Excel 里悬停就能看到条码装的是什么，排查省一步
+                            match cell.barcode.as_ref() {
+                                Some(bc) if !bc.text.trim().is_empty() => bc.text.clone(),
+                                Some(_) => format!("条码 {}", cell.pos),
+                                None => format!("图片 {}", cell.pos),
+                            }
                         } else {
                             cell.text.clone()
                         };
@@ -711,7 +754,7 @@ fn display_width(s: &str) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report::model::GridCell;
+    use crate::report::model::{GridCell, ResolvedBarcode, ResolvedChartSeries};
 
     fn cell(text: &str, rowspan: usize, colspan: usize, num: Option<f64>) -> GridCell {
         GridCell {
@@ -725,6 +768,7 @@ mod tests {
             formula: None,
             style: None,
             chart: None,
+            barcode: None,
         }
     }
 
@@ -965,6 +1009,41 @@ mod tests {
             formula: None,
             style: None,
             chart: None,
+            barcode: None,
+        }
+    }
+
+    /// 条码格。矩阵**用真编码器产出**，不手搓假矩阵 ——
+    /// 手搓的可能根本不是合法条码，测出来的结论就是假的。
+    fn barcode_cell(pos: &str, payload: &str) -> GridCell {
+        let m = crate::report::barcode::encode(payload, Some("code128"), false)
+            .unwrap_or_else(|e| panic!("{payload:?} 应当编得出: {e}"));
+        let mut bc = ResolvedBarcode::from_matrix(&m, payload.to_string());
+        bc.symbology = "code128".into();
+        GridCell {
+            barcode: Some(bc),
+            text: String::new(),
+            pos: pos.into(),
+            rowspan: 1,
+            colspan: 1,
+            raw_number: None,
+            num_format: None,
+            formula: None,
+            style: None,
+            image: None,
+            chart: None,
+        }
+    }
+
+    fn a_chart() -> ResolvedChart {
+        ResolvedChart {
+            kind: "bar".into(),
+            categories: vec!["A".into(), "B".into()],
+            series: vec![ResolvedChartSeries {
+                name: "s".into(),
+                data: vec![Some(1.0), Some(2.0)],
+            }],
+            title: None,
         }
     }
 
@@ -1186,10 +1265,52 @@ mod tests {
         );
     }
 
+    /// 条码格在 xlsx 里要**真嵌位图**（走的是图片那一整套：media + drawing）
+    #[test]
+    fn xlsx_embeds_a_barcode_bitmap() {
+        let sheet =
+            RenderedSheet { name: "条码".into(), rows: vec![vec![barcode_cell("A1", "ORDER-1")]] };
+        let buf = to_xlsx(&[sheet], 1).expect("带条码的导出应当成功");
+        let hay = String::from_utf8_lossy(&buf);
+        assert!(hay.contains("xl/media/image1.png"), "条码要作为位图嵌进去");
+        assert!(hay.contains("xl/drawings/drawing1.xml"), "要有 drawing 条目");
+
+        // 嵌进去的必须是**我们那个 1 位灰度 PNG**（不是被谁转成了 24 位 RGB）。
+        // 位深写错的话图会变大 24 倍，且缩放时可能插值出灰边 —— 灰边会毁掉条码
+        let ihdr = buf.windows(4).position(|w| w == b"IHDR").expect("zip 里应有 IHDR");
+        assert_eq!(buf[ihdr + 12], 1, "位深应当是 1");
+        assert_eq!(buf[ihdr + 13], 0, "颜色类型应当是灰度（0）");
+    }
+
+    /// **这条是加条码时才发现的老 bug**：「图片 + 图表」的格子原先会同时嵌一张位图
+    /// 和一张原生图表，两个东西叠在同一格上。根因是优先级被三个渲染端各判了一遍。
+    /// 现在收在 `GridCell::graphic()` 一处，这条守住它。
+    #[test]
+    fn an_image_shadowing_a_chart_does_not_also_embed_the_chart() {
+        let mut c = png_cell(PNG_120X80, "A1");
+        c.chart = Some(a_chart());
+        let sheet = RenderedSheet { name: "t".into(), rows: vec![vec![c]] };
+        let buf = to_xlsx(&[sheet], 1).expect("导得出");
+        let hay = String::from_utf8_lossy(&buf);
+        assert!(hay.contains("xl/media/image1.png"), "图片要嵌");
+        assert!(!hay.contains("xl/charts/chart"), "被图片盖住的图表不该再画一张");
+    }
+
+    /// 反过来：图表盖住条码时，不该再嵌一张条码位图
+    #[test]
+    fn a_chart_shadowing_a_barcode_does_not_also_embed_the_bitmap() {
+        let mut c = barcode_cell("A1", "ORDER-1");
+        c.chart = Some(a_chart());
+        let sheet = RenderedSheet { name: "t".into(), rows: vec![vec![c]] };
+        let buf = to_xlsx(&[sheet], 1).expect("导得出");
+        let hay = String::from_utf8_lossy(&buf);
+        assert!(hay.contains("xl/charts/chart"), "图表要画");
+        assert!(!hay.contains("xl/media/image"), "被图表盖住的条码不该再嵌位图");
+    }
+
     /// 解不开的图片**必须报错并带上格位**，不许静默导出一张白表
     #[test]
-    fn undecodable_image_errors_with_cell_pos() {
-        let mut c = png_cell(PNG_120X80, "C7");
+    fn undecodable_image_errors_with_cell_pos() {        let mut c = png_cell(PNG_120X80, "C7");
         c.image = Some("data:image/png;base64,%%%not-base64%%%".into());
         let sheet = RenderedSheet { name: "坏图".into(), rows: vec![vec![c]] };
         let err = to_xlsx(&[sheet], 1).unwrap_err();

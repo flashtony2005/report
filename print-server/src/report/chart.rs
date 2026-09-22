@@ -342,6 +342,7 @@ mod tests {
             style: None,
             image: None,
             chart: None,
+            barcode: None,
         };
         assert_eq!(source_number(&cell), Some(1234.5));
 

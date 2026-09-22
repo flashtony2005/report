@@ -2,7 +2,7 @@
 
 引擎：Rust `print-server`（非线性报表展开 + 服务端导出）+ TS `openprint`（引擎层，被 designer-react alias 引用）+ `designer-react`（UI）。
 
-> **细节在 `REFERENCE.md`**（验证方法论 / 沙箱环境 / print-server 硬事实 / UI 测试配方 / Excel 单位换算 / 图片·odbc·票据 细节）。需要时读它，别凭记忆。
+> **细节在 `REFERENCE.md`**（验证方法论 / 沙箱 / 硬事实 / UI 测试配方 / Excel 单位 / 图片·图表·条码·odbc·票据）。需要时读它，别凭记忆。
 > 本文件只放「几乎每个任务都用得上」的东西，**必须保持在 ~12KB 以内** —— 超了会在注入时被截断，等于后半段不存在。
 
 ## 三个「表格」不是一回事（问「能不能合到 Univer」前先分清）
@@ -33,7 +33,7 @@
 - **主格关系不画进格子**：网格旁常显主格树 `parentTreeOf`，选中点亮 `parentChainOf`。
 - 存/开/跑：`PUT /api/reports/save` · `GET /api/reports/:id` → `templateToGrid` · `POST /api/reports/:id/run`。模板**存原样**，`options` 单独存；`withExportFormula`/`withExpandControl` 渲染前才套，自由模板**刻意不套** withExpandControl。
 - `id` 白名单 `[A-Za-z0-9_-]` ≤80 是安全边界（直接拼文件名）。
-- 样例：`print-server/reports/sales-by-region.json`（A3 region → B3 city → C3 salesman；小计 `D3[B3:+0].sum()`、合计 `D3.sum()`）。
+- 样例：`print-server/reports/sales-by-region.json`。
 
 ## 三条「静默失败」红线（改了必自查）
 
@@ -47,11 +47,11 @@
 | --- | --- | --- |
 | 图片 | 有 | **有**（`CellTpl.image` / `CellModel.image`，只收 data URI） |
 | 样式（字色/底色/粗斜/字号/对齐） | 有 | **有**（`CellStyle`） |
-| 条码 / 二维码 | 有（`PrintQrcode`、`data-binder` barcode） | **无** |
+| 条码 / 二维码 | 有（`PrintQrcode`、`data-binder` barcode） | **有**（`CellTpl.barcode`；自研编码器 QR + Code128，HTML 出内联 SVG、xlsx 嵌 **1 位灰度位图**） |
 | 图表 | 有，**自研** `openprint/src/core/chartkit`（bar/line/pie，纯函数出 SVG、零第三方依赖） | **有**（`CellTpl.chart`；声明的是**模板坐标**不是数据；HTML 出内联 SVG，xlsx 嵌**原生可编辑**图表） |
 | 导出 | 客户端 `export-engine/`（PDF/SVG/图片） | 服务端 xlsx / HTML / CSV |
 
-**教训**：`package.json` 里没装第三方图表库 ≠ 没有图表能力 —— 是自己写的。判断某能力有没有，**先 grep 源码，别先看依赖清单**。
+**教训**：判断某能力有没有，**先 grep 源码，别先看依赖清单**（`package.json` 里没第三方图表库 ≠ 没有图表能力 —— 图表是自己写的）。
 
 ## 数据源现状
 
@@ -59,20 +59,21 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 
 ## 已完成（别再当缺口重复做）
 
-- **CSV 导出**：`POST /api/report/csv` + `GET /api/report/sample.csv`。RFC 4180 + UTF-8 BOM + CRLF。写 `text` 不写 `formula`。**CSV 注入（`=cmd|`）刻意不改写**：加 `'` 前缀会把 `+86` 手机号也改掉，拿正确性换安全不值（取舍写在 `csv.rs` 顶部）。
+- **CSV 导出**：`POST /api/report/csv` + `GET /api/report/sample.csv`。RFC 4180 + UTF-8 BOM + CRLF。写 `text` 不写 `formula`。**CSV 注入（`=cmd|`）刻意不改写**：加 `'` 前缀会把 `+86` 手机号也改掉，拿正确性换安全不值。
 - **分页不切合并格**：`merge_blocked_boundaries()`。**关键洞察：主格展开出来就是合并格** → 「不许在合并格中间切页」==「组内不跨页」，不用引入润乾 9 类带区模型。代价：页大小不再严格等于 `rows_per_page`，组超过一页时那页必然超（宁超不切）。
-- **格子样式 `CellStyle`**：bold / italic / font_size / color / bg / h_align / v_align。链路 `CellModel.style` → `CellInst.style` → `GridCell.style` → xlsx `with_style()`（**叠加**在基础格式上）。**刻意不给边框**（Univer 不渲染 = 静默失败）。**颜色只认 `#RRGGBB`，认不出来报 HTTP 500**（点名哪格哪个值）。清掉最后一项时整个 `style` 要摘掉（有 UI 用例钉住）。
+- **格子样式 `CellStyle`**：bold / italic / font_size / color / bg / h_align / v_align，链路 `CellModel.style` → `CellInst.style` → `GridCell.style` → xlsx `with_style()`（**叠加**在基础格式上）。**刻意不给边框**（Univer 不渲染 = 静默失败）。**颜色只认 `#RRGGBB`，认不出来报 HTTP 500**（点名哪格哪个值）。
 - **MySQL / MariaDB / SQL Server / Oracle 明确报错**：`unsupported_engine_name()`。注意 `ServerConfig::load()` **不调 `validate()`**（只有保存/试连调），手改配置写 mysql 会报误导性的「sqlite 文件不存在」。
-- **格子图片**：`CellTpl.image` / `CellModel.image`（**两个槽都认**）→ `GridCell.image` → xlsx 真嵌入 + HTML `<img>`。探针 `scripts/verify-xlsx-image.py`，由 `scripts/fault-inject-image-probe.py` 反证（6 条）。
-- **图表格**：`CellTpl.chart` / `CellModel.chart`（两个槽都认）→ `GridCell.chart` → HTML 内联 SVG（`chart_svg.rs`）+ xlsx **原生图表**（`xlsx.rs::write_charts`）。声明的是**模板坐标**（`categories: ["A3"]`、`series[].from: "B3"`），整个网格填完后才解析。三条硬约定：①**一个声明只画一份**（行展开会复制，N 份 = Excel 里 N 张图叠一起；**图片相反**）；②**空值是空档不是 0**；③xlsx 的数写在**表格下方的隐藏列**（展开后范围可能不连续）→ 图表是**导出那一刻的快照**。细节见 REFERENCE.md §十。探针 `verify-xlsx-chart.py` + `fault-inject-chart-probe.py`（10 条）。
+- **格子图片**：`CellTpl.image` / `CellModel.image`（**两个槽都认**）→ `GridCell.image` → xlsx 真嵌入 + HTML `<img>`。只收 data URI（不做文件路径：模板可被导入分享，读本地文件 = 任意文件读取原语）。探针 `verify-xlsx-image.py` + 反证 `fault-inject-image-probe.py`（6 条）。
+- **图表格**：`CellTpl.chart` / `CellModel.chart`（两个槽都认）→ `GridCell.chart` → HTML 内联 SVG + xlsx **原生图表**。声明的是**模板坐标**（`categories: ["A3"]`），整个网格填完后才解析。三条硬约定：**一个声明只画一份**（行展开会复制，**图片 / 条码相反**）· **空值是空档不是 0** · xlsx 的数写在**表格下方的隐藏列** → 图表是**导出那一刻的快照**。细节 §十。探针 `verify-xlsx-chart.py` + 反证（10 条）。
+- **条码 / 二维码**（B2 收口）：`CellTpl.barcode` / `CellModel.barcode`（两个槽都认）→ `GridCell.barcode` → HTML 内联 SVG + xlsx **1 位灰度位图**（xlsx 只收位图 → 手写了零依赖 PNG 编码器）。编码器自研：QR（**字节模式 + ECC M + v1~10**，上限 213 字节）+ Code128 全表。**展开行里 N 行出 N 个**（同图片，**反图表**）。优先级 `图片 > 图表 > 条码` 收成**一个判据** `GridCell::graphic()`。细节 §十一。探针 `verify-barcode.py` / `verify-xlsx-barcode.py` + 反证（13 条）。
 - **ODBC 引擎**（八项缺口最后一项，至此全清）：`db_odbc.rs`，可选 feature。
 - **票据 / 标签指令**：`/print` 的 `esc` / `tsc` / `zpl` 已实现。
-- **报表参数**：`ReportDef.params` 声明层 + `RunRequest.values`（按名字绑）；与老 `RunRequest.params`（数据集名 → 位置参数数组）是两条通道。未知参数 / 必填缺失 / 引用了解析不出值的参数**一律报错**，且**未知参数检查必须先于必填检查**（否则 typo 被报成「region 必填」）。老报表无 params 照旧跑。
+- **报表参数**：`ReportDef.params` + `RunRequest.values`（按名字绑）；与老 `RunRequest.params`（数据集名 → 位置参数数组）是两条通道。未知 / 必填缺失 / 引用解析不出值**一律报错**，且**未知参数检查必须先于必填检查**（否则 typo 被报成「region 必填」）。
 
 ## 局限 / 已知取舍
 
 - **分页不认分组**：`paginate()`（`mod.rs:319`）是渲染完后按固定行数切拍平网格，不知道哪几行同组 → 一组明细跨页时第二页只有重复表头，**补不出主格**。（「组内不跨页」是靠合并格边界实现的。）
-- **`GridCell` 字段很少**：`text / pos / rowspan / colspan / raw_number / num_format / formula` + 后补的 `style` / `image` / `chart`。设计器里的彩色是**语义高亮**（`grid-report.ts:661-666`：纵向扩展黄、横向扩展绿、字段蓝、表达式紫斜体 + 表头/选中/主格高亮）—— 标的是「这格什么角色」，不是「这格长什么样」。xlsx 的基础样靠导出器写死。
+- **`GridCell` 字段很少**：`text / pos / rowspan / colspan / raw_number / num_format / formula` + 后补的 `style` / `image` / `chart` / `barcode`。设计器里的彩色是**语义高亮**（`grid-report.ts:661-666`：纵向扩展黄、横向扩展绿、字段蓝、表达式紫斜体 + 表头/选中/主格高亮）—— 标的是「这格什么角色」，不是「这格长什么样」。xlsx 的基础样靠导出器写死。
 - **`GridCell.pos` 保留模板坐标** → 模板坐标可反查它展开后的输出范围。这是「服务端画图表」能成立的关键前提。
 - 已核对**不是**缺口的：表达式函数集（官方 11 个 + MAP/FILTER/REDUCE/FLATMAP）全在；`CellModel` 字段**无死字段**；分页三配置都生效；多 sheet 导出支持（`xlsx.rs:37`）；行/列测试已有设计器入口。
 
@@ -81,8 +82,8 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 对标 `jeecgboot/JimuReport`（Java 在线报表平台）。**结论：不是一个物种** —— 它做广度（填报 / 大屏 / AI / 权限 / 移动端），我们做深度（打印版面 + 非线性内核）。
 
 1. **A 类 5 项建议明确不做**：填报回写 / 大屏 / AI / 权限分享 / 移动端。其中**填报**是唯一业务上真会被问的 —— 我们三个引擎全只读打开，是**架构取舍**。对外口径必须是「按只读设计，不支持回写」，**不能说「暂未实现」**。
-2. **B 类 6 项才是真该补的**。图表 ✅ 已完成（见「已完成」）；**条码 / 二维码仍缺**，与图表**同根因**：`CellTpl` 缺「非文本格子」通道。图片那条路已走通三遍（两个槽都认 + 只收 data URI + 失败进 `warnings`），照抄即可。
+2. **B 类 6 项才是真该补的**。图表 ✅、**条码 / 二维码 ✅**（两项同根因：`CellTpl` 缺「非文本格子」通道，现已补齐）。剩 **B3 条件格式 / B4 超链接·钻取 / B5 子报表 / B6 Word 导出 / C 文件·API 数据集**。
 3. **数据源 3 vs 30+ 别追数量**。真差距是「没有非 SQL 数据集抽象」；信创库用 ODBC DSN 接就行，别逐个写适配。
 4. **⚠️ 许可**：它的补充条款**禁止同类竞争** + 必须保留版权标识。本项目就是报表引擎，属同类 → **可以读 README 对标功能，不能抄代码 / 兼容它的模板格式**。想兼容先找法务，别自己判断。
 
-写「条件格式」时注意：Univer 样式通道**只有底色 + 字色能画**，`bd` 边框完全不渲染 —— 别设计依赖边框的条件格式（已实测）。
+写「条件格式」前先看 Univer 硬约束 #3：边框画不出来，别设计依赖边框的条件格式。

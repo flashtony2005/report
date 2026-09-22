@@ -114,6 +114,71 @@ export function isValueImage(from: string | null | undefined): boolean {
   return (from ?? '').trim().toLowerCase() === 'value'
 }
 
+/** 服务端认的码制（= Rust 侧 `normalise_symbology` 的白名单，别名会归一） */
+export type BarcodeSymbology = 'qr' | 'code128'
+
+/**
+ * 条码格：这格不出文本，出一个条码 / 二维码。
+ *
+ * ## 为什么服务端自己编码，而不是让客户端给位图
+ *
+ * 图片格走的是「客户端栅格化、服务端只嵌字节」那条路，条码**故意不走**：
+ * 编码是纯计算，自研编码器在 Rust 里跑一遍就出位矩阵，不必让每个调用方
+ * 都带一个编码库。更关键的是**数据驱动** —— `from: 'value'` 时内容是本格
+ * 算出来的值，那是服务端的计算结果，客户端根本拿不到；让客户端编就等于
+ * 要求客户端把整列数据也自己算一遍。
+ *
+ * ## 与 image / chart 的关系
+ *
+ * 三个都是「非文本格子」，区别在**内容从哪来**：
+ * - `image`：内容是一段 data URI（图是作者给的，服务端只管嵌）；
+ * - `chart`：内容是从**别的格子**算出来的（读整列数据，一个声明只画一份）；
+ * - `barcode`：内容是**本格自己的文本**编码成的。
+ *
+ * 所以条码在展开行里的行为跟**图片**一样：N 行出 N 个条码 ——
+ * 这正是主场景「一列订单号，每行一个条码」。照抄图表那套「只画一份」
+ * 会变成「N 行订单只有一个条码」，是错的。
+ *
+ * 三者同时声明时优先级 `图片 > 图表 > 条码`，由服务端**一个判据**决定
+ * （`GridCell.graphic()`），被盖住的在引擎里就不生成、并进 `warnings`。
+ *
+ * ## 能力边界（**刻意不做**的，免得被当成缺口反复提）
+ *
+ * - 二维码只做**字节模式 + 纠错等级 M + 版本 1~10**（上限 213 字节）；
+ *   数字 / 字母数字模式、L/Q/H 等级、版本 11+ 都不做，超了**明确报错**。
+ * - Code128 **不在符号中途切换码集**：切换是启发式，猜错的表现是
+ *   「能扫但内容是错的」，比扫不出来更糟。
+ * - 没有条码下方的人可读文字（HRI）：HTML 侧画得出来、位图侧画不出来，
+ *   两边不一致比两边都没有更糟。
+ * - 码制只有 QR + Code128；EAN / UPC / Code39 会被**明确拒绝**（不静默降级成二维码）。
+ */
+export interface CellBarcode {
+  /**
+   * 来源：`literal`（缺省，`value` 就是内容）/ `value`（取本格算出来的值当内容）。
+   *
+   * `value` 是为了「一列订单号条码」：`field: order_no` + `from: 'value'`，
+   * 每行的内容从数据里来。与服务端同样只认 `value`（大小写不敏感）。
+   */
+  from?: 'literal' | 'value' | null
+  /** 要编码的原文（`from: 'value'` 时忽略）。空串会**报错**，不是静默出空白。 */
+  value: string
+  /**
+   * 码制：`qr`（缺省）| `code128`；`qrcode` / `code-128` 这类别名也认。
+   *
+   * 认不出来**只坏这一格**（该格出 `[条码: 原因]` 并告警），不整表报错 ——
+   * 所以这里收窄成两个字面量是为了让设计器给得出下拉框，
+   * 不是说服务端只认这两种写法。
+   */
+  symbology?: BarcodeSymbology | null
+  /**
+   * Code128 的 GS1-128 模式（起始符后插一个 FNC1）。非 Code128 时忽略。
+   *
+   * 显式开关而不是靠内容前缀猜：GS1 的载荷里看不出来「要不要 FNC1」，
+   * 猜错了是**条码能扫但内容不对**，最难查。
+   */
+  gs1?: boolean | null
+}
+
 /** 服务端认的图表类型（= Rust 侧 `resolve_chart` 的白名单） */
 export type CellChartKind = 'bar' | 'line' | 'pie'
 
@@ -175,6 +240,26 @@ export interface ResolvedChartSeries {
   data: (number | null)[]
 }
 
+/**
+ * 解析完成的条码：位矩阵已经算好了（服务端编码器产出，三端共用同一份）。
+ *
+ * 与 `CellBarcode` 的区别是「声明 vs 结果」，正如 `ResolvedChart` 之于 `CellChart`。
+ */
+export interface ResolvedBarcode {
+  /** 已归一化的码制：`qr` | `code128`（小写） */
+  symbology: string
+  /**
+   * 位矩阵：每行一个字符串，`'1'` = 黑。**静区已含在内**，一维码已拉伸成面。
+   *
+   * 用字符串而不是布尔二维数组：报表**每一行**都可能带条码，
+   * 一张 65×65 的二维码用 `true,` 序列化是 5 倍体积差。
+   * 附带好处是 JSON 里肉眼就能看出这是个二维码。
+   */
+  rows: string[]
+  /** 原文（给 HTML 的 `alt` / Excel 的替代文字 / 排查用） */
+  text: string
+}
+
 export interface GridCell {
   text: string
   pos: string
@@ -203,6 +288,17 @@ export interface GridCell {
    * 有值时这格出图表不出文本（`text` 降级成 alt / 失败原因）。
    */
   chart?: ResolvedChart | null
+  /**
+   * 条码格：**已编码**的位矩阵（`'1'` = 黑，静区已含）。
+   * 有值时这格出条码不出文本（`text` 降级成 alt / 失败原因）。
+   *
+   * 与 `chart` 一样存**算好的结果**而不是声明：预览、HTML、xlsx 三边
+   * 拿到的是同一份位矩阵，不会各自再编一遍（那样迟早对不上）。
+   *
+   * ⚠️ 与 `image` / `chart` 的优先级是 `图片 > 图表 > 条码`，被盖住时
+   * 服务端**连编都不编** —— 所以「有值 ⟹ 它就是这格要画的那个」。
+   */
+  barcode?: ResolvedBarcode | null
 }
 
 export interface RenderedSheet {
@@ -324,6 +420,13 @@ export interface CellModel {
    * 所以要带一组模板坐标（见 `CellChart`）。
    */
   chart?: CellChart | null
+  /**
+   * 把这格画成条码 / 二维码（见 `CellBarcode`）。
+   *
+   * 放在 `CellModel` 上是为了让**数据驱动的条码**（`field: order_no` +
+   * `barcode.from: 'value'`）能随展开逐行取内容。
+   */
+  barcode?: CellBarcode | null
 }
 
 export interface CellTpl {
@@ -343,6 +446,8 @@ export interface CellTpl {
   image?: CellImage | null
   /** 把这格画成图表。同样放在 `CellTpl` 上，让「一张固定图表」不必建 `CellModel`。 */
   chart?: CellChart | null
+  /** 把这格画成条码 / 二维码。同样放在 `CellTpl` 上，让「一个固定二维码」不必建 `CellModel`。 */
+  barcode?: CellBarcode | null
 }
 
 export interface RowTpl {

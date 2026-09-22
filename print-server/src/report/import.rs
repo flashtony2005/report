@@ -79,6 +79,7 @@ fn cell_of(raw: &str) -> CellTpl {
         _ => {
             return CellTpl {
                 chart: None,
+                barcode: None,
                 image: None,
                 pos: None,
                 value: if t.is_empty() { None } else { Some(JsonValue::from(t)) },
@@ -146,6 +147,7 @@ fn cell_of(raw: &str) -> CellTpl {
 
     CellTpl {
         chart: None,
+        barcode: None,
         image: None,
         pos: None,
         value: None,
