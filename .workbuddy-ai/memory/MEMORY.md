@@ -60,7 +60,8 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 
 - **CSV 导出**：`POST /api/report/csv` + `GET /api/report/sample.csv`。RFC 4180 + UTF-8 BOM + CRLF。写 `text` 不写 `formula`。**CSV 注入（`=cmd|`）刻意不改写**（加 `'` 会改掉 `+86` 手机号，不值）。
 - **分页不切合并格**：`merge_blocked_boundaries()`。**关键洞察：主格展开出来就是合并格** → 「不在合并格中间切页」==「组内不跨页」，不用引入润乾 9 类带区模型。代价：页大小不再严格等于 `rows_per_page`，组超一页时那页必然超（宁超不切）。
-- **格子样式 `CellStyle` + 条件格式**：bold / italic / font_size / color / bg / h_align / v_align，链路 `CellModel.style` → `CellInst.style` → `GridCell.style` → xlsx `with_style()`（叠加）。**刻意不给边框**（Univer 不渲染 = 静默失败）。颜色只认 `#RRGGBB`，认不出来报 500。**条件格式** `CellModel.conditional`（规则数组，**第一条命中生效**）**没有新渲染代码** —— 展开期算出一份 `CellStyle` 塞进**同一个**槽（`xlsx.rs` 0 行改动）；非数值 / 空值**一条都不命中**。细节 §十四。
+- **格子样式 `CellStyle` + 条件格式**：bold / italic / font_size / color / bg / h_align / v_align，链路 `CellModel.style` → `CellInst.style` → `GridCell.style` → **xlsx `with_style()`（叠加）+ HTML `<td style>`**。**刻意不给边框**（Univer 不渲染 = 静默失败）。颜色只认 `#RRGGBB`，认不出**两个端点都报 400**。`Some(false)` = **不表态**（不写 `normal`）。**条件格式** `CellModel.conditional`（规则数组，**第一条命中生效**）**没有新渲染代码** —— 展开期算出一份 `CellStyle` 塞进**同一个**槽（`xlsx.rs` 0 行改动）；非数值 / 空值**一条都不命中**。细节 §十四 / §十五。
+- **HTML 预览画样式（#74）**：`to_html` 原来**不读** `GridCell.style`（唯一消费者是 `xlsx.rs:565`）→ 样式与条件格式在预览里**全看不到**。现由 `html_style_attr()` 渲染成 `<td style="…">`，且 `to_html` **改成返回 `Result`**（颜色/字号在此校验，文案与 xlsx 逐字一致）。无样式时输出**逐字节不变**。副作用：`/api/report/xlsx` 对坏样式 **500 → 400**（校验提前到 `render()` 内，两个端点统一）。细节 §十五。
 - **MySQL / MariaDB / SQL Server / Oracle 明确报错**：`unsupported_engine_name()`。注意 `ServerConfig::load()` **不调 `validate()`**（只有保存/试连调），手改配置写 mysql 会报误导性的「sqlite 文件不存在」。
 - **格子图片**：`CellTpl.image` / `CellModel.image`（**两槽都认**）→ `GridCell.image` → xlsx 真嵌入 + HTML `<img>`。只收 data URI（不做文件路径：模板可分享，读本地文件 = 任意文件读取原语）。探针 `verify-xlsx-image.py` + 反证（6 条）。
 - **图表格**：`CellTpl.chart` / `CellModel.chart`（两槽都认）→ `GridCell.chart` → HTML 内联 SVG + xlsx **原生图表**。声明的是**模板坐标**（`categories: ["A3"]`），网格填完后才解析。三条硬约定：**一个声明只画一份**（行展开会复制，**图片 / 条码相反**）· **空值是空档不是 0** · xlsx 的数写在**表格下方的隐藏列** → 图表是**导出那一刻的快照**。细节 §十。
@@ -74,7 +75,6 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 - **分页不认分组**：`paginate()`（`mod.rs:319`）渲染完后按固定行数切拍平网格，不知道哪几行同组 → 一组明细跨页时第二页只有重复表头，**补不出主格**。（「组内不跨页」靠合并格边界实现。）
 - **`GridCell` 字段很少**：`text / pos / rowspan / colspan / raw_number / num_format / formula` + 后补的 `style` / `image` / `chart` / `barcode`。设计器里的彩色是**语义高亮**（`grid-report.ts:661-666`：纵向黄 / 横向绿 / 字段蓝 / 表达式紫斜体 + 表头·选中·主格高亮）—— 标的是「这格什么角色」，不是「这格长什么样」。xlsx 的基础样靠导出器写死。
 - **`GridCell.pos` 保留模板坐标** → 可反查展开后的输出范围。这是「服务端画图表」成立的前提。
-- **⚠️ HTML 预览不画样式**（既有缺口）：`GridCell.style` 的**唯一**生产消费者是 `xlsx.rs:565`；`to_html`（`mod.rs:630`）**不读它** → 作者设的字色/底色/粗斜/对齐/字号**和条件格式**在预览里全看不到，只在导出 xlsx 里出现。**「有人写」≠「有人读」** —— 查链路要从产出物往回找消费点。
 - 已核对**不是**缺口的：表达式函数集（11 个官方 + MAP/FILTER/REDUCE/FLATMAP）全在；`CellModel` 无死字段；分页三配置都生效；多 sheet 导出支持。
 
 ## 对照积木报表的差距分析（`引擎差距分析-对照积木报表.md`）

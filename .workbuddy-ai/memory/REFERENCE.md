@@ -324,13 +324,12 @@ px = round(width_xml × 7)          // 反解**不带 +5**（探针第一版就�
 - 告警**每格一次**，不是每行一次。
 - 编译函数 `compile_conditionals` 是 `pub` 的，单测直接打它（不必绕整个引擎）。
 
-### ⚠️ 只在 xlsx 里看得见（既有缺口）
+### 曾经「只在 xlsx 里看得见」—— 2026-09-22 已修（见 §十五）
 
-全项目**唯一**读 `GridCell.style` 的生产代码是 **`xlsx.rs:565`**；
-**`to_html`（`mod.rs:630`）完全不消费它**（函数体里 `background` / `color` / `font-weight` 零命中）。
-所以条件格式**在 HTML 预览里看不到**，只在导出的 xlsx 里出现。
+改之前：全项目**唯一**读 `GridCell.style` 的生产代码是 `xlsx.rs:565`，
+`to_html` 完全不消费它 → 条件格式**在 HTML 预览里看不到**，只在导出的 xlsx 里出现。
 这不是条件格式引入的 —— `CellStyle` 从做出来那天起就只对 xlsx 生效。
-**教训：「某字段有人写」≠「有人读」**；判断链路通不通要**从产出物往回查消费点**。
+**教训（留着）：「某字段有人写」≠「有人读」**；判断链路通不通要**从产出物往回查消费点**。
 
 ### 探针 / 反证
 
@@ -338,3 +337,75 @@ px = round(width_xml × 7)          // 反解**不带 +5**（探针第一版就�
   所以必须拆包读 `styles.xml`，不能只断言「没报错」）。
 - `scripts/fault-inject-conditional.py`：**15 条**（9 条产品注入 + 4 条 UI + 2 条探针自身），
   15/15 让检查变红，还原后复验全绿。
+
+## 十五、HTML 预览画作者样式（2026-09-22 补上，任务 #74）
+
+改之前：`GridCell.style` 的**唯一**生产消费者是 `xlsx.rs:565`，`to_html` 不读它 →
+`CellStyle`（以及刚做完的条件格式）在预览里全看不到，只在导出的 xlsx 里出现。
+现在：`mod.rs::html_style_attr()` 把它渲染成 `<td style="…">`。
+
+### 字段映射（**顺序即契约**）
+
+`font-weight:bold` · `font-style:italic` · `font-size:{n}pt` · `color` · `background-color`
+· `text-align` · `vertical-align`，用 `;` 连接。顺序 = `css.push` 的顺序。
+字号不用特意处理整数：Rust 对 `f64` 的 `Display` 取「最短可往返表示」，
+`format!("{}", 12.0f64)` 就是 `"12"`（实测）—— 曾写过一个 `fract() == 0.0` 的分支，
+注入驱动证明它是**等价死分支**，已删。
+
+### 三条刻意选的口径
+
+1. **`Some(false)` 不写 `font-weight:normal`**。xlsx 侧 `with_style` 只在 `Some(true)` 时
+   才 `set_bold()` —— `Some(false)` 是**不表态**（保持基础格式），不是「显式不加粗」。
+   这里多写一条 `normal`，同一份模板在预览与导出里就会长得不一样。
+   **后果**：`bold: Some(false)` 单独一项时 `CellStyle` 非空却产不出任何 CSS 字段 →
+   必须返回**空串**（整格不带 `style=`），不能吐 `style=""`。
+2. **`to_html` 现在是 `Result<String, String>`**（原来返回 `String`）。颜色 / 字号在这里
+   校验，**文案与 `xlsx::with_style` 逐字一致**（`格子 C2 的 style.color「red」不是 #RRGGBB`）。
+   静默丢样式 = 作者改半天看不到变化，比报错难查。
+   → **行为变化**：以前预览对坏颜色**不校验、照样 200**（样式被忽略），现在**报错**。
+   这不新增失败面（同一模板本来就导不出 xlsx），但**错误出现的时刻提前了**。
+3. **比 Univer 多画粗体 / 斜体 / 字号 / 对齐** —— 这是**能力**差别不是口径分叉：
+   Univer 只画底色 + 字色，HTML 没这个限制。同一份 `CellStyle` 两边能画的都画。
+
+### 无样式时输出**逐字节不变**
+
+`html_style_attr` 返回空串时 `<td>` 就是 `<td rowspan="1" colspan="1">…</td>`，
+与加这个功能之前一模一样（探针第四节专守这条）。
+
+### 分页那条路也走 `to_html`
+
+`pages_html` 是**另一次** `to_html` 调用（逐页）。任何一页样式非法都整体报错 ——
+否则会出现「预览报错、分页 HTML 悄悄少样式」这种半截结果。
+**既有单测只断言 `pages_html` 里有 `<table`**，抓不住「分页丢样式」→ 靠探针守。
+
+### 副作用：`/api/report/xlsx` 对坏样式的状态码 **500 → 400**（本次改动引入）
+
+同一份模板（`color: "red"`）实测：
+
+| 端点 | 改动前 | 改动后 |
+| --- | --- | --- |
+| `POST /api/report/render` | 200（样式被静默丢掉） | **400** `格子 C2 的 style.color「red」不是 #RRGGBB` |
+| `POST /api/report/xlsx` | **500** | **400**（同一句文案） |
+
+**为什么 xlsx 也变了**：`to_html` 现在会校验，而它在 **`render()` 内部**被调用
+（`mod.rs:192`）；`xlsx_handler` 先 `render_with_sources(...)` 再 `to_xlsx(...)`。
+于是错误在**更早的一步**就冒出来，被 handler 映射成 `BAD_REQUEST`。
+改动前 `to_html` 返回 `String`、不可能失败，所以坏样式一路走到 `to_xlsx` 里的
+`with_style()` 才炸，那时只剩 `INTERNAL_SERVER_ERROR` 一个出口。
+
+**评价**：不是回归（还是报错、文案一字不差），而且**更正确** —— 作者写错颜色本来就该是
+400 而不是 500；顺带把两个端点统一了。副作用是 `to_xlsx` 里那条样式校验的 500 出口
+**变成不可达**（所有样式都已在 render 期验过）。没有任何测试钉住旧状态码（453 条全绿）。
+
+### 探针 / 反证
+
+- `scripts/verify-html-style.py`：真起服务 POST `/api/report/render`，七节 ——
+  样式落到正确的格（含**不串格**、**带 style 的标签只有 td/table**）· 条件格式可见 ·
+  分页也有 · 无样式逐字节不变 · 与转义共存 · `Some(false)`/`middle` 枚举 · 坏样式 400 点名。
+- `scripts/fault-inject-html-style.py`：**14 条**注入，跑**两道门禁**（单测 + 探针）并打印矩阵。
+  `--check-anchors` 秒级校验锚点唯一 —— 必须带上函数签名，因为
+  `.map(Json)` + `.map_err(|e| (StatusCode::BAD_REQUEST, e))` 在 `mod.rs` 里有 **3 处**。
+- **两道门禁覆盖的不是同一批 bug**：`status-500` / `pages-drop-style` **只有探针能抓**
+  （单测直接调 `to_html`，看不见 HTTP 状态码与分页接线）→ 这就是「探针不是摆设」的证据。
+  反过来 `always-attr` / `bold-normal` / `valign-middle` 一开始**只有单测能抓**，
+  补了探针的「六、样式枚举」之后才两道都红。**矩阵本身是结论**，不是过程记录。
