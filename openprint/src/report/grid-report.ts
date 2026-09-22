@@ -179,8 +179,153 @@ export interface CellBarcode {
   gs1?: boolean | null
 }
 
+/**
+ * 服务端认的码制清单（= Rust `SYMBOLOGIES`）。
+ *
+ * 设计器的下拉框从这个清单生成，单测再断言「下拉项 == 这个清单」——
+ * 免得以后服务端加了码制、界面还是老的两项，而**界面上看不出来少了一个**。
+ */
+export const BARCODE_SYMBOLOGIES: readonly BarcodeSymbology[] = ['qr', 'code128']
+
+/**
+ * 各码制的容量上限（**字节**，不是字符）。
+ *
+ * 与 Rust 的 `MAX_QR_BYTES` / `MAX_CODE128_BYTES` 一致，**改一处要改两处**。
+ * 注意按 UTF-8 字节算：一个汉字 3 字节，所以「看起来 100 个字」的二维码
+ * 其实已经超了 213。
+ */
+export const BARCODE_MAX_BYTES: Record<BarcodeSymbology, number> = {
+  /** 版本 10 + 纠错等级 M + 字节模式的上限 */
+  qr: 213,
+  /** Code128 的保守上限（码集与内容相关，见 barcode.rs） */
+  code128: 48,
+}
+
+/**
+ * 归一化码制（与 Rust `normalise_symbology` **同一套别名**）。
+ *
+ * **判据必须与 Rust 保持一致，改一处要改两处。** 空值回落到服务端缺省 `qr`；
+ * 认不出来返回 `null` —— 服务端此时只坏这一格（该格出 `[条码: 原因]` 并告警），
+ * 不整表报错，所以设计器也**只提示、不拦**。
+ */
+export function normaliseSymbology(opt: string | null | undefined): BarcodeSymbology | null {
+  const raw = (opt ?? '').trim().toLowerCase()
+  if (!raw) return 'qr'
+  if (raw === 'qr' || raw === 'qrcode' || raw === 'qr_code' || raw === 'qr-code') return 'qr'
+  if (raw === 'code128' || raw === 'code-128' || raw === 'code_128') return 'code128'
+  return null
+}
+
+/**
+ * `gs1` 只对 Code128 有意义（起始符后插一个 FNC1）。
+ *
+ * 设计器据此决定要不要显示那个开关 —— 码制是 `qr` 时显示一个设了不起作用的开关，
+ * 就是「设了没反应」。服务端同样忽略它（不报错）。
+ */
+export function isGs1Relevant(symbology: string | null | undefined): boolean {
+  return normaliseSymbology(symbology) === 'code128'
+}
+
+/** UTF-8 字节数（`TextEncoder` 不一定有，自己数一遍，与 Rust `str::len()` 同口径） */
+export function utf8ByteLength(s: string): number {
+  let n = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s.codePointAt(i) as number
+    // 代理对占两个 code unit，一次吃掉
+    if (c > 0xffff) i++
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4
+  }
+  return n
+}
+
+/** `CellBarcode.from` 是不是「取本格的值当条码内容」（与服务端同样只认 `value`） */
+export function isValueBarcode(from: string | null | undefined): boolean {
+  return (from ?? '').trim().toLowerCase() === 'value'
+}
+
+/**
+ * 条码声明的「会被服务端拒绝」检查；没问题返回 `null`。
+ *
+ * 为什么设计器要**重算一遍**：这四条判据在 Rust 侧已经有了，但只在**导出/预览时**
+ * 才生效 —— 作者填完要等一次请求才知道填错了。设计器先说，省一轮往返。
+ *
+ * **判据必须与 Rust 保持一致，改一处要改两处。**
+ * 两个方向都要顾：这里更宽 → 设计器放行、导出时才报错；这里更严 →
+ * 服务端明明能编的，在设计器里被拦下。
+ *
+ * 只**提示**不**拦**（与图片那段一致）：服务端是「只坏这一格」，不是整表失败。
+ *
+ * 刻意**不收 `payload` 参数** —— 内容就是声明里的 `value`，让调用方另传一份
+ * 迟早会传岔（`from: value` 时根本不知道内容是什么）。
+ */
+export function barcodeProblem(bc: CellBarcode | null | undefined): string | null {
+  if (!bc) return null
+  const sym = normaliseSymbology(bc.symbology)
+  if (!sym) {
+    return `不认识的码制「${(bc.symbology ?? '').trim()}」，支持：${BARCODE_SYMBOLOGIES.join(' / ')}`
+  }
+  // `from: 'value'` 时内容来自数据，**设计期拿不到** → 只校验码制。
+  // 容量 / ASCII 那几条要等展开完才知道，只能由服务端判。
+  if (isValueBarcode(bc.from)) return null
+  const payload = bc.value ?? ''
+  if (!payload) return '条码内容为空'
+  if (sym === 'code128') {
+    // 顺序与 Rust `code128_pick_set` 严格一致，否则同一份内容两边结论会不同
+    const cps = [...payload].map((ch) => ch.codePointAt(0) as number)
+    if (cps.some((c) => c > 0x7f)) return 'Code128 只收 ASCII，中文 / 全角请改用二维码'
+    const hasControl = cps.some((c) => c < 0x20)
+    if (hasControl && cps.some((c) => c > 0x5f)) {
+      return '内容里既有控制字符（只有码集 A 能表示）又有大写字母 / 符号（只有码集 B 能表示），一个码集装不下'
+    }
+    if (cps.includes(0x7f)) return 'Code128 表示不了 DEL(0x7F)'
+  }
+  const n = utf8ByteLength(payload)
+  const max = BARCODE_MAX_BYTES[sym]
+  if (n > max) {
+    return sym === 'code128'
+      ? `内容 ${n} 字节，超过排版上限 ${max} 字节（Code128 不是装不下，是列里画不下）`
+      : `内容 ${n} 字节，超过 ${sym} 的上限 ${max} 字节`
+  }
+  return null
+}
+
 /** 服务端认的图表类型（= Rust 侧 `resolve_chart` 的白名单） */
 export type CellChartKind = 'bar' | 'line' | 'pie'
+
+/**
+ * 图表类型清单（= Rust `resolve_chart` 的白名单）。
+ *
+ * 设计器的下拉框从这个清单生成，单测再断言「下拉项 == 这个清单」——
+ * 免得以后服务端加了类型、界面还是老的三项，而**界面上看不出来少了一个**。
+ */
+export const CHART_KINDS: readonly CellChartKind[] = ['bar', 'line', 'pie']
+
+/**
+ * 图表声明的「会被服务端拒绝」检查；没问题返回 `null`。
+ *
+ * 与 `barcodeProblem` 同一套路：判据在 Rust 侧已有，但那要等一次请求才生效，
+ * 设计器先说省一轮往返。**只提示不拦** —— 服务端是「只坏这一格」。
+ *
+ * 最常填错的是**把数据格的位置填成了值**（比如 `categories: ['华东']`）——
+ * 这里填的是**模板坐标**（`A3`），所以先校验形状，再让服务端判坐标存不存在。
+ */
+export function chartProblem(ch: CellChart | null | undefined): string | null {
+  if (!ch) return null
+  if (ch.kind && !CHART_KINDS.includes(ch.kind as CellChartKind)) {
+    return `不认识的图表类型「${ch.kind}」，支持：${CHART_KINDS.join(' / ')}`
+  }
+  const cats = (ch.categories ?? []).map((c) => c.trim()).filter(Boolean)
+  const series = (ch.series ?? []).filter((s) => (s?.from ?? '').trim())
+  if (series.length === 0) return '至少要配一条数据序列（填数值所在格的模板坐标，如 B3）'
+  const badPos = [...cats, ...series.map((s) => s.from.trim())].find((p) => parsePos(p) === null)
+  if (badPos) return `「${badPos}」不像模板坐标（应形如 A3）`
+  if (series.length > 1 && (ch.kind ?? 'bar') === 'pie') {
+    return '饼图只用第一条序列，配多条会被服务端拒绝'
+  }
+  // 类目数留空是允许的（服务端用序号 1、2…）。
+  // 「类目数 == 每条序列的点数」只能等展开完才知道，那是服务端的活，这里判不了。
+  return null
+}
 
 /**
  * 图表格：这格不出文本，出一张图表（柱状 / 折线 / 饼图）。

@@ -72,7 +72,20 @@ import {
   validateTemplate,
   isValueImage,
   parseImageDataUri,
+  BARCODE_MAX_BYTES,
+  BARCODE_SYMBOLOGIES,
+  barcodeProblem,
+  chartProblem,
+  CHART_KINDS,
+  isGs1Relevant,
+  isValueBarcode,
+  normaliseSymbology,
+  utf8ByteLength,
   type AggType,
+  type CellBarcode,
+  type CellChart,
+  type CellChartKind,
+  type CellChartSeries,
   type CellFormatSpec,
   type CellImage,
   type CellModel,
@@ -116,6 +129,19 @@ const FORMAT_KIND_OPTIONS: Array<{ label: string; value: string }> = [
   { label: '货币', value: 'currency' },
   { label: '百分比', value: 'percent' },
 ]
+
+/**
+ * 图表类型的中文名。
+ *
+ * 键类型是 `CellChartKind`（不是 string）—— 这样引擎层哪天加了新类型，
+ * 这里会**编译不过**，而不是静默少一个下拉项（下拉项由 `CHART_KINDS` 生成，
+ * 两边共用同一份名单，避免「能选但没标签」）。
+ */
+const CHART_KIND_LABEL: Record<CellChartKind, string> = {
+  bar: '柱状图',
+  line: '折线图',
+  pie: '饼图',
+}
 
 const CURRENCY_OPTIONS = [
   { label: '¥ CNY', value: 'CNY' },
@@ -907,6 +933,296 @@ export function CellModelEditor({
             {byValue && (
               <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                 取本格算出来的值当图片源：下面填的字段（如 photo）里每行存一个 data URI。
+              </Typography.Text>
+            )}
+          </>
+        )
+      })()}
+
+      {/*
+        三个「非文本格子」的优先级：**图片 > 图表 > 条码**。
+
+        服务端只出一个，被盖住的**连编都不编**（并进 `warnings`）。但界面上是三个
+        各管各的开关 —— 不说一句的话，作者同时设了条码和图片，会以为两个都出，
+        导出后才发现条码没了。这是「设了没反应」那一类，必须显式提示。
+      */}
+      {(() => {
+        const kinds = [m?.image ? '图片' : '', m?.chart ? '图表' : '', m?.barcode ? '条码' : '']
+          .filter(Boolean)
+        if (kinds.length < 2) return null
+        return (
+          <Typography.Text
+            type="warning"
+            style={{ fontSize: 11 }}
+            data-testid="free-cell-graphic-conflict"
+          >
+            这格同时设了{kinds.join(' / ')}，导出时只出「{kinds[0]}」，其余不会出现
+          </Typography.Text>
+        )
+      })()}
+
+      {/*
+        条码格：这格不出文本，出条码 / 二维码。
+
+        与图片格的差别是**内容从哪来**：图片是作者给的（一段 data URI），
+        条码是**本格自己的文本**编码出来的 —— 所以「取本格的值」才是主场景
+        （一列订单号，每行一个条码），在展开行里的行为跟图片同构。
+
+        码制刻意只有两种（QR + Code128）：覆盖标签 / 单据的绝大多数场景。
+        没有 HRI（条码下方的人可读文字）—— HTML 侧画得出来、位图侧画不出来，
+        两边不一致比两边都没有更糟。
+      */}
+      {(() => {
+        const bc = m?.barcode ?? undefined
+        const byValue = isValueBarcode(bc?.from)
+        const sym = normaliseSymbology(bc?.symbology) ?? 'qr'
+        const problem = barcodeProblem(bc)
+        return (
+          <>
+            <Space wrap size="small" align="center">
+              <Tooltip title="这格画成条码 / 二维码而不是文本。服务端自己编码，不需要客户端给图">
+                <Typography.Text style={{ fontSize: 12 }}>条码</Typography.Text>
+              </Tooltip>
+              <Select
+                size="small"
+                style={{ width: 118 }}
+                placeholder="不出码"
+                value={bc ? (byValue ? 'value' : 'literal') : ''}
+                options={[
+                  { label: '不出码', value: '' },
+                  { label: '固定内容', value: 'literal' },
+                  { label: '取本格的值', value: 'value' },
+                ]}
+                onChange={(v: string) => {
+                  if (!v) {
+                    patch({ barcode: undefined })
+                    return
+                  }
+                  patch({
+                    barcode: {
+                      from: v as CellBarcode['from'],
+                      value: bc?.value ?? '',
+                      symbology: bc?.symbology ?? 'qr',
+                      gs1: bc?.gs1,
+                    },
+                  })
+                }}
+                data-testid="free-cell-barcode-from"
+              />
+              {/* 没配码时不出内容框：留个空框在那儿，作者会以为已经配上了 */}
+              {!!bc && !byValue && (
+                <Input
+                  size="small"
+                  style={{ width: 220 }}
+                  placeholder="要编码的内容，如 SO-2026-0001"
+                  value={bc.value ?? ''}
+                  onChange={(e) =>
+                    patch({ barcode: { ...bc, from: 'literal', value: e.target.value } })
+                  }
+                  data-testid="free-cell-barcode-value"
+                />
+              )}
+              {!!bc && (
+                <Select
+                  size="small"
+                  style={{ width: 108 }}
+                  value={sym}
+                  options={BARCODE_SYMBOLOGIES.map((s) => ({
+                    label: s === 'qr' ? '二维码' : 'Code128',
+                    value: s,
+                  }))}
+                  onChange={(v: string) => {
+                    // 切到二维码时把 gs1 摘掉：它对 QR 没有意义，留着就是
+                    // 一个「设了不起作用」的开关（服务端同样忽略它）
+                    const next: CellBarcode = { ...bc, symbology: v as CellBarcode['symbology'] }
+                    if (!isGs1Relevant(v)) next.gs1 = undefined
+                    patch({ barcode: next })
+                  }}
+                  data-testid="free-cell-barcode-sym"
+                />
+              )}
+              {/* gs1 只对 Code128 有意义 —— 码制是二维码时不显示这个开关 */}
+              {!!bc && isGs1Relevant(sym) && (
+                <Tooltip title="GS1-128：起始符后插一个 FNC1。只有 Code128 有意义">
+                  <Space size={4}>
+                    <Switch
+                      size="small"
+                      checked={!!bc.gs1}
+                      onChange={(v) => patch({ barcode: { ...bc, gs1: v || undefined } })}
+                      data-testid="free-cell-barcode-gs1"
+                    />
+                    <Typography.Text style={{ fontSize: 12 }}>GS1</Typography.Text>
+                  </Space>
+                </Tooltip>
+              )}
+              {/* 字节数常显：213 的上限按 UTF-8 算，一个汉字 3 字节，很容易超 */}
+              {!!bc && !byValue && !!bc.value && (
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  {utf8ByteLength(bc.value)} / {BARCODE_MAX_BYTES[sym]} 字节
+                </Typography.Text>
+              )}
+            </Space>
+            {!!problem && (
+              <Typography.Text
+                type="warning"
+                style={{ fontSize: 11 }}
+                data-testid="free-cell-barcode-problem"
+              >
+                {problem}
+              </Typography.Text>
+            )}
+            {byValue && (
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                取本格算出来的值当条码内容：下面填的字段（如 order_no）里每行一个值，
+                展开后**每行一个条码**。容量 / 字符集要等数据出来才知道，由服务端判。
+              </Typography.Text>
+            )}
+          </>
+        )
+      })()}
+
+      {/*
+        图表格：这格不出文本，出一张图表。
+
+        数据来源填的是**模板坐标**（`A3`）而不是输出行列 —— 图表画的是展开之后的
+        数据（3 个地区 → 3 根柱子），而作者写模板时只知道模板坐标。服务端靠
+        `GridCell.pos` 反查「A3 展开成了哪几个格」。
+
+        这一条是最容易填错的，所以提示写在明面上：填成「华东」这种值会不生效。
+      */}
+      {(() => {
+        const ch: CellChart | undefined = m?.chart ?? undefined
+        const problem = chartProblem(ch)
+        const series: CellChartSeries[] = ch?.series ?? []
+        const setSeries = (next: CellChartSeries[]): void => {
+          patch({ chart: { ...(ch ?? { kind: 'bar' }), series: next } })
+        }
+        return (
+          <>
+            <Space wrap size="small" align="center">
+              <Tooltip title="这格画成图表而不是文本。数据从别的格子读，所以要填那些格子的模板坐标">
+                <Typography.Text style={{ fontSize: 12 }}>图表</Typography.Text>
+              </Tooltip>
+              <Select
+                size="small"
+                style={{ width: 118 }}
+                placeholder="不出图"
+                value={ch?.kind ?? ''}
+                options={[
+                  { label: '不出图', value: '' },
+                  ...CHART_KINDS.map((k) => ({ label: CHART_KIND_LABEL[k], value: k })),
+                ]}
+                onChange={(v: string) => {
+                  if (!v) {
+                    patch({ chart: undefined })
+                    return
+                  }
+                  patch({
+                    chart: {
+                      ...(ch ?? {}),
+                      kind: v as CellChartKind,
+                      categories: ch?.categories ?? [],
+                      series: ch?.series?.length ? ch.series : [{ from: '' }],
+                    },
+                  })
+                }}
+                data-testid="free-cell-chart-kind"
+              />
+              {!!ch && (
+                <>
+                  <Tooltip title="类目来源：模板坐标列表，用逗号分隔，如 A3。留空则用序号 1、2…">
+                    <Typography.Text style={{ fontSize: 12 }}>类目</Typography.Text>
+                  </Tooltip>
+                  <Input
+                    size="small"
+                    style={{ width: 120 }}
+                    placeholder="A3"
+                    value={(ch.categories ?? []).join(',')}
+                    onChange={(e) =>
+                      patch({
+                        chart: {
+                          ...ch,
+                          categories: e.target.value
+                            .split(',')
+                            .map((s) => s.trim())
+                            .filter(Boolean),
+                        },
+                      })
+                    }
+                    data-testid="free-cell-chart-categories"
+                  />
+                  <Input
+                    size="small"
+                    style={{ width: 140 }}
+                    placeholder="图表标题（可空）"
+                    value={ch.title ?? ''}
+                    onChange={(e) =>
+                      patch({ chart: { ...ch, title: e.target.value || undefined } })
+                    }
+                    data-testid="free-cell-chart-title"
+                  />
+                </>
+              )}
+            </Space>
+            {!!ch &&
+              series.map((s, i) => (
+                <Space key={i} size={4} align="center">
+                  <Input
+                    size="small"
+                    style={{ width: 96 }}
+                    placeholder="序列名"
+                    value={s.name ?? ''}
+                    onChange={(e) =>
+                      setSeries(
+                        series.map((x, j) =>
+                          j === i ? { ...x, name: e.target.value || undefined } : x,
+                        ),
+                      )
+                    }
+                    data-testid={`free-cell-chart-series-name-${i}`}
+                  />
+                  <Input
+                    size="small"
+                    style={{ width: 96 }}
+                    placeholder="数值坐标 B3"
+                    value={s.from}
+                    onChange={(e) =>
+                      setSeries(series.map((x, j) => (j === i ? { ...x, from: e.target.value } : x)))
+                    }
+                    data-testid={`free-cell-chart-series-from-${i}`}
+                  />
+                  <Button
+                    size="small"
+                    danger
+                    onClick={() => setSeries(series.filter((_, j) => j !== i))}
+                    data-testid={`free-cell-chart-del-series-${i}`}
+                  >
+                    删
+                  </Button>
+                </Space>
+              ))}
+            {!!ch && (
+              <Button
+                size="small"
+                onClick={() => setSeries([...series, { from: '' }])}
+                data-testid="free-cell-chart-add-series"
+              >
+                加序列
+              </Button>
+            )}
+            {!!problem && (
+              <Typography.Text
+                type="warning"
+                style={{ fontSize: 11 }}
+                data-testid="free-cell-chart-problem"
+              >
+                {problem}
+              </Typography.Text>
+            )}
+            {!!ch && (
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                类目和数值都填**模板坐标**（如 A3、B3），不是格子里的值 ——
+                服务端会把它们展开后的数据取出来。类目数与每序列的点数必须相等。
               </Typography.Text>
             )}
           </>
