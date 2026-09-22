@@ -3,7 +3,7 @@
 引擎：Rust `print-server`（非线性报表展开 + 服务端导出）+ TS `openprint`（引擎层，被 designer-react alias 引用）+ `designer-react`（UI）。
 
 > **细节在 `REFERENCE.md`**（验证方法论 / 沙箱 / 硬事实 / UI 测试配方 / Excel 单位 / 图片·图表·条码·odbc·票据）。需要时读它，别凭记忆。
-> 本文件只放「几乎每个任务都用得上」的东西，**必须保持在 ~12KB 以内** —— 超了会在注入时被截断，等于后半段不存在。
+> 本文件只放「几乎每个任务都用得上」的，**必须 ≤12KB** —— 超了注入时会被截断，等于后半段不存在。
 
 ## 三个「表格」不是一回事（问「能不能合到 Univer」前先分清）
 
@@ -47,11 +47,11 @@
 | --- | --- | --- |
 | 图片 | 有 | **有**（`CellTpl.image` / `CellModel.image`，只收 data URI） |
 | 样式（字色/底色/粗斜/字号/对齐） | 有 | **有**（`CellStyle`） |
-| 条码 / 二维码 | 有（`PrintQrcode`、`data-binder` barcode） | **有**（`CellTpl.barcode`；自研编码器 QR + Code128，HTML 出内联 SVG、xlsx 嵌 **1 位灰度位图**） |
-| 图表 | 有，**自研** `openprint/src/core/chartkit`（bar/line/pie，纯函数出 SVG、零第三方依赖） | **有**（`CellTpl.chart`；声明的是**模板坐标**不是数据；HTML 出内联 SVG，xlsx 嵌**原生可编辑**图表） |
+| 条码 / 二维码 | 有（`PrintQrcode`、`data-binder` barcode） | **有**（`CellTpl.barcode`；自研 QR + Code128 编码器） |
+| 图表 | 有，**自研** `openprint/src/core/chartkit`（bar/line/pie，纯函数出 SVG、零第三方依赖） | **有**（`CellTpl.chart`；声明**模板坐标**不是数据；xlsx 嵌**原生可编辑**图表） |
 | 导出 | 客户端 `export-engine/`（PDF/SVG/图片） | 服务端 xlsx / HTML / CSV |
 
-**教训**：判断某能力有没有，**先 grep 源码，别先看依赖清单**（`package.json` 里没第三方图表库 ≠ 没有图表能力 —— 图表是自己写的）。
+**教训**：判断某能力有没有，**先 grep 源码，别先看依赖清单**（没第三方图表库 ≠ 没有图表能力 —— 是自己写的）。
 
 ## 数据源现状
 
@@ -65,7 +65,7 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 - **MySQL / MariaDB / SQL Server / Oracle 明确报错**：`unsupported_engine_name()`。注意 `ServerConfig::load()` **不调 `validate()`**（只有保存/试连调），手改配置写 mysql 会报误导性的「sqlite 文件不存在」。
 - **格子图片**：`CellTpl.image` / `CellModel.image`（**两个槽都认**）→ `GridCell.image` → xlsx 真嵌入 + HTML `<img>`。只收 data URI（不做文件路径：模板可被导入分享，读本地文件 = 任意文件读取原语）。探针 `verify-xlsx-image.py` + 反证 `fault-inject-image-probe.py`（6 条）。
 - **图表格**：`CellTpl.chart` / `CellModel.chart`（两个槽都认）→ `GridCell.chart` → HTML 内联 SVG + xlsx **原生图表**。声明的是**模板坐标**（`categories: ["A3"]`），整个网格填完后才解析。三条硬约定：**一个声明只画一份**（行展开会复制，**图片 / 条码相反**）· **空值是空档不是 0** · xlsx 的数写在**表格下方的隐藏列** → 图表是**导出那一刻的快照**。细节 §十。探针 `verify-xlsx-chart.py` + 反证（10 条）。
-- **条码 / 二维码**（B2 收口）：`CellTpl.barcode` / `CellModel.barcode`（两个槽都认）→ `GridCell.barcode` → HTML 内联 SVG + xlsx **1 位灰度位图**（xlsx 只收位图 → 手写了零依赖 PNG 编码器）。编码器自研：QR（**字节模式 + ECC M + v1~10**，上限 213 字节）+ Code128 全表。**展开行里 N 行出 N 个**（同图片，**反图表**）。优先级 `图片 > 图表 > 条码` 收成**一个判据** `GridCell::graphic()`。细节 §十一。探针 `verify-barcode.py` / `verify-xlsx-barcode.py` + 反证（13 条）。
+- **条码 / 二维码**（B2 收口）：`CellTpl.barcode` / `CellModel.barcode`（两个槽都认）→ `GridCell.barcode` → HTML 内联 SVG + xlsx **1 位灰度位图**（xlsx 只收位图 → 手写了零依赖 PNG 编码器）。编码器自研：QR（**字节模式 + ECC M + v1~10**，上限 213 字节）+ Code128 全表。**展开行里 N 行出 N 个**（同图片，**反图表**）。优先级 `图片 > 图表 > 条码` 收成**一个判据** `GridCell::graphic()`。细节 §十一。探针 `verify-barcode.py` / `verify-xlsx-barcode.py` + 反证（13 条）。**设计器面板已接上**（`CellModelEditor`「条码」「图表」两段；判据 `barcodeProblem`/`chartProblem` 与 Rust 同口径，改一处要改两处）。
 - **ODBC 引擎**（八项缺口最后一项，至此全清）：`db_odbc.rs`，可选 feature。
 - **票据 / 标签指令**：`/print` 的 `esc` / `tsc` / `zpl` 已实现。
 - **报表参数**：`ReportDef.params` + `RunRequest.values`（按名字绑）；与老 `RunRequest.params`（数据集名 → 位置参数数组）是两条通道。未知 / 必填缺失 / 引用解析不出值**一律报错**，且**未知参数检查必须先于必填检查**（否则 typo 被报成「region 必填」）。

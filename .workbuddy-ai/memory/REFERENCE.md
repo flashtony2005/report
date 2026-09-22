@@ -19,6 +19,14 @@
 2. 解析 `test result:` 行，**`0 passed` 一律算「没验到」**，不能只看退出码。
 - **注入全绿先怀疑注入，不是怀疑代码**（有一条真的绿：宽度驱动 + 高度夹取在缩小场景下与 min-fit 等价，只差在放不放大）。
 
+**两道类型门禁强度不同 —— `ts-check.sh` 过了不等于类型没问题**（2026-09-22 实测）：
+- `scripts/ts-check.sh` 是 `tsc --noResolve`，**import 全退化成 `any`** → **跨文件**的类型错
+  它**结构上看不见**。本次它在 spec 上「无类型错误」，而同一天 `tsc -p designer-react/tsconfig.json`
+  在同一个文件里报出 **2 处真错**（`'code39'` 不满足 `BarcodeSymbology`、`CellBarcode` 缺必填 `value`）。
+- 所以**两个都要跑**：`ts-check.sh`（快、覆盖 report 目录、带 `--noUnusedLocals` 抓没用的 import）
+  + `tsc -p designer-react/tsconfig.json`（真解析，抓跨文件）。后者要挂 preload，否则 SIGTERM(137)。
+- 判据：**只跑 `--noResolve` 就宣称「类型干净」是过度自信**。
+
 **xlsx 导出六步套路**（已跑四遍，完整版见 skill `xlsx-export-verify`）：抽纯函数 → 数值单测 → ≥3 次故障注入 → 真机探针拆 zip → handler 级注入单独一次 → 探针自身也做注入。项目特有的三条：
 - 抽纯函数（`column_widths` / `lines_needed` / `header_row_count`）才有得测 —— 导出物是 zip，**Rust 侧断言读不到内容**，只能断言「不报错」等于没测。
 - **handler 级注入要单独做**：注入 `xlsx_handler` 后 sample 探针**仍然绿**（走 `sample_xlsx_handler`，另一条路）—— 一个探针守不住全部导出路径。
@@ -242,3 +250,39 @@ px = round(width_xml × 7)          // 反解**不带 +5**（探针第一版就�
 - 省语言包 → `LocaleService` 没初始化，一改格子就在 `SheetPermissionCheckController` 抛错，**界面完全看不出来**。
 - `presets: []` 要占位。
 配方见 `designer-react/src/.../univerFormulaFree.ts` 顶部注释。
+
+---
+
+## 十三、设计器面板：条码 / 图表两段（2026-09-22 补上）
+
+`designer-react/src/modals/GridReportModal.tsx` 的 `CellModelEditor` 里，照「图片」段的写法
+加了「条码」「图表」两段 —— 在这之前这两项**只能手改 JSON**，引擎能力在 UI 上摸不到。
+
+### 设计期判据在 `openprint/src/report/grid-report.ts`（**与 Rust 同口径**）
+
+`barcodeProblem(bc)` / `chartProblem(ch)` 是**纯函数**：只吃声明、不吃数据，返回提示串或 `null`。
+刻意**只提示不拦** —— 服务端的失败粒度是**一格**（该格出 `[条码: 原因]` 并告警），
+设计器拦成「整表不让存」会比服务端更严，等于擅自加规则。
+
+- `barcodeProblem` **不收 `payload` 参数**：内容就是声明里的 `value`，让调用方另传一份迟早传岔。
+  `from: 'value'` 时**直接返回 `null`** —— 内容运行期才从数据里来，设计期无从判断。
+  Code128 那支的检查顺序**必须照抄 Rust `code128_pick_set`**（非 ASCII → 控制符与 `>0x5F` 冲突 → DEL → 字节数）。
+- `chartProblem` 用**已有的 `parsePos()`** 判坐标形状（别自己写正则 —— 我第一版就凭空造了个 `POS_RE`，它不存在）。
+  `CellChart.kind` 的类型是 `string`（**故意开着的**：手写 JSON 能塞任何值，白名单在运行期判），
+  但下拉项的**名单**来自 `CHART_KINDS` + `CHART_KIND_LABEL`（`Record<CellChartKind, string>`，
+  引擎哪天加了新类型这里**编译不过**，而不是静默少一项）。
+
+### 两段都有「摘字段」语义
+
+选「不出码 / 不出图」时要把 `model.barcode` / `model.chart` **整个摘掉**，
+不能留 `{value:''}` —— 服务端会当成「配了码但配错了」，出一格 `[条码: 条码内容为空]`。
+`gs1` 只对 Code128 有意义：二维码时**不显示**这个开关，且切回二维码要把已有的 `gs1` 摘掉
+（否则它静默留在模板里，设了没反应）。
+
+### 用例与反证
+
+`grid-report-cell-barcode.spec.tsx`（18 条）/ `grid-report-cell-chart.spec.tsx`（17 条）。
+断言一律看 `onChange` 收到的 **model**，不断言「没报错」—— 本文件关心的恰恰是
+「UI 动了但 model 没变」这类静默失效。
+`scripts/fault-inject-ui-panel.py` 注入 **10 条**（摘字段 / 显示条件错 / 漏校验 / 语义错 / 优先级错），
+10 条全部让用例变红，还原后复验全绿。
