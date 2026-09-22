@@ -603,6 +603,152 @@ fn agg_of_numbers(n: &Numbers, func: &str) -> f64 {
 /// 格子没写 `ds` 时默认读的数据集名字
 pub const DEFAULT_DS: &str = "ds1";
 
+/// 一条**编译好**的条件格式规则（声明已解析、已校验、可以直接比）。
+///
+/// 与 `CellConditional` 的关系是「结果 vs 声明」，正如 `ResolvedChart` 之于 `CellChart`：
+/// 声明里字段全是 `Option`、`when` 还是字符串，编译后才是能直接比的 `(op, a, b, style)`。
+///
+/// **编译只做一次**（每个模板格一次），而不是每个展开实例一次 —— 否则一条坏规则
+/// 会在告警里重复 N 遍（N = 该格展开出来的行数），作者根本看不出是同一件事。
+#[derive(Debug, Clone)]
+pub struct CondRule {
+    pub op: CondOp,
+    /// 比较值；`between` / `not_between` 时是区间**下界**
+    pub a: f64,
+    /// 区间**上界**，只有 `between` / `not_between` 会用到
+    pub b: f64,
+    /// 命中后逐字段覆盖到本格样式上的样式（保证非空，空样式在编译期就被刷掉了）
+    pub style: CellStyle,
+}
+
+/// 编译一个模板格上的 `conditional` 声明，返回 `(可用规则, 告警)`。
+///
+/// 坏规则**丢进告警而不是让整表失败**：服务端的失败粒度是**一格**
+/// （与图片 / 图表 / 条码一致），一条规则写错不该让整张表出不来。
+/// 但**绝不静默跳过** —— 静默跳过就是「规则配了、导出后什么都没变」，最难查。
+///
+/// 为什么空样式的规则要**丢掉**而不是留着：判定是「第一条命中的生效」，
+/// 留一条命中却什么也不改的规则会把**后面**真正想生效的规则挡掉。
+/// 那比报错难查得多，所以宁可丢 + 告警。
+pub fn compile_conditionals(decl: &[CellConditional], pos: &str) -> (Vec<CondRule>, Vec<String>) {
+    let mut out: Vec<CondRule> = Vec::new();
+    let mut warns: Vec<String> = Vec::new();
+    for (i, d) in decl.iter().enumerate() {
+        // 序号按人眼从 1 数：告警要能直接对上设计器里那一行
+        let n = i + 1;
+        let op = match CondOp::parse(d.when.as_deref()) {
+            Ok(op) => op,
+            Err(e) => {
+                warns.push(format!("{pos} 的条件格式第 {n} 条没生效：{e}"));
+                continue;
+            }
+        };
+        let Some(a) = d.value else {
+            warns.push(format!(
+                "{pos} 的条件格式第 {n} 条没生效：比较方式「{}」需要 value，但没写",
+                op.name()
+            ));
+            continue;
+        };
+        let mut a = a;
+        let mut b = a;
+        if op.needs_second() {
+            match d.value2 {
+                Some(v) => b = v,
+                None => {
+                    warns.push(format!(
+                        "{pos} 的条件格式第 {n} 条没生效：{} 要 value 和 value2 两个值",
+                        op.name()
+                    ));
+                    continue;
+                }
+            }
+            if a > b {
+                // 上下界写反 → 区间为空 → **永远不命中**。这正是「规则看着配了、
+                // 导出后什么都没变」那一类，所以告警并交换，而不是照算。
+                warns.push(format!(
+                    "{pos} 的条件格式第 {n} 条：{}(value={a}, value2={b}) 的上下界写反了，已自动交换",
+                    op.name()
+                ));
+                std::mem::swap(&mut a, &mut b);
+            }
+        } else if d.value2.is_some() {
+            // 静默忽略 = 作者以为在按区间比，其实只用了下界
+            warns.push(format!(
+                "{pos} 的条件格式第 {n} 条：value2 只对 between / not_between 有意义，已忽略"
+            ));
+        }
+        let style = d.style.clone().unwrap_or_default();
+        if style.is_empty() {
+            warns.push(format!(
+                "{pos} 的条件格式第 {n} 条没生效：没有样式（style 为空），命中也不会改变外观"
+            ));
+            continue;
+        }
+        out.push(CondRule { op, a, b, style });
+    }
+    (out, warns)
+}
+
+/// 整张 sheet 的条件格式规则：(模板行, 模板列) -> 规则列表。
+///
+/// 按 `(行, 列)` 而不是按 `pos` 索引：`pos` 可以手写、可以重复，
+/// 而实例的 `tpl_row` / `tpl_col` 精确指向**哪一个模板格**。
+fn compile_sheet_conditionals(
+    sheet: &SheetTpl,
+) -> (BTreeMap<(usize, usize), Vec<CondRule>>, Vec<String>) {
+    let mut map: BTreeMap<(usize, usize), Vec<CondRule>> = BTreeMap::new();
+    let mut warns: Vec<String> = Vec::new();
+    for (r, row) in sheet.rows.iter().enumerate() {
+        for (c, cell) in row.cells.iter().enumerate() {
+            let Some(decl) = cell.model.as_ref().and_then(|m| m.conditional.as_ref()) else {
+                continue;
+            };
+            if decl.is_empty() {
+                continue;
+            }
+            let pos = tpl_pos(cell, r, c);
+            let (rules, w) = compile_conditionals(decl, &pos);
+            warns.extend(w);
+            if !rules.is_empty() {
+                map.insert((r, c), rules);
+            }
+        }
+    }
+    (map, warns)
+}
+
+/// 把条件格式叠到本格样式上，返回最终该带出去的样式。
+///
+/// **`num` 是 `None` 时一条规则都不命中** —— 空值 / 布尔 / 认不出数字的文本格
+/// 都没有可比数值。硬把文本猜成数字会引入「`-` 当 0 用」这类静默错误，
+/// 而报表里「空着」和「就是 0」是两回事。见 `CellModel::conditional` 的注释：
+/// 这是刻意选的语义，不是漏判。
+///
+/// 注意传进来的 `num` 是**算出来的值**（`as_number(inst.value)`），不是套过显示格式的
+/// `text` —— `1,234.50` / `12%` 那种文本反解会算错，与图表格 `source_number` 同一个道理。
+///
+/// 命中后是**逐字段覆盖**（`merged_over`），不是整格替换：条件格式通常只想改字色，
+/// 整格替换会把作者设的粗体 / 对齐一起抹掉。
+fn apply_conditional(
+    base: Option<CellStyle>,
+    rules: &[CondRule],
+    num: Option<f64>,
+) -> Option<CellStyle> {
+    let Some(x) = num else {
+        return base.filter(|s| !s.is_empty());
+    };
+    for r in rules {
+        // **自上而下，第一条命中的生效** —— 顺序是语义的一部分，
+        // 所以设计器里显示序号并支持上下移动。
+        if r.op.test(x, r.a, r.b) {
+            let merged = base.clone().unwrap_or_default().merged_over(&r.style);
+            return Some(merged).filter(|s| !s.is_empty());
+        }
+    }
+    base.filter(|s| !s.is_empty())
+}
+
 pub struct Engine {
     insts: Vec<CellInst>,
     /// 本 sheet 可用的数据集：一个 sheet 可以有**多个**（每个数据源一条 SQL）。
@@ -833,6 +979,14 @@ impl Engine {
         // 「向左扫到的相邻格有没有父格」要读它，而且必须是**解析后**的值。
         let (mut resolved_row, mut resolved_col) = resolve_parents(sheet);
         apply_default_parents(sheet, &mut resolved_row, &mut resolved_col);
+
+        // ---- 阶段 0.5：编译条件格式规则 ----
+        //
+        // 放在这里（而不是每个实例各自编译一遍）有两个原因：
+        // 1. 一条坏规则只该告警**一次**，不是每行一次；
+        // 2. 编译结果按 `(tpl_row, tpl_col)` 索引，阶段 4 填格时按实例的模板坐标查表。
+        let (conds, cond_warns) = compile_sheet_conditionals(sheet);
+        self.warnings.extend(cond_warns);
 
         // ---- 阶段 1：按模板顺序（行升序、列升序）展开，父格必然先于子格 ----
         for (r, row) in sheet.rows.iter().enumerate() {
@@ -1120,9 +1274,18 @@ impl Engine {
                 raw_number: num,
                 num_format: inst.format.as_ref().and_then(excel_num_format),
                 formula,
-                // 全空的样式不往下带（`skip_serializing_if` 也不发），省得导出器
-                // 为每个格子都判一遍「是不是设了样」
-                style: inst.style.clone().filter(|s| !s.is_empty()),
+                // 作者样式 + 条件格式。条件格式按本格**算出来的值**挑规则
+                // （`as_number(inst.value)` —— 数字格就是 `raw_number` 那个数，
+                // 文本数值如 `"1,234.5"` 也认，解析不出来的文本 / 空值不参与比较），
+                // 逐字段覆盖在作者样式之上。
+                //
+                // 样式是**唯一**的样式通道：条件格式不另开渲染路径，
+                // 只是在这一步决定把哪份样式放进这个槽（见 CellModel::conditional）。
+                style: apply_conditional(
+                    inst.style.clone(),
+                    conds.get(&(inst.tpl_row, inst.tpl_col)).map(|v| v.as_slice()).unwrap_or(&[]),
+                    as_number(inst.value.clone()),
+                ),
                 image,
                 // 图表要等**整个网格填完**才能解析（它读的是别的格子），
                 // 所以这里先留空，由 `expand_sheet` 末尾的 `resolve_charts` 补上。
@@ -3562,6 +3725,7 @@ mod parent_tests {
             row_test_expr: None,
             col_test_expr: None,
             export_formula: None,
+            conditional: None,
             join_on: None,
             style: None,
             chart: None,

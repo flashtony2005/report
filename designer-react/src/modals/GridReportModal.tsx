@@ -77,6 +77,11 @@ import {
   barcodeProblem,
   chartProblem,
   CHART_KINDS,
+  conditionalProblem,
+  conditionOpNeedsSecond,
+  normaliseConditionOp,
+  CONDITION_OPS,
+  CONDITION_OP_LABEL,
   isGs1Relevant,
   isValueBarcode,
   normaliseSymbology,
@@ -86,6 +91,8 @@ import {
   type CellChart,
   type CellChartKind,
   type CellChartSeries,
+  type CellConditional,
+  type ConditionOp,
   type CellFormatSpec,
   type CellImage,
   type CellModel,
@@ -1223,6 +1230,192 @@ export function CellModelEditor({
               <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                 类目和数值都填**模板坐标**（如 A3、B3），不是格子里的值 ——
                 服务端会把它们展开后的数据取出来。类目数与每序列的点数必须相等。
+              </Typography.Text>
+            )}
+          </>
+        )
+      })()}
+
+      {/*
+        条件格式：**按本格算出来的数值**改样式（「数值超标标红」）。
+
+        为什么不做成新的渲染通道：`CellStyle` 早就端到端通了
+        （`CellModel.style` → `CellInst.style` → `GridCell.style` → xlsx `with_style()`
+        叠加在基础格式上）。条件格式只是决定**哪一份样式**放进那个槽，
+        所以这里配完就自动跟着导出走，不需要导出端认识「条件格式」这个词。
+
+        **没有边框开关**：Univer 的 `bd` 实测完全不渲染，而条件格式最经典的用法
+        恰恰是「超标加红框」—— 在这里必须换成底色 / 字色，否则设了看不见。
+
+        顺序是语义的一部分（自上而下、第一条命中的生效），所以显示序号并给上下移动。
+        非数值 / 空格一条都不命中 —— 这条写在提示里，否则作者会以为规则没生效。
+      */}
+      {(() => {
+        const rules = m?.conditional ?? []
+        const problem = conditionalProblem(rules)
+        const setRules = (next: CellConditional[]): void => {
+          // 全删光就把字段**整个摘掉**，不留一个空数组：留 `[]` 在 JSON 里
+          // 看着像「配了条件格式」，其实什么都没配（与 style / barcode 同一套摘字段语义）。
+          patch({ conditional: next.length ? next : undefined })
+        }
+        const setRule = (i: number, p: Partial<CellConditional>): void =>
+          setRules(rules.map((r, j) => (j === i ? { ...r, ...p } : r)))
+        const patchRuleStyle = (i: number, p: Partial<CellStyle>): void => {
+          const cur = rules[i]?.style ?? {}
+          setRule(i, { style: { ...cur, ...p } })
+        }
+        const move = (i: number, d: number): void => {
+          const j = i + d
+          if (j < 0 || j >= rules.length) return
+          const next = [...rules]
+          const t = next[i]!
+          next[i] = next[j]!
+          next[j] = t
+          setRules(next)
+        }
+        return (
+          <>
+            <Space wrap size="small" align="center">
+              <Tooltip title="按本格算出来的数值改样式（超标标红）。非数值 / 空格一条都不命中">
+                <Typography.Text style={{ fontSize: 12 }}>条件格式</Typography.Text>
+              </Tooltip>
+              <Button
+                size="small"
+                onClick={() =>
+                  // 新规则给一份能立刻看见的默认值（大于 1000 标红）：
+                  // 配一条「命中了但没样式」的空规则是纯坑，服务端会告警。
+                  setRules([
+                    ...rules,
+                    { when: 'gt', value: 1000, style: { color: '#FF0000' } },
+                  ])
+                }
+                data-testid="free-cell-cond-add"
+              >
+                加规则
+              </Button>
+              {rules.length > 0 && (
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  自上而下，第一条命中的生效
+                </Typography.Text>
+              )}
+            </Space>
+            {rules.map((r, i) => {
+              // 认不出来时按 `gt` 显示（服务端会告警说这个 when 不合法）——
+              // 不能让下拉框因为一个错字整条规则看不见
+              const op = normaliseConditionOp(r.when) ?? 'gt'
+              return (
+                <Space key={i} wrap size={4} align="center">
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                    {i + 1}.
+                  </Typography.Text>
+                  <Select
+                    size="small"
+                    style={{ width: 96 }}
+                    value={op}
+                    options={CONDITION_OPS.map((o) => ({ label: CONDITION_OP_LABEL[o], value: o }))}
+                    onChange={(v: string) => setRule(i, { when: v as ConditionOp })}
+                    data-testid={`free-cell-cond-when-${i}`}
+                  />
+                  <InputNumber
+                    size="small"
+                    style={{ width: 84 }}
+                    placeholder="值"
+                    value={r.value ?? null}
+                    onChange={(v) => setRule(i, { value: v ?? undefined })}
+                    data-testid={`free-cell-cond-value-${i}`}
+                  />
+                  {/* 只有 between / not_between 才显示上界 —— 别的写法多一个输入框
+                      会让人以为在按区间比，而服务端会忽略它 */}
+                  {conditionOpNeedsSecond(op) && (
+                    <InputNumber
+                      size="small"
+                      style={{ width: 84 }}
+                      placeholder="上界"
+                      value={r.value2 ?? null}
+                      onChange={(v) => setRule(i, { value2: v ?? undefined })}
+                      data-testid={`free-cell-cond-value2-${i}`}
+                    />
+                  )}
+                  <Tooltip title="命中后加粗">
+                    <Space size={2}>
+                      <Typography.Text style={{ fontSize: 11 }}>B</Typography.Text>
+                      <Switch
+                        size="small"
+                        checked={r.style?.bold === true}
+                        onChange={(v) => patchRuleStyle(i, { bold: v || undefined })}
+                        data-testid={`free-cell-cond-bold-${i}`}
+                      />
+                    </Space>
+                  </Tooltip>
+                  {[
+                    { key: 'color' as const, label: '字色', ph: '#FF0000' },
+                    { key: 'bg' as const, label: '底色', ph: '#FFF1B8' },
+                  ].map((f) => {
+                    const v = (f.key === 'color' ? r.style?.color : r.style?.bg) ?? ''
+                    return (
+                      <Space key={f.key} size={4}>
+                        <Typography.Text style={{ fontSize: 11 }}>{f.label}</Typography.Text>
+                        <span
+                          data-testid={`free-cell-cond-${f.key}-swatch-${i}`}
+                          style={{
+                            display: 'inline-block',
+                            width: 12,
+                            height: 12,
+                            border: '1px solid #d9d9d9',
+                            borderRadius: 2,
+                            background: /^#[0-9a-fA-F]{6}$/.test(v) ? v : 'transparent',
+                          }}
+                        />
+                        <Input
+                          size="small"
+                          style={{ width: 84 }}
+                          placeholder={f.ph}
+                          value={v}
+                          onChange={(e) => patchRuleStyle(i, { [f.key]: e.target.value || undefined })}
+                          data-testid={`free-cell-cond-${f.key}-${i}`}
+                        />
+                      </Space>
+                    )
+                  })}
+                  <Button
+                    size="small"
+                    disabled={i === 0}
+                    onClick={() => move(i, -1)}
+                    data-testid={`free-cell-cond-up-${i}`}
+                  >
+                    ↑
+                  </Button>
+                  <Button
+                    size="small"
+                    disabled={i === rules.length - 1}
+                    onClick={() => move(i, 1)}
+                    data-testid={`free-cell-cond-down-${i}`}
+                  >
+                    ↓
+                  </Button>
+                  <Button
+                    size="small"
+                    danger
+                    onClick={() => setRules(rules.filter((_, j) => j !== i))}
+                    data-testid={`free-cell-cond-del-${i}`}
+                  >
+                    删
+                  </Button>
+                </Space>
+              )
+            })}
+            {!!problem && (
+              <Typography.Text
+                type="warning"
+                style={{ fontSize: 11 }}
+                data-testid="free-cell-cond-problem"
+              >
+                {problem}
+              </Typography.Text>
+            )}
+            {rules.length > 0 && (
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                比的是本格**算出来的数值**（不是套过显示格式的文本）：空值 / 文本格一条规则都不命中。
               </Typography.Text>
             )}
           </>

@@ -405,6 +405,160 @@ export interface ResolvedBarcode {
   text: string
 }
 
+/**
+ * 条件格式的比较方式（= Rust `CondOp::NAMES`，**改一处要改两处**）。
+ *
+ * 归一化后的规范名只有这八个；Rust 侧另外还认符号写法（`>` `>=` …），
+ * 这里由 `normaliseConditionOp` 一并认掉 —— 手写 JSON 的作者十有八九写符号。
+ */
+export type ConditionOp = 'gt' | 'ge' | 'lt' | 'le' | 'eq' | 'ne' | 'between' | 'not_between'
+
+/** 规范名清单（下拉框从这里生成） */
+export const CONDITION_OPS: readonly ConditionOp[] = [
+  'gt',
+  'ge',
+  'lt',
+  'le',
+  'eq',
+  'ne',
+  'between',
+  'not_between',
+]
+
+/**
+ * 下拉项文案。
+ *
+ * 类型是 `Record<ConditionOp, string>`（**不是** `Record<string, string>`）：
+ * 引擎哪天加了新比较方式，这里**编译不过**，而不是静默少一项 ——
+ * 界面上少一项是看不出来的（见 `CHART_KIND_LABEL` 同一套理由）。
+ */
+export const CONDITION_OP_LABEL: Record<ConditionOp, string> = {
+  gt: '大于',
+  ge: '大于等于',
+  lt: '小于',
+  le: '小于等于',
+  eq: '等于',
+  ne: '不等于',
+  between: '介于',
+  not_between: '不介于',
+}
+
+/** `between` / `not_between` 才需要第二个值（= Rust `CondOp::needs_second`） */
+export function conditionOpNeedsSecond(op: ConditionOp): boolean {
+  return op === 'between' || op === 'not_between'
+}
+
+/** 符号写法（= Rust `CondOp::parse` 里的别名表） */
+const CONDITION_OP_ALIASES: Record<string, ConditionOp> = {
+  '>': 'gt',
+  '>=': 'ge',
+  gte: 'ge',
+  '<': 'lt',
+  '<=': 'le',
+  lte: 'le',
+  '==': 'eq',
+  '=': 'eq',
+  '!=': 'ne',
+  '<>': 'ne',
+}
+
+/**
+ * 归一化比较方式；认不出来返回 `null`（= Rust `CondOp::parse`）。
+ *
+ * 大小写与前后空格都容忍，符号写法一并认 —— 与 Rust 侧逐条对齐。
+ */
+export function normaliseConditionOp(raw: string | null | undefined): ConditionOp | null {
+  const s = (raw ?? '').trim().toLowerCase()
+  if ((CONDITION_OPS as readonly string[]).includes(s)) return s as ConditionOp
+  return CONDITION_OP_ALIASES[s] ?? null
+}
+
+/**
+ * 一条条件格式规则：**按本格算出来的数值**改样式（「数值超标标红」）。
+ *
+ * ## 判定顺序：自上而下，**第一条命中的生效**
+ *
+ * 顺序是语义的一部分：`[大于1000标红, 大于100标黄]` 与反过来写的结果完全不同。
+ * 设计器里因此显示序号并支持上下移动。
+ *
+ * ## 只认数值
+ *
+ * 比的是**算出来的值**（不是套过 `1,234.50` / `12%` 显示格式的文本）：
+ * 空值 / 布尔 / 认不出数字的文本格**一条规则都不命中** —— 它们没有可比数值。
+ * 这是刻意选的语义（硬猜会把「空着」和「就是 0」混为一谈），不是漏判。
+ *
+ * ## 样式是**逐字段**覆盖
+ *
+ * `style` 里写了的字段赢，没写的保持 `CellModel.style` 原样 ——
+ * 「底子有粗体、超标时再加红字」不用把粗体抄一遍。
+ * 命中后 `Some(false)` 也是有效覆盖（显式取消加粗）。
+ *
+ * ## 为什么没有边框
+ *
+ * 与 `CellStyle` 同一个理由：Univer 的 `bd` 边框**实测完全不渲染**。
+ * 条件格式最经典的用法恰恰是「超标加红框」—— 在这里必须换成底色 / 字色。
+ */
+export interface CellConditional {
+  /** 比较方式：规范名或符号写法；认不出来只坏这一条规则（进 warnings） */
+  when?: string | null
+  /** 比较值（`between` / `not_between` 时是下界） */
+  value?: number | null
+  /** 上界（含）。只有 `between` / `not_between` 有意义，其它写法会被忽略并告警 */
+  value2?: number | null
+  /** 命中后逐字段覆盖到本格样式上的样式 */
+  style?: CellStyle | null
+}
+
+/** `CellStyle` 是否一项都没设（`{}` / 全 `null` 都算） */
+function styleIsEmpty(st: CellStyle | null | undefined): boolean {
+  if (!st) return true
+  return ![
+    st.bold,
+    st.italic,
+    st.font_size,
+    st.color,
+    st.bg,
+    st.h_align,
+    st.v_align,
+  ].some((v) => v !== undefined && v !== null && v !== '')
+}
+
+/**
+ * 条件格式声明的「会被服务端告警」检查；没问题返回 `null`。
+ *
+ * 与 `barcodeProblem` / `chartProblem` 同一套路：判据在 Rust 侧已有
+ * （`engine::compile_conditionals`），但那要等一次请求才生效，设计器先说省一轮往返。
+ * **只提示不拦** —— 服务端的失败粒度是**一条规则**（进 `warnings`，表照常出），
+ * 设计器拦成「整表不让存」会比服务端更严，等于擅自加规则。
+ *
+ * 检查顺序与 Rust 严格一致，只返回**第一条**问题（前缀带规则序号，对得上界面那一行）。
+ */
+export function conditionalProblem(rules: CellConditional[] | null | undefined): string | null {
+  if (!rules || rules.length === 0) return null
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i] ?? {}
+    const at = `第 ${i + 1} 条`
+    const op = normaliseConditionOp(r.when)
+    if (!op) {
+      return `${at}：不认识的比较方式「${(r.when ?? '').trim()}」，支持：${CONDITION_OPS.join(' / ')}`
+    }
+    if (r.value === undefined || r.value === null) {
+      return `${at}：比较方式「${op}」需要 value`
+    }
+    if (conditionOpNeedsSecond(op)) {
+      if (r.value2 === undefined || r.value2 === null) {
+        return `${at}：${op} 要 value 和 value2 两个值`
+      }
+    } else if (r.value2 !== undefined && r.value2 !== null) {
+      return `${at}：value2 只对 between / not_between 有意义，服务端会忽略它`
+    }
+    if (styleIsEmpty(r.style)) {
+      return `${at}：没有样式（style 为空），命中也不会改变外观 —— 而且会把后面命中的规则挡住`
+    }
+  }
+  return null
+}
+
 export interface GridCell {
   text: string
   pos: string
@@ -572,6 +726,18 @@ export interface CellModel {
    * `barcode.from: 'value'`）能随展开逐行取内容。
    */
   barcode?: CellBarcode | null
+  /**
+   * 条件格式：**按本格算出来的数值**改样式（「数值超标标红」）。
+   *
+   * 只挂 `CellModel`（不像 `image` / `chart` / `barcode` 那样两个槽都认）：
+   * 它比的是**本格算出来的数值**，而「算出来的值」只可能来自 `model`
+   * （`field` / `value_expr` / `agg`）—— 没有 model 就没有可比的数。
+   * 与同样只挂 `model` 的 `style` / `format` / `format_expr` 一致。
+   *
+   * 判定顺序是**自上而下，第一条命中的生效**；空值 / 文本格一条都不命中。
+   * 详见 `CellConditional` 与 `conditionalProblem`。
+   */
+  conditional?: CellConditional[] | null
 }
 
 export interface CellTpl {

@@ -38,6 +38,7 @@ PAIRS = [
     ("model.rs", "CellChart", "CellChart"),
     ("model.rs", "CellChartSeries", "CellChartSeries"),
     ("model.rs", "CellBarcode", "CellBarcode"),
+    ("model.rs", "CellConditional", "CellConditional"),
     ("model.rs", "ResolvedChart", "ResolvedChart"),
     ("model.rs", "ResolvedChartSeries", "ResolvedChartSeries"),
     ("model.rs", "ResolvedBarcode", "ResolvedBarcode"),

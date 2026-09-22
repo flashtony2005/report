@@ -96,6 +96,167 @@ impl CellStyle {
     pub fn is_empty(&self) -> bool {
         *self == CellStyle::default()
     }
+
+    /// 逐字段覆盖：`over` 里**写了**的字段赢，没写的保持 `self` 原样。
+    ///
+    /// 为什么是「逐字段」而不是「整个替换」：条件格式通常只想改字色
+    /// （`{color: "#FF0000"}`），整格替换会把作者设的粗体 / 对齐一起抹掉。
+    ///
+    /// 注意 `Some(false)` 是**有效覆盖**（显式取消加粗），不是「没写」——
+    /// 导出侧 `with_style` 只在 `bold == Some(true)` 时才 `set_bold()`，
+    /// 所以合并结果里留下 `bold: Some(false)` 正好等价于「不加粗」。
+    pub fn merged_over(&self, over: &CellStyle) -> CellStyle {
+        let mut out = self.clone();
+        if over.bold.is_some() {
+            out.bold = over.bold;
+        }
+        if over.italic.is_some() {
+            out.italic = over.italic;
+        }
+        if over.font_size.is_some() {
+            out.font_size = over.font_size;
+        }
+        if over.color.is_some() {
+            out.color = over.color.clone();
+        }
+        if over.bg.is_some() {
+            out.bg = over.bg.clone();
+        }
+        if over.h_align.is_some() {
+            out.h_align = over.h_align;
+        }
+        if over.v_align.is_some() {
+            out.v_align = over.v_align;
+        }
+        out
+    }
+}
+
+/// 条件格式的比较方式。
+///
+/// 单独抽成 enum（而不是把字符串散在求值里）是为了让「有哪些写法」有一处**唯一的**
+/// 白名单：`NAMES` 同时被解析、报错文案和 TS 镜像的 `CONDITION_OPS` 引用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CondOp {
+    Gt,
+    Ge,
+    Lt,
+    Le,
+    Eq,
+    Ne,
+    Between,
+    NotBetween,
+}
+
+impl CondOp {
+    /// 规范写法（错误文案里列的就是这八个）
+    pub const NAMES: [&'static str; 8] = [
+        "gt",
+        "ge",
+        "lt",
+        "le",
+        "eq",
+        "ne",
+        "between",
+        "not_between",
+    ];
+
+    /// 解析 `when`。**认不出来报错**，不静默当「永远不命中」——
+    /// 那正是最难查的一类：规则看着配了，导出后什么都没变。
+    ///
+    /// 顺带认符号写法（`>` / `>=` / `<=` / `==` / `!=` / `<>`）：作者手写 JSON 时
+    /// 十有八九写符号，报「不认识的比较方式 >」会让人以为不支持。
+    /// 大小写与前后空格都容忍（同 `CellImage.from_value` 的口径）。
+    pub fn parse(raw: Option<&str>) -> Result<Self, String> {
+        let s = raw.unwrap_or("").trim().to_ascii_lowercase();
+        Ok(match s.as_str() {
+            "gt" | ">" => CondOp::Gt,
+            "ge" | ">=" | "gte" => CondOp::Ge,
+            "lt" | "<" => CondOp::Lt,
+            "le" | "<=" | "lte" => CondOp::Le,
+            "eq" | "==" | "=" => CondOp::Eq,
+            "ne" | "!=" | "<>" => CondOp::Ne,
+            "between" => CondOp::Between,
+            "not_between" => CondOp::NotBetween,
+            other => {
+                return Err(format!(
+                    "不认识的比较方式「{other}」（支持 {}）",
+                    CondOp::NAMES.join(" / ")
+                ))
+            }
+        })
+    }
+
+    /// `between` / `not_between` 才需要第二个值
+    pub fn needs_second(self) -> bool {
+        matches!(self, CondOp::Between | CondOp::NotBetween)
+    }
+
+    /// 规范名（告警文案用；`NAMES` 里的那一个）
+    pub fn name(self) -> &'static str {
+        match self {
+            CondOp::Gt => "gt",
+            CondOp::Ge => "ge",
+            CondOp::Lt => "lt",
+            CondOp::Le => "le",
+            CondOp::Eq => "eq",
+            CondOp::Ne => "ne",
+            CondOp::Between => "between",
+            CondOp::NotBetween => "not_between",
+        }
+    }
+
+    /// 命中判定。`b` 只有 `between` / `not_between` 会用到。
+    ///
+    /// 约定（**必须写死在注释里**，否则「含不含端点」这种差异没人看得出来）：
+    /// - `between`：**闭区间** `a <= x <= b`；`not_between` 是它的取反（开区间）。
+    /// - `eq` / `ne` 是**浮点精确相等**，不给容差 —— 悄悄加容差会变成
+    ///   「1000 和 1000.0001 都算相等」，那是猜。要范围就用 `between`。
+    pub fn test(self, x: f64, a: f64, b: f64) -> bool {
+        match self {
+            CondOp::Gt => x > a,
+            CondOp::Ge => x >= a,
+            CondOp::Lt => x < a,
+            CondOp::Le => x <= a,
+            CondOp::Eq => x == a,
+            CondOp::Ne => x != a,
+            CondOp::Between => x >= a && x <= b,
+            CondOp::NotBetween => !(x >= a && x <= b),
+        }
+    }
+}
+
+/// 一条条件格式规则：**按本格算出来的数值**改样式（「数值超标标红」）。
+///
+/// ## 为什么样式是叠加而不是替换
+///
+/// `style` 是逐字段覆盖在 `CellModel.style` 之上的（见 `CellStyle::merged_over`），
+/// 所以「底子有粗体、超标时再加红字」不用把粗体抄一遍。
+///
+/// ## 为什么没有边框
+///
+/// 与 `CellStyle` 同一个理由：Univer 的 `bd` 边框**实测完全不渲染**。
+/// 条件格式最经典的用法恰恰是「超标加红框」——在这里必须换成底色 / 字色，
+/// 否则作者设了框在设计器里什么都看不见（静默失败）。
+///
+/// ## 为什么 `when` 是 `String` 不是 enum
+///
+/// 与 `CellChart::kind` / `NumFmt::kind` 同一套约定：写成 enum 的话 serde 会在
+/// **解析整份模板**时就失败，作者改错一个词整张表都出不来。用字符串则只坏这一条
+/// 规则（进 `warnings`），表照常出。
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CellConditional {
+    /// 比较方式：`gt` | `ge` | `lt` | `le` | `eq` | `ne` | `between` | `not_between`
+    /// （也接受 `>` `>=` `<` `<=` `==` `!=` `<>`）。
+    pub when: Option<String>,
+    /// 比较值（`between` / `not_between` 时是下界）
+    pub value: Option<f64>,
+    /// 上界（含）。**只有 `between` / `not_between` 有意义**；
+    /// 其它比较方式写了它会被忽略并告警（静默忽略 = 作者以为在按区间比）。
+    pub value2: Option<f64>,
+    /// 命中后逐字段覆盖到本格样式上的样式
+    pub style: Option<CellStyle>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -188,6 +349,29 @@ pub struct CellModel {
     /// 与 `image` / `chart` 一样**两个槽都认**（`CellTpl` 和这里）：
     /// 挂在展开格上的「一列订单号条码」走的是 `CellModel` 这条路。
     pub barcode: Option<CellBarcode>,
+    /// 条件格式：**按本格算出来的数值**改样式（「数值超标标红」）。
+    ///
+    /// 只放在 `CellModel` 上（不像 `image` / `chart` / `barcode` 那样两个槽都认）：
+    /// 它比的是**本格算出来的数值**，而「算出来的值」只可能来自 `model`
+    /// （`field` / `value_expr` / `agg`）—— 没有 model 就没有可比的数。
+    /// 与同样只挂 `model` 的 `style` / `format` / `format_expr` 一致。
+    ///
+    /// ## 判定顺序：**自上而下，第一条命中的生效**（后面的不再看）
+    ///
+    /// 顺序是语义的一部分：`[{when:"gt",value:1000,style:红}, {when:"gt",value:100,style:黄}]`
+    /// 与反过来写的结果完全不同。设计器里因此显示序号并支持上下移动。
+    ///
+    /// ## 只认数值
+    ///
+    /// 比较的是**格式化之前的原始数值**（`GridCell.raw_number` 那一份，
+    /// 不是 `text` —— 后者已经套过 `1,234.50` / `12%` 之类的显示格式，拿它反解会算错）。
+    /// 因此**空值 / 文本 / 布尔格一条规则都不会命中**：它们压根没有数值可比。
+    /// 这是刻意选的语义，不是漏判 —— 「把文本硬解析成数字」会引入
+    /// 「`-` 当 0 用」这类静默错误，而报表里空着和就是 0 是两回事。
+    ///
+    /// 规则本身写坏了（不认识的 `when` / 缺 `value` / `between` 缺 `value2` /
+    /// 没有样式）**进 `warnings`**，绝不静默不生效。
+    pub conditional: Option<Vec<CellConditional>>,
 }
 
 /// 图片格：这格不出文本，出图片。
@@ -908,5 +1092,116 @@ mod tests {
         assert!(!mk(None).from_value());
         assert!(!mk(Some("")).from_value());
         assert!(!mk(Some("literal")).from_value(), "其它值都当字面图");
+    }
+
+    // ---- 条件格式：比较方式 ----
+
+    /// 八个规范名 + 符号写法都要认；大小写与空格容忍。
+    /// **白名单只有这一处** —— 报错文案里的名单也来自 `CondOp::NAMES`。
+    #[test]
+    fn cond_op_parse_accepts_names_and_symbols() {
+        let cases = [
+            ("gt", CondOp::Gt),
+            (">", CondOp::Gt),
+            ("GE", CondOp::Ge),
+            (">=", CondOp::Ge),
+            ("<", CondOp::Lt),
+            ("le", CondOp::Le),
+            ("<=", CondOp::Le),
+            ("eq", CondOp::Eq),
+            ("==", CondOp::Eq),
+            ("ne", CondOp::Ne),
+            ("!=", CondOp::Ne),
+            ("<>", CondOp::Ne),
+            ("  between  ", CondOp::Between),
+            ("not_between", CondOp::NotBetween),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(CondOp::parse(Some(raw)), Ok(want), "「{raw}」应当解析成 {want:?}");
+        }
+        assert_eq!(CondOp::NAMES.len(), 8, "规范名只有 8 个，加了要同步 TS 的 CONDITION_OPS");
+    }
+
+    /// 认不出来必须**报错**（而不是当成「永远不命中」）——
+    /// 后者是「规则配了、导出后什么都没变」，最难查。报错文案要点名原值 + 支持列表。
+    #[test]
+    fn cond_op_parse_rejects_unknown_and_names_the_value() {
+        for bad in ["bigger", "like", "", "gt2"] {
+            let err = CondOp::parse(Some(bad)).unwrap_err();
+            assert!(err.contains("between"), "报错要列出支持的方式：{err}");
+            if !bad.is_empty() {
+                assert!(err.contains(bad), "报错要点名原值 {bad:?}：{err}");
+            }
+        }
+        assert!(CondOp::parse(None).is_err(), "没写 when 也算认不出来");
+    }
+
+    /// `between` 闭区间（含端点）；`not_between` 是取反。端点含不含在表上完全看不出来。
+    #[test]
+    fn cond_op_between_is_inclusive() {
+        assert!(CondOp::Between.test(100.0, 100.0, 200.0), "下界含");
+        assert!(CondOp::Between.test(200.0, 100.0, 200.0), "上界含");
+        assert!(!CondOp::Between.test(99.9, 100.0, 200.0));
+        assert!(!CondOp::NotBetween.test(100.0, 100.0, 200.0), "取反：端点在区间内 → 不命中");
+        assert!(CondOp::NotBetween.test(250.0, 100.0, 200.0));
+    }
+
+    /// `eq` / `ne` 是**浮点精确相等**，不给容差。
+    /// 悄悄加容差会变成「1000 和 1000.0001 都算相等」—— 那是猜，不是配。
+    #[test]
+    fn cond_op_eq_is_exact_without_tolerance() {
+        assert!(CondOp::Eq.test(1000.0, 1000.0, 0.0));
+        assert!(!CondOp::Eq.test(1000.0001, 1000.0, 0.0), "不给容差");
+        assert!(CondOp::Ne.test(1000.0001, 1000.0, 0.0));
+    }
+
+    /// `needs_second` 决定要不要 value2 —— 编译期靠它判「between 缺上界」
+    #[test]
+    fn cond_op_needs_second_only_for_range_ops() {
+        assert!(CondOp::Between.needs_second());
+        assert!(CondOp::NotBetween.needs_second());
+        for op in [CondOp::Gt, CondOp::Ge, CondOp::Lt, CondOp::Le, CondOp::Eq, CondOp::Ne] {
+            assert!(!op.needs_second(), "{op:?} 不该要第二个值");
+        }
+    }
+
+    // ---- 条件格式：样式叠加 ----
+
+    /// 逐字段覆盖：`over` 写了字段的赢，没写的保持原样。
+    /// 整格替换的现象是「超标标红了，作者设的粗体没了」—— 只看颜色看不出来。
+    #[test]
+    fn style_merged_over_overrides_only_the_fields_it_sets() {
+        let base = CellStyle {
+            bold: Some(true),
+            italic: Some(true),
+            font_size: Some(14.0),
+            color: Some("#000000".into()),
+            bg: Some("#EEEEEE".into()),
+            h_align: Some(HAlign::Left),
+            v_align: Some(VAlign::Top),
+        };
+        let over = CellStyle { color: Some("#FF0000".into()), ..Default::default() };
+        let got = base.merged_over(&over);
+        assert_eq!(got.color, Some("#FF0000".into()), "写了字色 → 覆盖");
+        assert_eq!(got.bold, Some(true), "没写粗体 → 保持");
+        assert_eq!(got.italic, Some(true));
+        assert_eq!(got.font_size, Some(14.0));
+        assert_eq!(got.bg, Some("#EEEEEE".into()));
+        assert_eq!(got.h_align, Some(HAlign::Left));
+        assert_eq!(got.v_align, Some(VAlign::Top));
+    }
+
+    /// `Some(false)` 是**有效覆盖**（显式取消），不是「没写」。
+    ///
+    /// 导出侧 `with_style` 只在 `bold == Some(true)` 时才 `set_bold()`，
+    /// 所以留下 `bold: Some(false)` 正好等价于「不加粗」——
+    /// 这条不成立的话「条件格式取消加粗」会变成静默无效。
+    #[test]
+    fn style_merged_over_treats_explicit_false_as_an_override() {
+        let base = CellStyle { bold: Some(true), italic: Some(true), ..Default::default() };
+        let over = CellStyle { bold: Some(false), ..Default::default() };
+        let got = base.merged_over(&over);
+        assert_eq!(got.bold, Some(false), "显式 false 要覆盖 true");
+        assert_eq!(got.italic, Some(true), "没写的字段保持原样");
     }
 }

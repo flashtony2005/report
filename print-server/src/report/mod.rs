@@ -1334,6 +1334,7 @@ pub fn sample_template() -> ReportTemplate {
             col_test_expr: None,
             export_formula: None,
             style: None,
+            conditional: None,
             join_on: None,
         })
     };
@@ -1425,6 +1426,7 @@ pub fn cross_tab_template() -> ReportTemplate {
             col_test_expr: None,
             export_formula: None,
             style: None,
+            conditional: None,
             join_on: None,
         })
     };
@@ -1492,6 +1494,7 @@ pub fn cross_tab_two_metrics_template() -> ReportTemplate {
             col_test_expr: None,
             export_formula: None,
             style: None,
+            conditional: None,
             join_on: None,
         })
     };
@@ -1577,6 +1580,7 @@ pub fn cross_tab_totals_template() -> ReportTemplate {
             col_test_expr: None,
             export_formula: None,
             style: None,
+            conditional: None,
             join_on: None,
         })
     };
@@ -1671,6 +1675,7 @@ pub fn cross_tab_two_metrics_totals_template() -> ReportTemplate {
             col_test_expr: None,
             export_formula: None,
             style: None,
+            conditional: None,
             join_on: None,
         })
     };
@@ -1785,6 +1790,7 @@ pub fn cross_tab_multi_level_template() -> ReportTemplate {
             col_test_expr: None,
             export_formula: None,
             style: None,
+            conditional: None,
             join_on: None,
         })
     };
@@ -2109,6 +2115,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -2192,6 +2199,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -2261,6 +2269,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -2338,6 +2347,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -2426,6 +2436,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -2511,6 +2522,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -2798,6 +2810,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -3840,6 +3853,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -4057,6 +4071,7 @@ mod tests {
                                     row_test_expr: None,
                                     col_test_expr: None,
                                     export_formula: None,
+                                    conditional: None,
                                     join_on: None,
                                     style: None,
                                     chart: None,
@@ -4125,6 +4140,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -4199,6 +4215,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -4453,6 +4470,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -4825,6 +4843,7 @@ mod tests {
                 row_test_expr: rte.map(|s| s.to_string()),
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -5240,6 +5259,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -5302,6 +5322,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -5370,6 +5391,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -5493,6 +5515,7 @@ mod tests {
                 row_test_expr: None,
                 col_test_expr: None,
                 export_formula: None,
+                conditional: None,
                 join_on: None,
                 style: None,
                 chart: None,
@@ -6542,6 +6565,365 @@ mod tests {
         for want in ["华东", "华北", "华南"] {
             assert!(csv.contains(want), "来源数据 {want} 应当还在：{csv}");
         }
+    }
+
+    // ============================================================ B3 条件格式
+    //
+    // 这一节守的都是「静默失效」那一类：规则配了、导出后什么都没变，
+    // 或者**变错了**（命中了不该命中的格、被后面/前面的规则挡住）。
+    // 每条用例都对应一个「如果实现写错，现象是什么」。
+
+    fn red() -> CellStyle {
+        CellStyle { color: Some("#FF0000".into()), ..Default::default() }
+    }
+    fn yellow() -> CellStyle {
+        CellStyle { color: Some("#FFFF00".into()), ..Default::default() }
+    }
+
+    /// 一条规则（`style` 给默认红字）
+    fn rule(when: &str, v: f64) -> CellConditional {
+        CellConditional {
+            when: Some(when.into()),
+            value: Some(v),
+            value2: None,
+            style: Some(red()),
+        }
+    }
+
+    /// 单格模板：一个**字面量**值 + 作者样式 + 条件格式；返回 (格子, 告警)
+    fn cond_cell(
+        value: JsonValue,
+        style: Option<CellStyle>,
+        rules: Vec<CellConditional>,
+    ) -> (GridCell, Vec<String>) {
+        let tpl = ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "cond".into(),
+                page: None,
+                rows: vec![RowTpl {
+                    cells: vec![CellTpl {
+                        pos: None,
+                        value: Some(value),
+                        model: Some(CellModel {
+                            style,
+                            conditional: if rules.is_empty() { None } else { Some(rules) },
+                            ..Default::default()
+                        }),
+                        merge_across: 0,
+                        merge_down: 0,
+                        merge_to_end: false,
+                        image: None,
+                        chart: None,
+                        barcode: None,
+                    }],
+                }],
+                loop_field: None,
+            }],
+            datasets: BTreeMap::new(),
+        };
+        let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None })
+            .expect("条件格式不该让渲染失败");
+        let warns = resp.warnings.clone().unwrap_or_default();
+        (resp.sheets.into_iter().next().unwrap().rows[0][0].clone(), warns)
+    }
+
+    /// 取格子的字色（条件格式最常用的那一个通道）
+    fn color_of(c: &GridCell) -> Option<String> {
+        c.style.as_ref().and_then(|s| s.color.clone())
+    }
+
+    /// **顺序是语义**：多条命中时只认第一条。
+    ///
+    /// 写反了的现象是「配了 1000 以上标红，结果 5000 也是黄的」——
+    /// 表出得来、颜色也在，肉眼很难发现是顺序问题。
+    #[test]
+    fn conditional_first_matching_rule_wins() {
+        let rules = vec![
+            CellConditional { style: Some(red()), ..rule("gt", 1000.0) },
+            CellConditional { style: Some(yellow()), ..rule("gt", 100.0) },
+        ];
+        // 5000 两条都命中 → 第一条（红）
+        let (big, warns) = cond_cell(serde_json::json!(5000), None, rules.clone());
+        assert_eq!(color_of(&big), Some("#FF0000".into()), "两条都命中时应当第一条赢");
+        assert!(warns.is_empty(), "合法规则不该告警：{warns:?}");
+        // 500 只有第二条命中 → 黄（证明第二条不是死规则）
+        let (mid, _) = cond_cell(serde_json::json!(500), None, rules.clone());
+        assert_eq!(color_of(&mid), Some("#FFFF00".into()), "只有第二条命中时应当出黄");
+        // 50 都不命中 → 没有样式
+        let (small, _) = cond_cell(serde_json::json!(50), None, rules);
+        assert_eq!(small.style, None, "都不命中时不该凭空多出样式");
+    }
+
+    /// **非数值 / 空值一律不命中** —— 这条必须钉死。
+    ///
+    /// 如果实现里把 `None` 当 0 用（一个很自然的「顺手兜底」），
+    /// `lt 100` 会把所有空格和文本格一起标红：表看着正常，颜色是错的。
+    #[test]
+    fn conditional_non_numeric_cells_never_match() {
+        // 空值：`lt 100` 若把空当 0，会命中
+        let (empty, _) = cond_cell(JsonValue::Null, None, vec![rule("lt", 100.0)]);
+        assert_eq!(empty.style, None, "空格不该命中 lt 100");
+        // 认不出数字的文本：`ge 0` 若把文本当 0，会命中
+        let (text, _) = cond_cell(serde_json::json!("华东"), None, vec![rule("ge", 0.0)]);
+        assert_eq!(text.style, None, "文本格不该命中 ge 0");
+        // 布尔：同上
+        let (flag, _) = cond_cell(serde_json::json!(true), None, vec![rule("ge", 0.0)]);
+        assert_eq!(flag.style, None, "布尔格不该命中 ge 0");
+        // 对照组：同样内容的**数值**格必须命中（否则上面三条是「规则压根没生效」）
+        let (num, _) = cond_cell(serde_json::json!(50), None, vec![rule("lt", 100.0)]);
+        assert_eq!(color_of(&num), Some("#FF0000".into()), "对照组：数值格必须命中");
+    }
+
+    /// 文本数值（`"1,234.5"`）**算数值** —— 与图表格 `source_number` 同一口径，
+    /// 免得出现「图表读得出来的数，条件格式读不出来」。
+    /// 但纯文本仍然不算（见上一条）。
+    #[test]
+    fn conditional_accepts_numeric_text_but_not_plain_text() {
+        let (c, _) = cond_cell(serde_json::json!("1,234.5"), None, vec![rule("gt", 1000.0)]);
+        assert_eq!(color_of(&c), Some("#FF0000".into()), "文本数值应当参与比较");
+    }
+
+    /// `between` 是**闭区间**（含两个端点），`not_between` 是它的取反。
+    /// 端点含不含这种差异在表上完全看不出来，只能靠这条用例钉住。
+    #[test]
+    fn conditional_between_is_inclusive() {
+        let mk = |v: f64| CellConditional {
+            when: Some("between".into()),
+            value: Some(100.0),
+            value2: Some(200.0),
+            style: Some(red()),
+        };
+        for v in [100.0, 150.0, 200.0] {
+            let (c, _) = cond_cell(serde_json::json!(v), None, vec![mk(v)]);
+            assert_eq!(color_of(&c), Some("#FF0000".into()), "{v} 应当在闭区间 [100,200] 内");
+        }
+        for v in [99.9, 200.1] {
+            let (c, _) = cond_cell(serde_json::json!(v), None, vec![mk(v)]);
+            assert_eq!(c.style, None, "{v} 不该命中 [100,200]");
+        }
+        // not_between 取反
+        let nb = CellConditional {
+            when: Some("not_between".into()),
+            value: Some(100.0),
+            value2: Some(200.0),
+            style: Some(red()),
+        };
+        let (inside, _) = cond_cell(serde_json::json!(150), None, vec![nb.clone()]);
+        assert_eq!(inside.style, None, "区间内的不该命中 not_between");
+        let (outside, _) = cond_cell(serde_json::json!(250), None, vec![nb]);
+        assert_eq!(color_of(&outside), Some("#FF0000".into()), "区间外的应当命中 not_between");
+    }
+
+    /// 条件格式**逐字段叠加**在作者样式上，不是整格替换。
+    ///
+    /// 整格替换的现象是「超标标红了，但作者设的粗体没了」—— 只看颜色看不出来。
+    #[test]
+    fn conditional_merges_with_author_style_field_by_field() {
+        let author = CellStyle {
+            bold: Some(true),
+            font_size: Some(14.0),
+            bg: Some("#EEEEEE".into()),
+            ..Default::default()
+        };
+        let (c, warns) = cond_cell(serde_json::json!(5000), Some(author), vec![rule("gt", 1000.0)]);
+        let st = c.style.expect("应当有样式");
+        assert_eq!(st.color, Some("#FF0000".into()), "命中后字色要变红");
+        assert_eq!(st.bold, Some(true), "作者设的粗体不该被抹掉");
+        assert_eq!(st.font_size, Some(14.0), "作者设的字号不该被抹掉");
+        assert_eq!(st.bg, Some("#EEEEEE".into()), "作者设的底色不该被抹掉（规则没写 bg）");
+        assert!(warns.is_empty(), "{warns:?}");
+    }
+
+    /// 不命中时作者样式原样带出（条件格式不该把 base 弄丢）
+    #[test]
+    fn conditional_leaves_author_style_alone_when_nothing_matches() {
+        let author = CellStyle { bold: Some(true), ..Default::default() };
+        let (c, _) = cond_cell(serde_json::json!(10), Some(author.clone()), vec![rule("gt", 1000.0)]);
+        assert_eq!(c.style, Some(author), "不命中时应当原样是作者样式");
+    }
+
+    /// 坏规则**进告警**，不静默不生效；且**只告警一次**（不是每行一次）。
+    #[test]
+    fn conditional_bad_rules_warn_instead_of_silently_doing_nothing() {
+        // 不认识的比较方式
+        let (c, w) = cond_cell(
+            serde_json::json!(5000),
+            None,
+            vec![CellConditional { when: Some("bigger".into()), value: Some(1.0), style: Some(red()), value2: None }],
+        );
+        assert_eq!(c.style, None, "解析不了的规则不该生效");
+        assert!(w.iter().any(|m| m.contains("bigger") && m.contains("条件格式")), "{w:?}");
+        // 缺 value
+        let (_, w) = cond_cell(
+            serde_json::json!(5000),
+            None,
+            vec![CellConditional { when: Some("gt".into()), value: None, value2: None, style: Some(red()) }],
+        );
+        assert!(w.iter().any(|m| m.contains("value")), "缺比较值要告警：{w:?}");
+        // between 缺 value2
+        let (_, w) = cond_cell(
+            serde_json::json!(5000),
+            None,
+            vec![CellConditional { when: Some("between".into()), value: Some(1.0), value2: None, style: Some(red()) }],
+        );
+        assert!(w.iter().any(|m| m.contains("value2")), "between 缺上界要告警：{w:?}");
+        // 没有样式
+        let (_, w) = cond_cell(
+            serde_json::json!(5000),
+            None,
+            vec![CellConditional { when: Some("gt".into()), value: Some(1.0), value2: None, style: None }],
+        );
+        assert!(w.iter().any(|m| m.contains("没有样式")), "空样式要告警：{w:?}");
+    }
+
+    /// **空样式的规则不能把后面的规则挡掉**。
+    ///
+    /// 「第一条命中的生效」+ 一条命中却什么都不改的规则 = 后面的规则永远不生效。
+    /// 所以空样式在编译期就被刷掉（并告警），而不是留着占位。
+    #[test]
+    fn conditional_empty_style_rule_does_not_shadow_the_next_one() {
+        let rules = vec![
+            CellConditional { when: Some("gt".into()), value: Some(1000.0), value2: None, style: None },
+            CellConditional { when: Some("gt".into()), value: Some(100.0), value2: None, style: Some(yellow()) },
+        ];
+        let (c, w) = cond_cell(serde_json::json!(5000), None, rules);
+        assert_eq!(color_of(&c), Some("#FFFF00".into()), "空样式那条不该挡住第二条");
+        assert!(w.iter().any(|m| m.contains("没有样式")), "{w:?}");
+    }
+
+    /// 上下界写反 → 告警并**自动交换**（照算的话区间为空、永远不命中 = 静默失效）
+    #[test]
+    fn conditional_inverted_bounds_swap_and_warn() {
+        let rules = vec![CellConditional {
+            when: Some("between".into()),
+            value: Some(200.0),
+            value2: Some(100.0),
+            style: Some(red()),
+        }];
+        let (c, w) = cond_cell(serde_json::json!(150), None, rules.clone());
+        assert_eq!(color_of(&c), Some("#FF0000".into()), "交换后 150 应当落在 [100,200] 内");
+        assert!(w.iter().any(|m| m.contains("写反")), "上下界写反要告警：{w:?}");
+        // 区间外仍然不命中（证明交换不是「无条件命中」）
+        let (out, _) = cond_cell(serde_json::json!(250), None, rules);
+        assert_eq!(out.style, None, "250 不在 [100,200] 内");
+    }
+
+    /// `value2` 用在只收一个值的比较方式上 → 告警（否则作者以为在按区间比）
+    #[test]
+    fn conditional_value2_on_single_value_op_warns() {
+        let rules = vec![CellConditional {
+            when: Some("gt".into()),
+            value: Some(100.0),
+            value2: Some(500.0),
+            style: Some(red()),
+        }];
+        let (c, w) = cond_cell(serde_json::json!(300), None, rules);
+        assert_eq!(color_of(&c), Some("#FF0000".into()), "gt 100 照常生效");
+        assert!(w.iter().any(|m| m.contains("value2") && m.contains("忽略")), "{w:?}");
+    }
+
+    /// 符号写法（`>=` 之类）要认 —— 手写 JSON 的作者十有八九写符号
+    #[test]
+    fn conditional_accepts_symbol_operators() {
+        let (c, w) = cond_cell(
+            serde_json::json!(1000),
+            None,
+            vec![CellConditional { when: Some(" >= ".into()), value: Some(1000.0), value2: None, style: Some(red()) }],
+        );
+        assert_eq!(color_of(&c), Some("#FF0000".into()), ">= 边界值应当命中（闭区间）");
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    /// **接线**：条件格式挂在**展开格**上时，展开出来的每一行都要各自判定。
+    ///
+    /// 这条守的是「按 (tpl_row, tpl_col) 查表」那段接线：如果查表用错了坐标
+    /// （比如拿输出列号去查），只有第一列会带上样式，整列静默失效。
+    #[test]
+    fn conditional_applies_to_every_expanded_row() {
+        // A3 纵向展开（region），B3 是金额（row_parent A3）；条件格式挂在 B3 上。
+        // 金额 1200 / 900 / 3000，规则 gt 1000 → 第 1、3 行红，第 2 行不红。
+        let tpl = ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "cond-expand".into(),
+                page: None,
+                rows: vec![RowTpl {
+                    cells: vec![
+                        CellTpl {
+                            pos: Some("A3".into()),
+                            value: None,
+                            model: Some(CellModel {
+                                ds: Some("ds1".into()),
+                                field: Some("region".into()),
+                                expand_type: Some(ExpandType::R),
+                                ..Default::default()
+                            }),
+                            merge_across: 0,
+                            merge_down: 0,
+                            merge_to_end: false,
+                            image: None,
+                            chart: None,
+                            barcode: None,
+                        },
+                        CellTpl {
+                            pos: Some("B3".into()),
+                            value: None,
+                            model: Some(CellModel {
+                                ds: Some("ds1".into()),
+                                field: Some("amount".into()),
+                                row_parent: Some("A3".into()),
+                                conditional: Some(vec![rule("gt", 1000.0)]),
+                                ..Default::default()
+                            }),
+                            merge_across: 0,
+                            merge_down: 0,
+                            merge_to_end: false,
+                            image: None,
+                            chart: None,
+                            barcode: None,
+                        },
+                    ],
+                }],
+                loop_field: None,
+            }],
+            datasets: BTreeMap::new(),
+        };
+        let ds: DataSet = [("华东", 1200.0), ("华北", 900.0), ("华南", 3000.0)]
+            .iter()
+            .map(|(r, a)| {
+                let mut m = DataRow::new();
+                m.insert("region".into(), JsonValue::from(*r));
+                m.insert("amount".into(), JsonValue::from(*a));
+                m
+            })
+            .collect();
+        let mut dss = BTreeMap::new();
+        dss.insert("ds1".to_string(), ds);
+        let resp = render(RenderRequest { template: tpl, datasets: Some(dss), sources: None, dump: None })
+            .expect("渲染要成功");
+        let rows = &resp.sheets[0].rows;
+        assert_eq!(rows.len(), 3, "应当展开成 3 行");
+        // **断整条序列**：只看某一格会漏掉「旁边那格被挤掉 / 没带上样式」
+        let got: Vec<Option<String>> = rows.iter().map(|r| color_of(&r[1])).collect();
+        assert_eq!(
+            got,
+            vec![Some("#FF0000".into()), None, Some("#FF0000".into())],
+            "三行金额 1200/900/3000 的判定结果"
+        );
+    }
+
+    /// 条件格式要能**导出到 xlsx**（真断言在拆包探针里；这里守的是「别抛异常」）
+    #[test]
+    fn xlsx_export_with_conditional_format_succeeds() {
+        let tpl = one_number_template(5000.0, None);
+        let mut tpl = tpl;
+        tpl.sheets[0].rows[0].cells[0].model = Some(CellModel {
+            conditional: Some(vec![rule("gt", 1000.0)]),
+            ..Default::default()
+        });
+        let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None }).unwrap();
+        assert_eq!(color_of(&resp.sheets[0].rows[0][0]), Some("#FF0000".into()));
+        let buf = xlsx::to_xlsx(&resp.sheets, 1).expect("带条件格式的表也要导得出");
+        assert!(!buf.is_empty());
     }
 }
 
