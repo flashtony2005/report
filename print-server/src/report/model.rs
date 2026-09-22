@@ -132,6 +132,16 @@ impl CellStyle {
     }
 }
 
+/// 颜色字面量校验：只认 `#RRGGBB`。
+///
+/// **放在 `CellStyle` 旁边而不是各渲染器里**：xlsx 与 HTML 两边都要判它，
+/// 各写一份迟早分叉（`graphic()` 那个优先级判据就是这么出过 bug 的）。
+/// 不猜 `rgb()` / 颜色名 / `#RGB` 简写 —— 猜错了是静默的，作者会以为设的颜色生效了。
+pub(crate) fn is_hex_color(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 7 && b[0] == b'#' && b[1..].iter().all(|c| c.is_ascii_hexdigit())
+}
+
 /// 条件格式的比较方式。
 ///
 /// 单独抽成 enum（而不是把字符串散在求值里）是为了让「有哪些写法」有一处**唯一的**

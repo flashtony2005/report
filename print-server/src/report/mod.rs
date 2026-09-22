@@ -189,12 +189,18 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
             sheets.push(RenderedSheet { name: sheet_name, rows });
         }
     }
-    let html = to_html(&sheets);
+    let html = to_html(&sheets)?;
     let dump = if want_dump { Some(dumps.join("\n")) } else { None };
     let pages_html = if all_pages.is_empty() {
         None
     } else {
-        Some(all_pages.iter().map(|p| to_html(std::slice::from_ref(p))).collect())
+        // 逐页渲染。任何一页的样式非法都整体报错 —— 与主 html 同口径，
+        // 免得「预览报了错、分页 HTML 悄悄少了样式」这种半截结果。
+        let mut v: Vec<String> = Vec::with_capacity(all_pages.len());
+        for p in &all_pages {
+            v.push(to_html(std::slice::from_ref(p))?);
+        }
+        Some(v)
     };
     let pages = if all_pages.is_empty() { None } else { Some(all_pages) };
     let warnings = if warnings.is_empty() { None } else { Some(warnings) };
@@ -627,7 +633,88 @@ fn pick_datasets(
     (picked, primary, warns)
 }
 
-fn to_html(sheets: &[RenderedSheet]) -> String {
+/// 把作者样式渲染成 `<td>` 上的 `style="…"` 片段。没有样式 → 返回空串。
+///
+/// **为什么与 `xlsx::with_style` 同样报错、而不是「认不出来就跳过」**：
+/// 静默丢掉样式等于没设，作者在设计器里改半天看不到任何变化。
+/// 文案也与 xlsx 保持同口径（点名哪一格哪个值）。
+///
+/// **为什么 `Some(false)` 不写 `font-weight:normal`**：xlsx 侧 `with_style` 只在
+/// `Some(true)` 时才 `set_bold()` —— `Some(false)` 是**不表态**（保持基础格式），
+/// 不是「显式不加粗」。这里若额外写一条 `normal`，同一份模板在预览与导出里
+/// 就会长得不一样，正是「两套口径」那类静默 bug。两边必须同语义。
+///
+/// 与 Univer 的差别是**能力**不是不一致：Univer 只画底色 + 字色，
+/// 而 HTML 没有这个限制，所以这里比 Univer 多画粗体 / 斜体 / 字号 / 对齐。
+fn html_style_attr(st: Option<&CellStyle>, pos: &str) -> Result<String, String> {
+    let Some(st) = st else {
+        return Ok(String::new());
+    };
+    if st.is_empty() {
+        return Ok(String::new());
+    }
+    let mut css: Vec<String> = Vec::new();
+    if st.bold == Some(true) {
+        css.push("font-weight:bold".to_string());
+    }
+    if st.italic == Some(true) {
+        css.push("font-style:italic".to_string());
+    }
+    if let Some(sz) = st.font_size {
+        // 与 xlsx 同一条范围校验：同一份模板两边要给同样的结论
+        if !(0.0..=409.0).contains(&sz) || sz <= 0.0 {
+            return Err(format!(
+                "格子 {pos} 的 style.font_size「{sz}」不合法（允许 0~409 磅，且须大于 0）"
+            ));
+        }
+        // 不用特意处理整数：Rust 对 f64 的 `Display` 本来就取「最短可往返表示」，
+        // `format!("{}", 12.0f64)` 就是 `"12"`（实测）。原先写了个
+        // `fract() == 0.0` 的分支，注入驱动证明它是**等价死分支**，已删。
+        css.push(format!("font-size:{sz}pt"));
+    }
+    if let Some(c) = st.color.as_deref() {
+        if !is_hex_color(c) {
+            return Err(format!("格子 {pos} 的 style.color「{c}」不是 #RRGGBB"));
+        }
+        css.push(format!("color:{c}"));
+    }
+    if let Some(b) = st.bg.as_deref() {
+        if !is_hex_color(b) {
+            return Err(format!("格子 {pos} 的 style.bg「{b}」不是 #RRGGBB"));
+        }
+        css.push(format!("background-color:{b}"));
+    }
+    if let Some(h) = st.h_align {
+        css.push(format!(
+            "text-align:{}",
+            match h {
+                HAlign::Left => "left",
+                HAlign::Center => "center",
+                HAlign::Right => "right",
+            }
+        ));
+    }
+    if let Some(v) = st.v_align {
+        css.push(format!(
+            "vertical-align:{}",
+            match v {
+                VAlign::Top => "top",
+                VAlign::Middle => "middle",
+                VAlign::Bottom => "bottom",
+            }
+        ));
+    }
+    if css.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!(" style=\"{}\"", css.join(";")))
+}
+
+/// 展开结果 → 自包含 HTML（设计器预览走的就是这条路）
+///
+/// **返回 `Result` 而不是 `String`**：作者样式的颜色 / 字号要在这里校验，
+/// 认不出来必须报错点名 —— 与 `xlsx::with_style` 同口径，见 `html_style_attr`。
+fn to_html(sheets: &[RenderedSheet]) -> Result<String, String> {
     let mut out = String::new();
     for sheet in sheets {
         out.push_str(&format!("<h3>{}</h3>\n", escape(&sheet.name)));
@@ -689,16 +776,19 @@ fn to_html(sheets: &[RenderedSheet]) -> String {
                     }
                     Graphic::None => escape(&cell.text),
                 };
+                // 作者样式（含条件格式算出来的那份）→ `<td style="…">`。
+                // 没有样式时是空串，`<td>` 的输出与加这个功能之前**逐字节一致**。
+                let style_attr = html_style_attr(cell.style.as_ref(), &cell.pos)?;
                 out.push_str(&format!(
-                    "<td rowspan=\"{}\" colspan=\"{}\">{}</td>",
-                    rs, cs, inner
+                    "<td rowspan=\"{}\" colspan=\"{}\"{}>{}</td>",
+                    rs, cs, style_attr, inner
                 ));
             }
             out.push_str("</tr>\n");
         }
         out.push_str("</table>\n");
     }
-    out
+    Ok(out)
 }
 
 fn escape(s: &str) -> String {
@@ -6073,7 +6163,7 @@ mod tests {
             ..Default::default()
         };
         let resp = render_tpl(image_tpl(cell, vec!["unused"]));
-        let html = to_html(&resp.sheets);
+        let html = to_html(&resp.sheets).expect("样例模板没有样式，不该报错");
         assert!(html.contains("<img src=\"data:image/png;base64,"), "应当出 img，实际：{html}");
         assert!(html.contains("alt=\"logo\""), "text 应当当 alt，实际：{html}");
     }
@@ -6316,7 +6406,7 @@ mod tests {
     fn html_preview_emits_inline_svg_for_chart_cells() {
         let tpl = chart_tpl(bar_chart(&["A3"], vec![series_decl("销售额", "B3")]));
         let resp = render_tpl(tpl);
-        let html = to_html(&resp.sheets);
+        let html = to_html(&resp.sheets).expect("样例模板没有样式，不该报错");
         assert!(html.contains("<svg "), "应当出内联 SVG，实际：{html}");
         assert!(html.contains("华东"), "类目名要画进图里，实际：{html}");
     }
@@ -6535,7 +6625,7 @@ mod tests {
     fn html_preview_emits_inline_svg_for_barcode_cells() {
         let tpl = barcode_tpl(CellBarcode { value: "ORDER-2026-0001".into(), ..Default::default() });
         let resp = render_tpl(tpl);
-        let html = to_html(&resp.sheets);
+        let html = to_html(&resp.sheets).expect("样例模板没有样式，不该报错");
         assert!(html.contains("<svg "), "应当出内联 SVG，实际：{html}");
         assert!(html.contains("shape-rendering=\"crispEdges\""), "条码必须关抗锯齿：{html}");
         assert!(html.contains("fill=\"#000\""), "条必须是黑的：{html}");
@@ -6924,6 +7014,238 @@ mod tests {
         assert_eq!(color_of(&resp.sheets[0].rows[0][0]), Some("#FF0000".into()));
         let buf = xlsx::to_xlsx(&resp.sheets, 1).expect("带条件格式的表也要导得出");
         assert!(!buf.is_empty());
+    }
+
+    /* ---------------- 作者样式 / 条件格式进 HTML 预览 ---------------- */
+
+    /// 取 HTML 里第一个**内容含 `needle`** 的 `<td …>` 的**开标签**（不含 `>`）。
+    ///
+    /// 为什么不能只断言「HTML 里出现了 `background-color:#FFF2CC`」：那抓不住
+    /// 「样式串到了隔壁格」—— 只要串到**任意**一格，子串断言照样绿。
+    /// 位置相关的断言必须落在**具体那一格**上（REFERENCE.md §一）。
+    fn td_opening_tag_with(html: &str, needle: &str) -> String {
+        for part in html.split("<td ").skip(1) {
+            let Some(gt) = part.find('>') else { continue };
+            let tag = &part[..gt];
+            // 只看这一格的内容，别让后面的格替它背书
+            let rest = &part[gt + 1..];
+            let body = rest.split("</td>").next().unwrap_or(rest);
+            if body.contains(needle) {
+                return tag.to_string();
+            }
+        }
+        panic!("HTML 里找不到内容含「{needle}」的 td");
+    }
+
+    /// HTML 里所有 `<td …>` 的**开标签**
+    ///
+    /// 注意别拿整份 HTML 去 `contains(" style=\"")` —— `<table>` 自带
+    /// `style="border-collapse:collapse"`，那样断言永远为真（写这条时真踩了）。
+    fn all_td_tags(html: &str) -> Vec<String> {
+        html.split("<td ")
+            .skip(1)
+            .filter_map(|p| p.find('>').map(|g| p[..g].to_string()))
+            .collect()
+    }
+
+    /// 样式要落在**正确的那一格**上
+    #[test]
+    fn html_preview_puts_author_style_on_the_right_td() {
+        let mut tpl = sample_template();
+        // 行 3 第 1 列 = A3（地区，纵向展开）。`style` 只挂在 `CellModel` 上
+        // （不像 image/chart/barcode 两个槽都认）—— 这是既有设计，别在测试里绕开。
+        tpl.sheets[0].rows[2].cells[0].model.as_mut().unwrap().style = Some(CellStyle {
+            bg: Some("#FFF2CC".into()),
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+        let html = to_html(&resp.sheets).expect("合法颜色不该报错");
+        let tag = td_opening_tag_with(&html, "华东");
+        assert!(tag.contains("background-color:#FFF2CC"), "底色该在「华东」那格：{tag}");
+        // 表头 A2 没有 model，不该被带上样式
+        let head = td_opening_tag_with(&html, "地区");
+        assert!(!head.contains("background-color"), "样式串到隔壁格了：{head}");
+    }
+
+    /// **没设样式时输出与加这个功能之前逐字节一致** —— 否则等于给所有老模板
+    /// 的预览都动了一遍，回归面大得没必要。
+    #[test]
+    fn html_preview_has_no_style_attr_when_unstyled() {
+        let resp = render_tpl(one_number_template(1.0, None));
+        let html = to_html(&resp.sheets).expect("没样式更不该报错");
+        assert!(
+            html.contains("<td rowspan=\"1\" colspan=\"1\">1</td>"),
+            "没样式时不该多出 style 属性：{html}"
+        );
+        assert!(
+            all_td_tags(&html).iter().all(|t| !t.contains(" style=")),
+            "没有一格该带 style：{:?}",
+            all_td_tags(&html)
+        );
+    }
+
+    /// 七个字段逐一映射到 CSS
+    #[test]
+    fn html_preview_maps_all_style_fields() {
+        let mut tpl = one_number_template(7.0, None);
+        tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().style = Some(CellStyle {
+            bold: Some(true),
+            italic: Some(true),
+            font_size: Some(12.0),
+            color: Some("#112233".into()),
+            bg: Some("#AABBCC".into()),
+            h_align: Some(HAlign::Center),
+            v_align: Some(VAlign::Middle),
+        });
+        let resp = render_tpl(tpl);
+        let html = to_html(&resp.sheets).expect("都合法");
+        let tag = td_opening_tag_with(&html, "7");
+        for want in [
+            "font-weight:bold",
+            "font-style:italic",
+            "font-size:12pt", // 整数不带 `.0`
+            "color:#112233",
+            "background-color:#AABBCC",
+            "text-align:center",
+            "vertical-align:middle",
+        ] {
+            assert!(tag.contains(want), "缺 {want}：{tag}");
+        }
+    }
+
+    /// `Some(false)` **不写** `font-weight:normal` —— xlsx 侧 `with_style` 只在
+    /// `Some(true)` 时才 `set_bold()`，`Some(false)` 是「不表态」。
+    /// 这里若多写一条 `normal`，同一模板在预览与导出里就长得不一样。
+    #[test]
+    fn html_preview_omits_false_bold_instead_of_writing_normal() {
+        let mut tpl = one_number_template(3.0, None);
+        tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().style = Some(CellStyle {
+            bold: Some(false),
+            italic: Some(false),
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+        let html = to_html(&resp.sheets).expect("合法");
+        assert!(!html.contains("font-weight"), "Some(false) 不该写 font-weight：{html}");
+        assert!(!html.contains("font-style"), "Some(false) 不该写 font-style：{html}");
+        // 全 false 等于没有可画的字段 → 整格回到「没有 style 属性」
+        assert!(html.contains("<td rowspan=\"1\" colspan=\"1\">3</td>"), "{html}");
+    }
+
+    /// 认不出的颜色**报错并点名哪一格哪个值**，与 xlsx 同口径。
+    ///
+    /// 注意这是**行为变更**：以前预览会静默忽略样式照常出。但那种「预览好好的、
+    /// 导出才报错」正是最难查的一类；而且这种模板**本来就在 xlsx 导出时失败**，
+    /// 并没有新增失败面。
+    #[test]
+    fn html_preview_bad_color_errors_and_names_the_cell() {
+        let mut tpl = one_number_template(1.0, None);
+        tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().style = Some(CellStyle {
+            bg: Some("red".into()),
+            ..Default::default()
+        });
+        let err = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None })
+            .expect_err("认不出的颜色必须报错，不能静默丢掉");
+        assert!(err.contains("A1"), "要点名哪一格：{err}");
+        assert!(err.contains("red"), "要点名哪个值：{err}");
+        assert!(err.contains("#RRGGBB"), "要说清合法写法：{err}");
+    }
+
+    /// 字号越界同样报错并点名
+    #[test]
+    fn html_preview_bad_font_size_errors_and_names_the_cell() {
+        let mut tpl = one_number_template(1.0, None);
+        tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().style = Some(CellStyle {
+            font_size: Some(0.0),
+            ..Default::default()
+        });
+        let err = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None })
+            .expect_err("字号 0 必须报错");
+        assert!(err.contains("A1"), "要点名哪一格：{err}");
+        assert!(err.contains("font_size"), "要点名哪个字段：{err}");
+    }
+
+    /// **每个对齐变体都要映射对**。
+    ///
+    /// 只测 `Center` 的话，把 `Right` 映射成 `left` 这种错**抓不住** ——
+    /// 注入驱动实测过（`halign-right` 那条注入第一版没让任何用例变红）。
+    /// CSS 里 `vertical-align:center` 也不合法（合法值是 middle），所以垂直同样逐个测。
+    #[test]
+    fn html_preview_maps_every_alignment_variant() {
+        for (h, want) in [
+            (HAlign::Left, "text-align:left"),
+            (HAlign::Center, "text-align:center"),
+            (HAlign::Right, "text-align:right"),
+        ] {
+            let mut tpl = one_number_template(1.0, None);
+            tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().style =
+                Some(CellStyle { h_align: Some(h), ..Default::default() });
+            let resp = render_tpl(tpl);
+            let html = to_html(&resp.sheets).expect("合法");
+            let tag = td_opening_tag_with(&html, "1");
+            assert!(tag.contains(want), "h_align={h:?} 应映射成 {want}：{tag}");
+        }
+        for (v, want) in [
+            (VAlign::Top, "vertical-align:top"),
+            (VAlign::Middle, "vertical-align:middle"),
+            (VAlign::Bottom, "vertical-align:bottom"),
+        ] {
+            let mut tpl = one_number_template(1.0, None);
+            tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().style =
+                Some(CellStyle { v_align: Some(v), ..Default::default() });
+            let resp = render_tpl(tpl);
+            let html = to_html(&resp.sheets).expect("合法");
+            let tag = td_opening_tag_with(&html, "1");
+            assert!(tag.contains(want), "v_align={v:?} 应映射成 {want}：{tag}");
+        }
+    }
+
+    /// **字色与底色是两个独立的校验**，都要各自测。
+    ///
+    /// 第一版只测了底色（`bg: "red"`），于是「删掉字色的校验」那条注入没让任何用例变红
+    /// —— 注入驱动实测过。两条校验分开写，就得分开守。
+    #[test]
+    fn html_preview_bad_font_color_errors_too() {
+        let mut tpl = one_number_template(1.0, None);
+        tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().style = Some(CellStyle {
+            color: Some("#GGGGGG".into()), // 长度对、但不是十六进制
+            ..Default::default()
+        });
+        let err = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None })
+            .expect_err("字色认不出也必须报错");
+        assert!(err.contains("A1"), "要点名哪一格：{err}");
+        assert!(err.contains("style.color"), "要点名是字色（不是底色）：{err}");
+        assert!(err.contains("#GGGGGG"), "要点名哪个值：{err}");
+    }
+
+    /// **这条是本次改动的目的**：条件格式（B3）算出来的样式要能在**预览**里看见。
+    /// 改动前 `to_html` 根本不读 `GridCell.style`，预览里永远看不到标红。
+    #[test]
+    fn html_preview_shows_conditional_format() {
+        let mut tpl = one_number_template(5000.0, None);
+        tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().conditional =
+            Some(vec![rule("gt", 1000.0)]);
+        let resp = render_tpl(tpl);
+        let html = to_html(&resp.sheets).expect("合法");
+        let tag = td_opening_tag_with(&html, "5,000");
+        assert!(tag.contains("color:#FF0000"), "超标格该在预览里标红：{tag}");
+    }
+
+    /// 反向对照：**没命中**时预览里不该出现任何样式。
+    /// 少了这条，「无条件标红」这种实现也能让上面那条绿。
+    #[test]
+    fn html_preview_shows_no_style_when_conditional_misses() {
+        let mut tpl = one_number_template(500.0, None);
+        tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().conditional =
+            Some(vec![rule("gt", 1000.0)]);
+        let resp = render_tpl(tpl);
+        let html = to_html(&resp.sheets).expect("合法");
+        assert!(!html.contains("color:#FF0000"), "没命中不该标红：{html}");
+        assert!(
+            all_td_tags(&html).iter().all(|t| !t.contains(" style=")),
+            "没命中就不该有 style 属性：{:?}",
+            all_td_tags(&html)
+        );
     }
 }
 

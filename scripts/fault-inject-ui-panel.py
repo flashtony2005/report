@@ -38,6 +38,8 @@ MODAL = "designer-react/src/modals/GridReportModal.tsx"
 GR = "openprint/src/report/grid-report.ts"
 BARCODE_SPEC = "src/modals/grid-report-cell-barcode.spec.tsx"
 CHART_SPEC = "src/modals/grid-report-cell-chart.spec.tsx"
+# 服务端错误文案要活着到界面（#74 的客户端一侧）
+ERROR_SPEC = "src/modals/grid-report-render-error.spec.tsx"
 
 NODE = os.environ.get(
     "NODE_BIN", "/Users/lushaohui/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node"
@@ -139,6 +141,27 @@ INJECTIONS = [
         "  const badPos = [...cats, ...series.map((s) => s.from.trim())].find((p) => parsePos(p) === null)\n",
         "  const badPos = undefined as string | undefined\n",
         CHART_SPEC,
+    ),
+    # ---- #74 的客户端一侧：服务端「报错点名哪一格」白做，除非界面把它显示出来 ----
+    (
+        "render-error-detail",
+        "吞掉错误文案",
+        "预览失败时不回落到纯文本错误体 → 只剩「服务端返回 400」，格子名丢了",
+        MODAL,
+        "          const detail = (payload as { message?: string }).message || text.trim()\n"
+        "          throw new Error(detail || `服务端返回 ${res.status}`)",
+        "          throw new Error((payload as { message?: string }).message || `服务端返回 ${res.status}`)",
+        ERROR_SPEC,
+    ),
+    (
+        "export-error-detail",
+        "吞掉错误文案",
+        "导出失败时不读错误体 → 只剩「导出失败：400」",
+        MODAL,
+        "        const detail = (await res.text()).trim()\n"
+        "        throw new Error(detail ? `导出失败：${detail}` : `导出失败：${res.status}`)",
+        "        throw new Error(`导出失败：${res.status}`)",
+        ERROR_SPEC,
     ),
 ]
 

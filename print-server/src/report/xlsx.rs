@@ -4,19 +4,13 @@
 //! 数值列写 number（保留可计算性），文本写 string；跨行跨列还原为 merge_range。
 
 use crate::report::model::{
-    parse_image_data_uri, CellStyle, Graphic, GridCell, HAlign, RenderedSheet, ResolvedChart, VAlign,
+    is_hex_color, parse_image_data_uri, CellStyle, Graphic, GridCell, HAlign, RenderedSheet,
+    ResolvedChart, VAlign,
 };
 use rust_xlsxwriter::{
     Chart, ChartType, Format, FormatAlign, FormatBorder, Image, Workbook, Worksheet,
 };
 use std::collections::{HashMap, HashSet};
-
-/// 只认 `#RRGGBB`。不猜 `rgb()` / 颜色名 / `#RGB` 简写 —— 猜错了是静默的，
-/// 作者会以为自己设的颜色生效了。认不出来就报错，让人当场改对。
-fn is_hex_color(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 7 && b[0] == b'#' && b[1..].iter().all(|c| c.is_ascii_hexdigit())
-}
 
 /// 在导出器的基础格式（表头 / 正文 / 换行）上叠加**作者定义的**样式
 ///

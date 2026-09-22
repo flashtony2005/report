@@ -158,10 +158,10 @@ describe('格子样式面板', () => {
   })
 
   /// 认不出来的颜色**不该**把色块染了 —— 否则作者以为设上了
-  it('非法色值不染色块（但仍按原样保存，由服务端导出时报错）', async () => {
+  it('非法色值不染色块（但仍按原样保存，由服务端预览 / 导出时报错）', async () => {
     await mount({ value: '华东' })
     await typeInto(inputIn('free-cell-style-color'), 'red')
-    // 前端不擅自丢弃，交给导出时报清楚
+    // 前端不擅自丢弃，交给服务端报清楚（预览与导出都会报，见 verify-html-style.py）
     expect(styleOf()?.color).toBe('red')
     const bg = byTestid('free-cell-style-color-swatch').style.background
     expect(bg === '' || bg.includes('transparent'), `色块不该被染: ${bg}`).toBe(true)

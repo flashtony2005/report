@@ -733,7 +733,8 @@ export function CellModelEditor({
 
         刻意**没有边框开关**：Univer 的 `bd` 实测完全不渲染，设了在网格里看不见，
         那就是「设了没反应」的静默失败。宁可不给，也不给看不见的开关。
-        颜色只认 #RRGGBB；写成 red / rgb(...) 会在导出时明确报错，不静默丢弃。
+        颜色只认 #RRGGBB；写成 red / rgb(...) **预览和导出都会明确报错**（点名哪一格哪个值），
+        不静默丢弃 —— 服务端 `html_style_attr` 与 `xlsx::with_style` 同口径。
       */}
       <Space wrap size="small" align="center">
         <Typography.Text style={{ fontSize: 12 }}>样式</Typography.Text>
@@ -2188,7 +2189,12 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           /* 非 JSON（如 400 纯文本） */
         }
         if (!res.ok) {
-          throw new Error((payload as { message?: string }).message || `服务端返回 ${res.status}`)
+          // 服务端的错误体是**纯文本**（axum 的 `(StatusCode, String)` 直接吐字符串），
+          // 不是 JSON —— 上面 `JSON.parse` 失败时 `payload` 还是 `{}`。
+          // 所以必须回落到原始文本，否则「格子 C2 的 style.color「red」不是 #RRGGBB」
+          // 这种**点名到格**的提示会被丢掉，只剩一句「服务端返回 400」，等于没说。
+          const detail = (payload as { message?: string }).message || text.trim()
+          throw new Error(detail || `服务端返回 ${res.status}`)
         }
         data = payload as RenderResponse
       }
@@ -2219,7 +2225,12 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           body: JSON.stringify(built.req),
         })
       }
-      if (!res.ok) throw new Error(`导出失败：${res.status}`)
+      if (!res.ok) {
+        // 与预览同口径：错误体是纯文本，读出来才有「哪一格哪个值」。
+        // 不读的话作者只会看到「导出失败：400」，等于没说。
+        const detail = (await res.text()).trim()
+        throw new Error(detail ? `导出失败：${detail}` : `导出失败：${res.status}`)
+      }
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
