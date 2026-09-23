@@ -38,7 +38,7 @@
 ## 三条「静默失败」红线（改了必自查）
 
 1. **报表目录跟着 cwd 走**：`store::reports_dir(config_path)` = 配置文件同级的 `reports/`，默认配置路径是**相对**的 `print-server.json`。从仓库根启动 → `/api/reports` 返回 `[]`，**无任何报错**。刻意设计，只做披露（横幅 / `/health` / 响应头）。响应头跨域默认读不到（`CorsLayer::permissive()` 已 expose）；**curl 证明不了浏览器能读**，要页面里 `fetch()` 读。`HeaderValue` 只收可见 ASCII → 中文路径 percent 编码。
-2. **预览与导出是两套口径**：`buildRenderRequest` 前端算 `headerRows`；xlsx 导出在 Rust 侧另算（`ReportTemplate::header_row_count()`，判据：从第一行起连续「既无 `expand_type=r` 也无 `row_parent」的行；`row_parent: ""` 也算没主格）。**不一致是静默的**。生成器模板第一行是**标题**、第二行才是列头 → 典型值 **2 / 2 / 2 / 3**。改一侧要同步另一侧；`sample_template_has_two_header_rows` 是钉子。**这条也管 `repeat_header_rows`**，见红线 4。
+2. **预览与导出是两套口径**：`buildRenderRequest` 前端算 `headerRows`；xlsx 导出在 Rust 侧另算（`ReportTemplate::header_row_count()`：从第一行起连续「既无 `expand_type=r` 也无 `row_parent」的行；`row_parent: ""` 也算没主格）。**不一致是静默的**。生成器模板第一行是**标题**、第二行才是列头 → 典型值 **2 / 2 / 2 / 3**；`sample_template_has_two_header_rows` 是钉子。**这条也管 `repeat_header_rows`**，见红线 4。
 3. **`ReportSource` 是 `rename_all = "camelCase"`** → JSON 里是 **`connId`**。写成 `conn_id` 被 serde 忽略、静默落到第一个连接，报「sqlite 文件不存在: F:\...\data.db」—— 看着像配置没加载，其实是字段名错了。
 4. **`page.is_some()` ≠ 开了分页**（页面设置也挂在同一个 `PageConfig` 上）。凡这类分支都要改问「**真开分页了吗**」（`rows_per_page > 0`）。踩过两次：`xlsx_header_rows` 不判分页 → 只配纸张就把「2 行表头」静默变「1 行」；`paginate` 没真分页时返回 1 页 → 长表印**「第 1 / 1 页」**（错的，比不印更坏）。
 
@@ -70,13 +70,14 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 - **格子样式 + 条件格式**：`CellModel.style` → `GridCell.style` → xlsx `with_style()` + HTML `<td style>`。**刻意不给边框**（Univer 不渲染）。颜色只认 `#RRGGBB`，认不出**两端点都报 400**。条件格式（第一条命中生效）**无新渲染代码**。细节 §十四/§十五。
 - **HTML 预览画样式（#74）**：`to_html` 原来**不读** `GridCell.style` → 样式/条件格式预览里全看不到。现由 `html_style_attr()` 渲成 `<td style>`，`to_html` **返回 `Result`**（校验文案与 xlsx 逐字一致）。无样式时输出**逐字节不变**；坏样式在 xlsx 端点 **500 → 400**。细节 §十五。
 - **MySQL / MariaDB / SQL Server / Oracle 明确报错**：`unsupported_engine_name()`。注意 `ServerConfig::load()` **不调 `validate()`**（只有保存/试连调），手改配置写 mysql 会报误导性的「sqlite 文件不存在」。
-- **格子图片**：`CellTpl.image` / `CellModel.image`（**两槽都认**）→ `GridCell.image` → xlsx 真嵌入 + HTML `<img>`。只收 data URI（不做文件路径：模板可分享，读本地文件 = 任意文件读取原语）。探针 + 反证 6 条。
-- **图表格**：`CellTpl.chart` / `CellModel.chart`（两槽都认）→ `GridCell.chart` → HTML 内联 SVG + xlsx **原生图表**。声明**模板坐标**。三条硬约定：**一个声明只画一份**（图片/条码相反）· **空值是空档不是 0** · xlsx 数写在**表格下方隐藏列** → 图表是**导出那一刻的快照**。细节 §十。
-- **条码 / 二维码**：`CellTpl.barcode` / `CellModel.barcode`（两槽都认）→ `GridCell.barcode` → HTML 内联 SVG + xlsx **1 位灰度位图**（自研 PNG 编码器）。QR（**字节模式 + ECC M + v1~10**）+ Code128 全表。**展开行 N 行出 N 个**（同图片，**反图表**）。优先级 `图片 > 图表 > 条码` 收成**一个判据** `GridCell::graphic()`。设计器面板已接上（判据与 Rust 同口径）。细节 §十一。
-- **ODBC 引擎**：`db_odbc.rs`，可选 feature。**票据指令**：`/print` 的 `esc` / `tsc` / `zpl` 已实现。
-- **报表参数**：`ReportDef.params` + `RunRequest.values`（按名绑）；与老 `RunRequest.params`（数据集名 → 位置数组）是两条通道。未知 / 必填缺失 / 引用解析不出值**一律报错**，且**未知参数检查必须先于必填检查**（否则 typo 被报成「region 必填」）。
-- **报表页面设置**（纸张/方向/边距/页码/居中）：`PageConfig` 后 5 个 `Option` 字段 → HTML `@page`（**只吐作者明写的项**）+ xlsx 每 sheet 的 `pageSetup`/`pageMargins`/`oddFooter`。**页码只能服务端烤进 HTML**（PDF 走 Chrome CLI，吐不出页眉页脚）。**B5 = JIS 182×257**（Excel 码 13）。**背景 / 水印没做**。细节 §十六。
-- **Word 导出（B6）**：`POST /api/report/docx` → `docx.rs` + `zip.rs`（**只写 method 0**；CRC-32 与 PNG 共用）。**本机没 Word/WPS** → 「Word 能打开」**验不了**，只能用**四条可判定不变量**（良构 XML / part 闭合 / `r:id` 闭合 / 子元素顺序）替代；**失败是全有全无**。细节 §十八。
+- **格子图片**：`CellTpl.image` / `CellModel.image`（**两槽都认**）→ `GridCell.image` → xlsx 真嵌入 + HTML `<img>`。只收 data URI（模板可分享 → 收路径 = 任意文件读取原语）。探针+反证 6 条。
+- **图表格**：`CellTpl.chart` / `CellModel.chart`（两槽都认）→ `GridCell.chart` → HTML 内联 SVG + xlsx **原生图表**。声明**模板坐标**。三条硬约定：**一个声明只画一份**（图片/条码相反）· **空值是空档不是 0** · xlsx 数写**表格下方隐藏列** → 图表是**导出那一刻的快照**。细节 §十。
+- **条码 / 二维码**：`CellTpl.barcode` / `CellModel.barcode`（两槽都认）→ `GridCell.barcode` → HTML 内联 SVG + xlsx **1 位灰度位图**（自研 PNG 编码器）。QR（**字节模式 + ECC M + v1~10**）+ Code128 全表。**展开行 N 行出 N 个**（同图片，**反图表**）。优先级 `图片 > 图表 > 条码` 收成**一个判据** `GridCell::graphic()`。设计器面板已接。细节 §十一。
+- **ODBC 引擎**：`db_odbc.rs`，可选 feature。**票据指令** `/print` 的 `esc`/`tsc`/`zpl` 已实现。
+- **报表参数**：`ReportDef.params` + `RunRequest.values`（按名绑）；与老 `RunRequest.params`（数据集名 → 位置数组）是两条通道。未知/必填缺失/引用解析不出值**一律报错**；**未知参数检查必须先于必填检查**（否则 typo 被报成「region 必填」）。
+- **报表页面设置**（纸张/方向/边距/页码/居中）：`PageConfig` 后 5 个 `Option` 字段 → HTML `@page`（**只吐作者明写的项**）+ xlsx 每 sheet 的 `pageSetup`/`pageMargins`/`oddFooter`。**页码只能服务端烤进 HTML**（PDF 走 Chrome CLI）。**B5 = JIS 182×257**（Excel 码 13）。**背景 / 水印没做**。细节 §十六。
+- **Word 导出（B6）**：`POST /api/report/docx` → `docx.rs` + `zip.rs`（**只写 method 0**；CRC-32 与 PNG 共用）。**本机没 Word/WPS** → 「Word 能打开」**验不了**，只能用**四条可判定不变量**替代；**失败是全有全无**。细节 §十八。
+- **数据文件 / 接口数据集（C 类）**：`RenderRequest.datasets` 服务端早通着。前端 `dataset-import.ts`（CSV/TSV/JSON + 数值「往返一致」推断）+ `dataset-fetch.ts`（URL **前端直连**＝不造 SSRF）+ `parseWorkbookFile`（xlsx 用 **`raw: true` + `cellDates`**；`raw: false` 把货币格读成 `"¥1,234.50"` → **合计都错**）。设计器已接「数据库 / 文件·接口」切换。细节 §十九。
 
 ## 局限 / 已知取舍
 
@@ -90,6 +91,6 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 对标 `jeecgboot/JimuReport`。**结论：不是一个物种** —— 它做广度（填报 / 大屏 / AI / 权限 / 移动端），我们做深度（打印版面 + 非线性内核）。
 
 1. **A 类 5 项明确不做**：填报回写 / 大屏 / AI / 权限分享 / 移动端。**填报**是唯一业务上真会被问的 —— 三个引擎只读，是**架构取舍**；对外口径必须是「按只读设计，不支持回写」，**不能说「暂未实现」**。
-2. **B 类 6 项才是真该补的**。图表 / **条码二维码** / **条件格式** / **B6 Word 导出** ✅（前三者同根因：`CellTpl` 缺「非文本格子」通道）。剩 **B4 超链接**（打印用不上）/ **C 文件·API 数据集**（**最便宜的 80% 不动 Rust**：`RenderRequest.datasets` 已存在）。**B5 子报表：不做**。
+2. **B 类 6 项才是真该补的**。图表 / **条码二维码** / **条件格式** / **B6 Word 导出** / **C 文件·API 数据集** ✅（前三者同根因：`CellTpl` 缺「非文本格子」通道）。剩 **B4 超链接**（打印用不上）。**B5 子报表：不做**。
 3. **数据源别追数量**（3 vs 30+）。真差距是「没有非 SQL 数据集抽象」；信创库走 ODBC DSN，别逐个写适配。
 4. **⚠️ 许可**：其补充条款**禁止同类竞争** + 必须保留版权标识。本项目就是报表引擎，属同类 → **可读 README 对标功能，不能抄代码 / 兼容其模板格式**。想兼容先找法务。
