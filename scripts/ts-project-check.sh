@@ -21,11 +21,15 @@
 #   scripts/ts-project-check.sh                # designer-react（默认）
 #   scripts/ts-project-check.sh <目录>          # 该目录下要有「可被 -p 直接吃」的 tsconfig.json
 #
-# ⚠️ **本脚本只对 designer-react 有意义。**
-# `openprint/tsconfig.json` 是**解决方案式**配置（`"files": []` + `references`）——
+# 解决方案式配置：`openprint/tsconfig.json` 就是（`"files": []` + `references`）。
 # `tsc -p` 对它**什么都不检查**却打印「OK」，是个**假绿**（本项目最讨厌的那类静默）。
-# openprint 真正的闸是 `vue-tsc --build`（有 `.vue` 文件、extends `@vue/tsconfig`）。
-# 所以下面**检测到 `"files": []` 就直接拒跑**，而不是给你一个假的 OK。
+# 所以这类项目**不走 `tsc -p`**，改走它自己的 type-check 工具 —— 本项目是
+# `vue-tsc --build`（有 `.vue` 文件、extends `@vue/tsconfig`）。
+#
+# ⚠️ **别嫌麻烦就不用它**。2026-09-23 之前 openprint 的 `vue-tsc --build` 一直红着
+# （108 条错，全在 `grid-report.spec.ts`），因为「反正一直是红的」，新错误混在里面
+# 根本看不出来 —— **一条长期红着的闸 = 没有闸**。现已清零，它必须能被一键跑起来，
+# 否则下次红了又没人管。
 #
 # 退出码：0 = 无类型错误；1 = 有；2 = 找不到编译器 / 配置不能被 -p 直接检查。
 set -e
@@ -42,12 +46,26 @@ if [ ! -f "$ROOT/$TARGET_DIR/tsconfig.json" ]; then
   exit 2
 fi
 
-# 解决方案式配置：`tsc -p` 不检查任何文件却会打印 OK —— 拒跑，别给假绿。
+# 解决方案式配置：改走 `vue-tsc --build`，别给 `tsc -p` 的假绿。
+IS_SOLUTION=0
 if grep -Eq '"files"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]' "$ROOT/$TARGET_DIR/tsconfig.json"; then
-  echo "✗ $TARGET_DIR/tsconfig.json 是解决方案式配置（\"files\": [] + references）。" >&2
-  echo "  \`tsc -p\` 对它**一个文件都不检查**却会报 OK（假绿），所以这里直接拒跑。" >&2
-  echo "  它真正的闸在 package.json 的 type-check 脚本（本项目是 \`vue-tsc --build\`）。" >&2
-  exit 2
+  IS_SOLUTION=1
+fi
+
+if [ "$IS_SOLUTION" = "1" ]; then
+  VUETSC="$ROOT/$TARGET_DIR/node_modules/.bin/vue-tsc"
+  if [ ! -f "$VUETSC" ]; then
+    echo "✗ $TARGET_DIR 是解决方案式配置，需要 \`vue-tsc\`，但 $VUETSC 不在" >&2
+    echo "  先装依赖（openprint 目录下 npm i），别改用 \`tsc -p\` —— 那是个假绿。" >&2
+    exit 2
+  fi
+  echo "解决方案式配置 → 用 \`vue-tsc --build\`（\`tsc -p\` 对它什么都不检查）"
+  cd "$ROOT/$TARGET_DIR"
+  # vite 工具链在沙箱里一律要挂这两个 preload，否则会卡死在 RUN / SIGKILL(137)。
+  NODE_OPTIONS="--require $ROOT/scripts/vite-safe-delete-bypass.cjs --require $ROOT/scripts/broker-mkdir-throttle.cjs" \
+    "$NODE" "$VUETSC" --build --force
+  echo "OK：$TARGET_DIR（vue-tsc --build）无类型错误"
+  exit 0
 fi
 
 if [ -f "$LOCAL" ]; then
