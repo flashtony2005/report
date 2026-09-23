@@ -45,6 +45,13 @@ HAND_WRITTEN = {
     "CT_Tr": ["w:trPr", "w:tc"],
     # CT_Tc: tcPr 打头，之后是块级内容（p / tbl）。**tc 不能直接装文本**
     "CT_Tc": ["w:tcPr", "w:p"],
+    # CT_TblBorders：ECMA-376 里的顺序是
+    # top / start(=left) / bottom / end(=right) / insideH / insideV。
+    # 我们写的是**过渡型**（w:left / w:right），Word 自己产出的也是这套名。
+    # ⚠️ 这条同样是我写的，python-docx 没有对应定义 —— 可信度比上面 9 条低一档。
+    "CT_TblBorders": [
+        "w:top", "w:left", "w:bottom", "w:right", "w:insideH", "w:insideV",
+    ],
 }
 HAND_WRITTEN_NOTE = (
     "这 5 条是手工写的（python-docx 没给 _tag_seq），来源是本仓不是规范原文；"
