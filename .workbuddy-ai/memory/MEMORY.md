@@ -57,24 +57,30 @@
 
 sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。MySQL **归一成 sqlite**，但 UI 下拉只有三项（`admin.html:407`），**手改配置才会踩**。`/print` 只支持 pdf/html。
 
+## 前端三条类型闸（2026-09-23 起两边都是 0 错）
+
+`ts-check.sh`（快查）· `ts-project-check.sh`（designer-react）· `ts-project-check.sh openprint`
+（**自动转 `vue-tsc --build`**；openprint 的 tsconfig 是解决方案式，`tsc -p` **假绿**）。
+**长期红着的闸 = 没有闸**（曾红 116 条）。修法与坑见 §十七。
+
 ## 已完成（别再当缺口重复做）
 
-- **CSV 导出**：`POST /api/report/csv` + `GET /api/report/sample.csv`。RFC 4180 + UTF-8 BOM + CRLF。写 `text` 不写 `formula`。**CSV 注入（`=cmd|`）刻意不改写**（加 `'` 会改掉 `+86` 手机号，不值）。
+- **CSV 导出**：`POST /api/report/csv` + `GET /api/report/sample.csv`。RFC 4180 + UTF-8 BOM + CRLF。写 `text` 不写 `formula`。**CSV 注入（`=cmd|`）刻意不改写**（加 `'` 会改掉 `+86` 手机号）。
 - **分页不切合并格**：`merge_blocked_boundaries()`。**关键洞察：主格展开出来就是合并格** → 「不在合并格中间切页」==「组内不跨页」。代价：页大小不再严格等于 `rows_per_page`，组超一页时那页必然超（宁超不切）。
-- **格子样式 `CellStyle` + 条件格式**：7 个字段（bold / italic / font_size / color / bg / h_align / v_align），链路 `CellModel.style` → `CellInst.style` → `GridCell.style` → **xlsx `with_style()`（叠加）+ HTML `<td style>`**。**刻意不给边框**（Univer 不渲染 = 静默失败）。颜色只认 `#RRGGBB`，认不出**两个端点都报 400**。`Some(false)` = **不表态**。**条件格式** `CellModel.conditional`（规则数组，**第一条命中生效**）**没有新渲染代码** —— 展开期算出一份 `CellStyle` 塞进**同一个**槽；非数值 / 空值**一条都不命中**。细节 §十四 / §十五。
+- **格子样式 `CellStyle` + 条件格式**：7 字段（bold/italic/font_size/color/bg/h_align/v_align），链路 `CellModel.style` → `CellInst.style` → `GridCell.style` → xlsx `with_style()` + HTML `<td style>`。**刻意不给边框**（Univer 不渲染 = 静默失败）。颜色只认 `#RRGGBB`，认不出**两个端点都报 400**；`Some(false)` = 不表态。条件格式 `CellModel.conditional`（第一条命中生效）**无新渲染代码**，展开期算出样式塞进同一槽。细节 §十四 / §十五。
 - **HTML 预览画样式（#74）**：`to_html` 原来**不读** `GridCell.style` → 样式与条件格式在预览里**全看不到**。现由 `html_style_attr()` 渲成 `<td style>`，且 `to_html` **返回 `Result`**（颜色/字号在此校验，文案与 xlsx 逐字一致）。无样式时输出**逐字节不变**；坏样式在 `/api/report/xlsx` 上 **500 → 400**（校验提前到 `render()` 内）。细节 §十五。
 - **MySQL / MariaDB / SQL Server / Oracle 明确报错**：`unsupported_engine_name()`。注意 `ServerConfig::load()` **不调 `validate()`**（只有保存/试连调），手改配置写 mysql 会报误导性的「sqlite 文件不存在」。
 - **格子图片**：`CellTpl.image` / `CellModel.image`（**两槽都认**）→ `GridCell.image` → xlsx 真嵌入 + HTML `<img>`。只收 data URI（不做文件路径：模板可分享，读本地文件 = 任意文件读取原语）。探针 `verify-xlsx-image.py` + 反证（6 条）。
-- **图表格**：`CellTpl.chart` / `CellModel.chart`（两槽都认）→ `GridCell.chart` → HTML 内联 SVG + xlsx **原生图表**。声明的是**模板坐标**（`categories: ["A3"]`），网格填完后才解析。三条硬约定：**一个声明只画一份**（行展开会复制，**图片 / 条码相反**）· **空值是空档不是 0** · xlsx 的数写在**表格下方的隐藏列** → 图表是**导出那一刻的快照**。细节 §十。
-- **条码 / 二维码**：`CellTpl.barcode` / `CellModel.barcode`（两槽都认）→ `GridCell.barcode` → HTML 内联 SVG + xlsx **1 位灰度位图**（手写零依赖 PNG 编码器）。编码器自研：QR（**字节模式 + ECC M + v1~10**）+ Code128 全表。**展开行 N 行出 N 个**（同图片，**反图表**）。优先级 `图片 > 图表 > 条码` 收成**一个判据** `GridCell::graphic()`。细节 §十一。**设计器面板已接上**（判据 `barcodeProblem`/`chartProblem` 与 Rust 同口径，改一处要改两处）。
+- **图表格**：`CellTpl.chart` / `CellModel.chart`（两槽都认）→ `GridCell.chart` → HTML 内联 SVG + xlsx **原生图表**。声明**模板坐标**，网格填完才解析。三条硬约定：**一个声明只画一份**（图片 / 条码相反）· **空值是空档不是 0** · xlsx 数写在**表格下方隐藏列** → 图表是**导出那一刻的快照**。细节 §十。
+- **条码 / 二维码**：`CellTpl.barcode` / `CellModel.barcode`（两槽都认）→ `GridCell.barcode` → HTML 内联 SVG + xlsx **1 位灰度位图**（手写零依赖 PNG 编码器）。QR（**字节模式 + ECC M + v1~10**）+ Code128 全表。**展开行 N 行出 N 个**（同图片，**反图表**）。优先级 `图片 > 图表 > 条码` 收成**一个判据** `GridCell::graphic()`。**设计器面板已接上**（判据与 Rust 同口径，改一处改两处）。细节 §十一。
 - **ODBC 引擎**：`db_odbc.rs`，可选 feature。**票据指令**：`/print` 的 `esc` / `tsc` / `zpl` 已实现。
 - **报表参数**：`ReportDef.params` + `RunRequest.values`（按名绑）；与老 `RunRequest.params`（数据集名 → 位置数组）是两条通道。未知 / 必填缺失 / 引用解析不出值**一律报错**，且**未知参数检查必须先于必填检查**（否则 typo 被报成「region 必填」）。
-- **报表页面设置**（纸张 / 方向 / 页边距 / 页码 / 居中）：`PageConfig` 后 5 个 `Option` 字段 → HTML `@page`（**只吐作者明写的项**，没写就不吐）+ xlsx 每 sheet 的 `pageSetup`/`pageMargins`/`oddFooter`。**页码只能服务端烤进 HTML**（PDF 走 Chrome `--headless=new --print-to-pdf`，它吐不出页眉页脚）。**B5 = JIS 182×257**（Excel 码 13），不是 ISO。**背景 / 水印没做**。细节 §十六。
+- **报表页面设置**（纸张 / 方向 / 页边距 / 页码 / 居中）：`PageConfig` 后 5 个 `Option` 字段 → HTML `@page`（**只吐作者明写的项**）+ xlsx 每 sheet 的 `pageSetup`/`pageMargins`/`oddFooter`。**页码只能服务端烤进 HTML**（PDF 走 Chrome CLI，吐不出页眉页脚）。**B5 = JIS 182×257**（Excel 码 13）。**背景 / 水印没做**。细节 §十六。
 
 ## 局限 / 已知取舍
 
-- **分页不认分组**：`paginate()`（`mod.rs:319`）渲染完后按固定行数切拍平网格，不知道哪几行同组 → 一组明细跨页时第二页只有重复表头，**补不出主格**。（「组内不跨页」靠合并格边界实现。）
-- **`GridCell` 字段很少**：`text / pos / rowspan / colspan / raw_number / num_format / formula` + 后补的 `style` / `image` / `chart` / `barcode`。设计器里的彩色是**语义高亮**（`grid-report.ts:661-666`，色表见 §）—— 标的是「这格什么角色」，不是「这格长什么样」。xlsx 的基础样靠导出器写死。
+- **分页不认分组**：`paginate()`（`mod.rs:319`）按固定行数切拍平网格，不知道哪几行同组 → 一组明细跨页时第二页只有重复表头，**补不出主格**。（「组内不跨页」靠合并格边界实现。）
+- **`GridCell` 字段很少**：`text / pos / rowspan / colspan / raw_number / num_format / formula` + 后补的 `style` / `image` / `chart` / `barcode`。设计器里的彩色是**语义高亮**（`grid-report.ts`）—— 标的是「这格什么角色」不是「长什么样」。xlsx 基础样靠导出器写死。
 - **`GridCell.pos` 保留模板坐标** → 可反查展开后的输出范围（服务端画图表的前提）。
 - 已核对**不是**缺口的：表达式函数集（11 官方 + MAP/FILTER/REDUCE/FLATMAP）全在；`CellModel` 无死字段；分页三配置都生效；多 sheet 导出支持。
 

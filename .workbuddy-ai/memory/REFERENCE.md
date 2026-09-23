@@ -544,3 +544,75 @@ B5 有两个互不相同的标准：ISO = 176×250、JIS = 182×257，而 Excel 
 脚本优先用 `<目标>/node_modules/typescript/bin/tsc`，并**拒绝**解决方案式配置
 （`openprint/tsconfig.json` 是 `"files": []` + references，`tsc -p` 对它**什么都不检查却报 OK**
 = 假绿；openprint 的真闸是 `vue-tsc --build`）。
+
+## 十七、`openprint` 的类型闸：`vue-tsc --build`（2026-09-23 清零，116 → 0）
+
+### 三条闸的分工（别混）
+
+| 闸 | 覆盖面 | 用法 |
+| --- | --- | --- |
+| `scripts/ts-check.sh` | `--noResolve` 逐文件查**本文件自己**；跨文件错结构上看不见 | 快，改完随手跑 |
+| `scripts/ts-project-check.sh` | `tsc -p` 全项目（别名 / JSX / 跨文件） | **designer-react** 用这个 |
+| `scripts/ts-project-check.sh openprint` | 检测到解决方案式配置 → 自动转 **`vue-tsc --build --force`** | **openprint** 用这个 |
+
+`openprint/tsconfig.json` 是**解决方案式**（`"files": []` + `references`）→
+`tsc -p` 对它**一个文件都不检查**却打印 OK。**别信那个 OK。**
+脚本在 2026-09-23 之前是「检测到就 exit 2 拒跑」，后果是 openprint 没有能一键跑的闸
+→ 现改成自动转 `vue-tsc`，并挂上沙箱必需的 preload
+（`vite-safe-delete-bypass.cjs` + `broker-mkdir-throttle.cjs`）。
+
+### 为什么必须保持绿的
+
+`noUncheckedIndexedAccess`（来自 `@vue/tsconfig`）下 `g[1][0]` 是
+`CellTpl | undefined`。这 108 条错**长期红着**，于是新错误混在里面看不出来
+—— **一条长期红着的闸等于没有闸**。清零后每次改动都要能一键复验。
+
+### 批量修 `noUncheckedIndexedAccess` 报错的做法（可复用）
+
+**别手改**，从 `vue-tsc --pretty` 的波浪线取精确 span 再插 `!`：
+
+```sh
+cd openprint && NODE_OPTIONS="--require <repo>/scripts/vite-safe-delete-bypass.cjs \
+  --require <repo>/scripts/broker-mkdir-throttle.cjs" \
+  node node_modules/.bin/vue-tsc --build --force --pretty > /tmp/p.txt
+```
+
+⚠️ **`--pretty` 输出带 ANSI 色码**：`grep 'error TS' /tmp/p.txt` **一个数都匹配不到**
+（第 N 次踩「grep 说没有 → 先怀疑 grep」）。先
+`re.sub(r'\x1b\[[0-9;]*m', '', raw)` 再解析。
+
+解析规则：错误头 `^src/...:(\d+):(\d+) - error (TS\d+):` → 往下找第一个以
+`^\d+ ` 开头的**源码行** → 它**下一行**的波浪线给出 `(起始列, 长度)`。
+**波浪线的缩进里包含了 pretty 加的「行号 + 空格」前缀**，插点要减掉
+`len(str(行号)) + 1`。同一行多个插点**从右往左插**。
+
+**两个必踩的坑**（自动改错，得手工收口）：
+1. **span 跨行** → `!` 被插到第一行行尾，类型没修好（如 `(... )!` 换行
+   `.sheets.sheet1.mergeData`）。正确位置是 `.sheets.sheet1!`。
+2. **`!` 落到类型位置** → `(x): x is string` 被插成 `x is string!` → **TS17019**。
+   `!` 只在**表达式**里是断言。
+
+### 证明「改了但没改行为」
+
+比「测试通过」更硬的一条：`!` 编译期擦除、不产生代码，所以只要证明
+**diff 的全部内容就是插入的 `!`** 即可：
+
+```python
+old = subprocess.run(['git','show','HEAD:'+path], ...).stdout
+new = open(path).read()
+assert old.replace('!','') == new.replace('!','')   # 逐字节相同
+```
+
+再用 `difflib.SequenceMatcher` 逐行核对，唯一允许「不只是加了 `!`」的是手工改动处。
+
+### 闸本身要有牙齿
+
+写完闸先证明它会红：往 `grid-report.ts` 末尾追加
+`const __probe: number = "not a number"` → 脚本退出 **2** 报 TS2322；还原 → 退出 **0**。
+
+### 其它
+
+- `!` 能表达的：正则捕获组在 `.exec()` 成功后必然存在（TS 表达不了，只能 `!`，
+  注释要写清「为什么必然存在」）。
+- TS2677（谓词类型不是参数类型的子类型）：`filter` 回调参数被推导成**字面量联合**
+  时，`(x): x is string` 不成立 → 参数显式写 `unknown`。
