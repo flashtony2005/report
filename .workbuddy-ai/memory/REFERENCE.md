@@ -409,3 +409,138 @@ px = round(width_xml × 7)          // 反解**不带 +5**（探针第一版就�
   （单测直接调 `to_html`，看不见 HTTP 状态码与分页接线）→ 这就是「探针不是摆设」的证据。
   反过来 `always-attr` / `bold-normal` / `valign-middle` 一开始**只有单测能抓**，
   补了探针的「六、样式枚举」之后才两道都红。**矩阵本身是结论**，不是过程记录。
+
+## 十六、报表页面设置（纸张 / 方向 / 页边距 / 页码 / 居中，2026-09-23 补上）
+
+**改之前报表路径完全没有这些东西**：`paper` / `orientation` 只存在于
+`print_job.rs` 的 `PrintJob`（那是**画布**路径），报表 HTML 只能听浏览器默认纸张。
+
+### 先决约束：页码**只能**服务端烤进 HTML（动手前先确认这条）
+
+`print_job.rs:261-266` 的 PDF 走 Chrome/Edge `--headless=new --print-to-pdf`。
+**这个 CLI 吐不出页眉页脚页码**（只有 CDP 的 `Page.printToPDF` 能），
+而且 Chrome **完全不支持** CSS `@page` 的 margin box。
+→ 所以页码是服务端写进 HTML 的内容；xlsx 侧相反，用的是 Excel **原生页脚**。
+
+### 数据结构
+
+`PageConfig` 原有 3 个分页字段（`rows_per_page` / `repeat_header_rows` /
+`repeat_footer_rows`），本轮加 5 个页面设置字段，**全是 `Option` + `serde(default)`**
+（老模板照样能解析，有单测 `old_template_json_without_page_setup_still_parses`）：
+
+`paper` · `orientation` · `margin_mm` · `page_number` · `center_horizontally`
+
+### ⚠️ `page.is_some()` ≠ 开了分页（本轮最贵的一条）
+
+页面设置和分页**挂在同一个 `PageConfig` 上**，所以 `page` 变成 `Some` 有**两个原因**。
+凡是按 `page.is_some()` 分支的地方，都要改问「**真开分页了吗**」（`rows_per_page > 0`）。
+本轮**踩了两次**：
+
+1. `xlsx_handler` 里取 `repeat_header_rows.max(1)` → 只配纸张（`repeat_header_rows` 是 0）
+   就把「预览 2 行表头」**静默变成「导出 1 行」** —— 正是那段代码当初要修的 bug。
+   抽成 `mod.rs::xlsx_header_rows()` 并加 `.filter(|p| p.rows_per_page > 0)`，
+   两个 xlsx handler 都套。
+2. `paginate` 在「没真分页」时**原样返回 1 页**，于是代码在长表上印
+   **「第 1 / 1 页」**。这是**错的**，比不印更坏（作者会照着错页码去找第 3 页）。
+   判据是 `cfg.is_effective(rows.len())`（服务端到底切没切页），
+   把 `effective` 透到 `pages_html`，不真分页时传 `page_no: None`（= 承认不知道）。
+
+### HTML 侧：`@page` **只吐作者明写的项**
+
+```rust
+if setup.paper.is_some() { decls.push(format!("size:{:.2}mm {:.2}mm", w, h)); }
+else if setup.landscape { decls.push("size:landscape".into()); }   // 没写纸张就别钉成 A4
+if let Some(m) = setup.margin_mm { decls.push(format!("margin:{}mm {}mm {}mm {}mm", m.top, m.right, m.bottom, m.left)); }
+```
+**CSS 顺序是 `top right bottom left`**，而 xlsx 的 `set_margins` 是
+`left right top bottom` —— 两边顺序不同，写反了只有打印出来才知道。
+
+**页边距是 `Option<PageMargins>`，不填 `DEFAULT_MARGINS`**：
+`DEFAULT_MARGINS`（Excel 的 19.05 / 17.78 mm）**只是一份布局假设**，
+唯一用途是算页码落在可印区哪里（`body_mm = height_mm - top - bottom`）。
+作者没写就两端各用各的默认（浏览器 ≈10mm / Excel 19.05·17.78），
+**谁都没冒充作者做选择**。填上它就等于「只配了页码」也顺手把边距钉死了。
+
+### xlsx 侧：`rust_xlsxwriter 0.99.0` 的四个坑（都是读它源码确认的，别凭记忆）
+
+| 坑 | 事实 |
+| --- | --- |
+| `set_paper_size(u8)` | 收的是 **Excel 数字码**，不是名字 |
+| `set_margins(l, r, t, b, header, footer)` | **6 个参数**，单位**英寸**（Excel 默认 0.7/0.7/0.75/0.75/0.3/0.3） |
+| `set_footer(s)` | 超过 **255 字符静默丢弃**（`eprintln!` 后 `return self`）→ 已在上游拦成 400 |
+| `<pageMargins>` | **无条件写出** → 不调 `set_margins` 与「调它 + Excel 默认值」**逐字节相同** |
+
+纸张码实测表：`1`=Letter · `5`=Legal · `8`=A3 · `9`=A4 · `11`=A5 · **`13`=B5（JIS 182×257）**。
+`set_portrait()` 是**空操作**（`write_page_setup` 本来就会写 `orientation`），只在横向时调 `set_landscape()`。
+
+页脚码：`{page}`→`&P`、`{pages}`→`&N`、居中段 `&C`、**字面量 `&` 要翻倍成 `&&`**。
+**转义必须在替换之前** —— 反了的话刚写进去的 `&P` 会被翻成 `&&P`，
+页脚印出字面量「&P」而**一点报错都没有**。
+
+实际落盘的 XML（拆包读出来的，不是猜的）：
+```xml
+<pageMargins left="0.2362204724409449" right="0.31496062992125984" top="0.3937007874015748" bottom="0.4724408818897638" header="0.3" footer="0.3"/>
+<pageSetup paperSize="9" fitToHeight="0" orientation="landscape" horizontalDpi="200" verticalDpi="200"/>
+<oddFooter>&amp;CA&amp;&amp;B 第 &amp;P / &amp;N 页</oddFooter>
+<printOptions horizontalCentered="1"/>
+```
+（`<pageSetup>` 里没有 `fitToWidth` —— `1` 是 XML 默认值，被省略了。）
+
+### B5 = **JIS 182×257**，不是 ISO 176×250（别再当 typo 改回去）
+
+B5 有两个互不相同的标准：ISO = 176×250、JIS = 182×257，而 Excel 纸张码 13
+（界面上就写「B5」）是 **JIS** 那个。按 ISO 尺寸去配码 34（Excel 里叫「Envelope B5」）
+会出现「HTML 按 176×250 排版、Excel 按 182×257 出纸」的静默不一致。
+→ 取 JIS，与 Excel 同口径；**ISO B5 本项目不支持**。
+`paper_table_is_pinned` 把整张表钉死，失败文案里写明这是**口径变更**而不是笔误。
+
+### 两条跨端（TS ↔ Rust）契约
+
+1. **纸张名大小写不敏感**：服务端 `paper_mm` / `paper_excel_id` 都是
+   `n.eq_ignore_ascii_case(name.trim())`。设计器的预检 `pageSetupProblem`
+   原来按大小写敏感比对 → `"a4"` 会被设计器拦下、服务端照样编得出来 = **误报**，
+   正是这套预检唯一不该犯的错。现已两边一致，并由探针
+   `case_paper_name_is_case_insensitive` 做实物证据。
+2. **方向只 trim、不忽略大小写**：服务端 match 的是字面量 `"portrait"` / `"landscape"`，
+   `"Landscape"` **会被拒**。这个**不对称**是有意的，别「顺手」放宽 —— 放宽就是
+   「设计器放行、服务端 400」。
+
+`pageSetupProblem` **刻意是服务端校验的子集**（「页边距吃掉整张纸」要拿纸张 mm 表才能算，
+而那张表只在 Rust 里；在这儿复制一份就是第二个真相源）。
+子集只会漏报、不会误报 —— 但**这个保证有前提**：凡在这里判的东西，判据必须与服务端逐字一致。
+
+### 存盘路径：页面设置**不是开关，是模板内容**
+
+`ReportOptions` 里**没有**纸张 / 页码这几个字段（只有分页三项），所以页面设置
+必须进 `rawTemplate` 才存得住。而 `withPage` 跑在 `rawTemplate` 快照**之后**
+→ 光靠它页面设置**永远到不了存盘文件**。
+症状：存了 A3 → 重开显示「不指定」→ 再保存**真把纸张抹掉了**，每一步都不报错。
+→ 新增 `withPageSetup`（**只写页面设置**、`rows_per_page` 固定 0），在快照**之前**调用；
+`withPage` 保留 0→1 兜底（有既有用例钉着），**只在真开分页时**套。
+`GridReportModal` 打开报表时从 `def.template.sheets[0].page` 回填这五项。
+
+### 探针 / 反证（`verify-report-paper.py` 12 节 + `fault-inject-report-paper.py` 16 条）
+
+四道闸：**Rust 单测** · **真机探针**（拆 zip 读 XML）· **TS 引擎**（`ts-test.sh`）·
+**TS 设计器**（designer-react 的 `grid-report-request.spec.ts`）。
+矩阵会打印「哪道闸抓到的」：
+
+- `set_margins` 参数顺序 / 英寸换算 / 页脚漏 `&C` → **只有探针**（xlsx 内容 deflate 过，单测读不到）
+- 页码扁平下标 → **只有单测**（探针那份是单 sheet，看不出来）
+- 设计器预检大小写 / 页面设置不进 `rawTemplate` → **只有对应的 TS 闸**
+
+**矩阵真正的用处是暴露「哪道闸是漏的」**：第一次跑完 #13 只被单测抓到。
+查下去发现**重复表头（`_xlnm.Print_Titles`）写在 `xl/workbook.xml` 的 `definedNames` 里、
+不在 `sheetN.xml`** —— 探针原来只读 sheet XML，**根本验不到**。
+补了 `xlsx_workbook()` + `case_page_setup_does_not_drop_repeat_rows` 之后才两道都红。
+**「只单测红」要当漏网处理，别当成正常分工。**
+
+### 顺带：前端「真闸」要**用本仓自带的 tsc**（`scripts/ts-project-check.sh`）
+
+借的那份（`admin/demo/web/node_modules/typescript`）**已漂到 6.0.3**，而 TS 6 把
+`baseUrl` 判为 deprecated → 整条 `tsc -p` 被一个**与代码无关的配置错误**堵死：
+`tsconfig.json(17,5): error TS5101 ... baseUrl is deprecated`（**真实退出码 2**）。
+看着像代码类型错了，其实一行都没错。本项目 `package.json` 钉的是 `^5.9.3`，用它跑 **exit 0**。
+脚本优先用 `<目标>/node_modules/typescript/bin/tsc`，并**拒绝**解决方案式配置
+（`openprint/tsconfig.json` 是 `"files": []` + references，`tsc -p` 对它**什么都不检查却报 OK**
+= 假绿；openprint 的真闸是 `vue-tsc --build`）。
