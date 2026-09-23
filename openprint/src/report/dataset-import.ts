@@ -460,3 +460,84 @@ export async function parseDatasetFileAsync(file: File): Promise<ParsedTable> {
   if (ext === 'xlsx' || ext === 'xls') return parseWorkbookFile(file)
   return parseDatasetFile(file.name, await file.text())
 }
+
+/* ------------------------- URL 取数用到的纯函数 ------------------------- */
+
+/** `parseDatasetFileAsync` 认得的所有后缀（文本 + 二进制） */
+const KNOWN_EXTS = ['csv', 'tsv', 'txt', 'json', 'xlsx', 'xls']
+
+/**
+ * 文件名后缀（小写，不含点）；没有后缀返回 `''`。
+ *
+ * 先去掉查询串 / 锚点、**再取路径最后一段**（basename），然后找最后一个点。
+ * 顺序很重要：不先取 basename 的话，`/api/v1.0/data` 会得出 `0/data`
+ * —— 目录名里的点被当成了后缀。虽然调用方还有 `isKnownExtension` 兜着，
+ * 但一个「看着像后缀、其实不是」的返回值迟早会被别处直接用上。
+ */
+export function fileExtension(fileName: string): string {
+  const noHash = fileName.split('#')[0] ?? ''
+  const noQuery = noHash.split('?')[0] ?? ''
+  const base = noQuery.split('/').pop() ?? ''
+  const dot = base.lastIndexOf('.')
+  if (dot < 0) return ''
+  return base.slice(dot + 1).toLowerCase()
+}
+
+/** 这个后缀我们认得吗 */
+export function isKnownExtension(ext: string): boolean {
+  return KNOWN_EXTS.includes(ext)
+}
+
+/**
+ * `Content-Type` → 扩展名。**认不出返回 `null`，不猜。**
+ *
+ * 用途：地址上没有后缀时（`/api/sales`）判格式。猜错的后果是渲染出一张
+ * 结构不对的表，而界面看着是「成功」的 —— 所以宁可返回 `null` 让调用方报错。
+ *
+ * 只认**明确**的 mime：`text/plain` 当 `txt`（最常见的裸文本接口），
+ * 其余一律 `null`。`application/octet-stream` 这类「什么都不是」的**故意不认** ——
+ * 它等于没说。
+ */
+export function extensionForContentType(contentType: string): string | null {
+  // 去掉 `; charset=utf-8` 之类的参数
+  const mime = (contentType.split(';')[0] ?? '').trim().toLowerCase()
+  if (mime === '') return null
+  if (mime === 'application/json' || mime === 'text/json' || mime.endsWith('+json')) return 'json'
+  if (mime === 'text/csv' || mime === 'application/csv') return 'csv'
+  if (mime === 'text/tab-separated-values') return 'tsv'
+  if (mime === 'text/plain') return 'txt'
+  if (mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return 'xlsx'
+  if (mime === 'application/vnd.ms-excel') return 'xls'
+  return null
+}
+
+/**
+ * 从 URL 取一个「文件名」——**只用来判后缀**，不落地、不打开。
+ *
+ * ⚠️ **必须用 `new URL()` 取 `pathname`，不能手写 `split('/')`。**
+ * 手写的话会把**主机名**当成最后一段：
+ * `http://a/` → `a`、`http://api.example.com` → `api.example.com`，
+ * 而主机名里有点，于是 `com` / `0/data` 这种「看着像后缀、其实不是」的东西
+ * 会被当后缀用。（这是写完测试才发现的 —— 用例断言 `http://a/` 给 `data`，
+ * 实际给了 `a`。）
+ *
+ * 不是完整 URL 时（用户只填了 `sales.csv`）`new URL` 会抛，那就按路径处理。
+ */
+export function fileNameFromUrl(url: string): string {
+  let path: string
+  try {
+    path = new URL(url).pathname
+  } catch {
+    // 只去掉查询串 / 锚点，当相对路径处理
+    const noHash = url.split('#')[0] ?? url
+    path = noHash.split('?')[0] ?? noHash
+  }
+  const base = path.split('/').filter((s) => s !== '').pop() ?? ''
+  if (base === '') return 'data'
+  try {
+    return decodeURIComponent(base)
+  } catch {
+    // 畸形百分号编码：原样返回，一个拼错的 URL 不该崩在解析文件名这步
+    return base
+  }
+}

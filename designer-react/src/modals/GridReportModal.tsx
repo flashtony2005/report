@@ -118,8 +118,14 @@ import {
   buildRenderRequest,
   type BuildResult,
   type CanvasTableLike,
+  type DataSourceKind,
   type TemplateMode,
 } from './grid-report-request'
+// 数据文件 / 接口 → 行。两条都在**前端**完成：文件侧读本地文件，
+// 接口侧浏览器直连（**不做后端代取** —— 那会变成 SSRF 原语，
+// 与本项目「图片只收 data URI、不收文件路径」的既有取舍一致，见 dataset-fetch.ts）。
+import { parseDatasetFileAsync, type DataRow } from '@/report/dataset-import'
+import { fetchDatasetFromUrl } from '@/report/dataset-fetch'
 import { useDataSourceStore } from '../stores/dataSource'
 import type { DbEngine } from '@/core/print-client'
 import { useDesignerStore } from '../stores/designer'
@@ -1762,6 +1768,13 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   /** 导入 .xlsx 的结果提示（成功/失败都在这儿说；不复用「渲染失败」那个 alert） */
   const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const importFileRef = useRef<HTMLInputElement | null>(null)
+  /**
+   * 保存后的提示。**内联数据那条必须有** ——
+   * 报表文件存的是「数据源声明」而不是数据快照，而文件 / 接口这条没有可存下来的声明，
+   * 于是保存会**静默丢掉数据**：存出来的报表「无数据源」，
+   * 直到下次打开执行时才发现。不说清就是又造了一个静默失败。
+   */
+  const [saveNotice, setSaveNotice] = useState('')
   /** 调试：让服务端回传展开中间结果（层次坐标 / 父格）与模板告警 */
   const [dump, setDump] = useState(false)
   const [dumpText, setDumpText] = useState('')
@@ -1784,6 +1797,82 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const loadTables = useDataSourceStore((s) => s.loadTables)
   const selectDatabase = useDataSourceStore((s) => s.selectDatabase)
   const selectTable = useDataSourceStore((s) => s.selectTable)
+
+  /* -------------------- 数据来源：数据库 / 文件·接口（二选一） -------------------- */
+
+  /**
+   * `db`（默认）= 发 `sources`，服务端连库现查；`inline` = 发 `datasets`，行由前端给。
+   *
+   * ⚠️ **两条通道不能同时发**：服务端侧同名时 `sources` 会盖掉 `datasets`
+   * （`mod.rs:491`），而"哪个赢了"在响应里看不出来。所以 `dataChannel()` 只发一条。
+   */
+  const [dataSourceKind, setDataSourceKind] = useState<DataSourceKind>('db')
+  /** 解析出来的行。`null` = 还没选数据；**空数组会报错**，不渲染空表 */
+  const [inlineRows, setInlineRows] = useState<DataRow[] | null>(null)
+  /** 解析出的列名，只用于界面显示「拿到了什么」 */
+  const [inlineColumns, setInlineColumns] = useState<string[]>([])
+  /** 数据从哪来（文件名 / 地址），让人看得见 */
+  const [inlineSource, setInlineSource] = useState('')
+  /**
+   * 取数 / 解析失败的原因。**必须显示出来** ——
+   * 失败退化成空表的话，「接口返回 0 行」和「跨域被挡」在界面上长得一模一样。
+   */
+  const [inlineErr, setInlineErr] = useState('')
+  const [inlineBusy, setInlineBusy] = useState(false)
+  const [urlText, setUrlText] = useState('')
+  /** 隐藏的文件输入框 —— 「选择文件」按钮点它（与 DataImportModal 同一套做法） */
+  const inlineFileRef = useRef<HTMLInputElement | null>(null)
+
+  /**
+   * 把一份解析结果落到 state。文件与接口**两条路共用** ——
+   * 各写一遍「清错 / 存行 / 存列名」迟早只改一处（本项目已因「同一判据写两遍」栽过）。
+   */
+  const applyParsed = useCallback((t: { columns: string[]; rows: DataRow[] }, source: string) => {
+    setInlineErr('')
+    setInlineRows(t.rows)
+    setInlineColumns(t.columns)
+    setInlineSource(source)
+  }, [])
+
+  /** 清空内联数据（换文件 / 切回数据库 / 解析失败时用） */
+  const clearInline = useCallback(() => {
+    setInlineRows(null)
+    setInlineColumns([])
+    setInlineSource('')
+    setInlineErr('')
+  }, [])
+
+  /** 选文件 → 解析。失败**报错不静默** */
+  const loadInlineFile = useCallback(
+    async (file: File) => {
+      setInlineBusy(true)
+      setInlineErr('')
+      try {
+        applyParsed(await parseDatasetFileAsync(file), file.name)
+      } catch (e) {
+        clearInline()
+        setInlineErr(`解析「${file.name}」失败：${e instanceof Error ? e.message : String(e)}`)
+      } finally {
+        setInlineBusy(false)
+      }
+    },
+    [applyParsed, clearInline],
+  )
+
+  /** 填地址 → 浏览器直连取数。失败**报错不静默**（CORS 被挡也走到这里） */
+  const loadInlineUrl = useCallback(async () => {
+    setInlineBusy(true)
+    setInlineErr('')
+    try {
+      const t = await fetchDatasetFromUrl(urlText)
+      applyParsed(t, t.fileName || urlText)
+    } catch (e) {
+      clearInline()
+      setInlineErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setInlineBusy(false)
+    }
+  }, [applyParsed, clearInline, urlText])
 
   const controls = useDesignerStore((s) => s.controls)
   const selectedIds = useDesignerStore((s) => s.selectedIds)
@@ -1892,6 +1981,9 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         loopField,
         dbSelection,
         grid,
+        dataSourceKind,
+        // `null`（还没选数据）转成 `undefined`，让 `buildRenderRequest` 走「inline 但没数据」的报错分支
+        inlineRows: inlineRows ?? undefined,
       }),
     [
       mode,
@@ -1916,6 +2008,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       loopField,
       dbSelection,
       grid,
+      dataSourceKind,
+      inlineRows,
     ],
   )
 
@@ -1983,6 +2077,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       sources,
       options,
     }
+    setSaveNotice('')
     setFileBusy(true)
     try {
       const res = await fetch(`${REPORT_SERVER}/api/reports/save`, {
@@ -1993,13 +2088,22 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       const text = await res.text()
       if (!res.ok) throw new Error(text || `保存失败 ${res.status}`)
       setError('')
+      // 内联数据存不下来（报表存的是**数据源声明**，文件 / 接口这条没有声明可存）——
+      // 必须当场说，否则用户要到「打开后执行没数据」才发现。
+      setSaveNotice(
+        dataSourceKind === 'inline'
+          ? '已保存模板。⚠️ 内联数据（文件 / 接口）**不会被保存**：报表文件存的是「数据源声明」' +
+              '而不是数据快照，而这条来源没有可存下来的声明。下次打开这份报表需要重新选文件；' +
+              '要用能存下来的来源，请切回「数据库」。'
+          : '',
+      )
       void refreshReports()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setFileBusy(false)
     }
-  }, [buildRequest, reportId, reportName, refreshReports, exportFormula, dump])
+  }, [buildRequest, reportId, reportName, refreshReports, exportFormula, dump, dataSourceKind])
 
   /**
    * 打开已保存的报表。
@@ -2102,13 +2206,23 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       }
       if (s0?.where) setWhere(s0.where)
       if (s0?.params?.length) setParamText(JSON.stringify(s0.params))
+      /*
+       * 打开报表要**回到报表自己声明的来源**。
+       *
+       * 不清内联数据的话：之前选的文件 / 接口行会继续生效，而 `datasets` 在同名时
+       * **盖过** `sources` —— 于是新打开的报表渲染的是**上一个文件的数据**，
+       * 屏幕上完全看不出异常（表头是报表的、数字是别人的）。
+       * 这正是「界面看着正常、数据是错的」那一类，必须主动清掉。
+       */
+      setDataSourceKind('db')
+      clearInline()
       setError('')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setFileBusy(false)
     }
-  }, [selectDatabase, selectTable, applyGrid])
+  }, [selectDatabase, selectTable, applyGrid, clearInline])
 
   /**
    * 执行已保存的报表：**不依赖当前表单**，直接按文件里存的定义跑。
@@ -2590,6 +2704,15 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
             {importMsg.text}
           </Typography.Text>
         )}
+        {saveNotice !== '' && (
+          <Typography.Text
+            type="warning"
+            style={{ fontSize: 12, display: 'block', marginTop: 6 }}
+            data-testid="report-file-save-notice"
+          >
+            {saveNotice}
+          </Typography.Text>
+        )}
         {savedReports.length === 0 && (
           // 空列表必须能自我解释：报表目录由**服务端配置文件的位置**决定，
           // 而那个路径默认是相对的，所以换个目录启动服务端就会看到另一个列表。
@@ -2612,44 +2735,148 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         {showQuery && (
           <>
             <Space wrap size="small">
-              <Select
+              {/*
+                数据来源**二选一**。切换时必须把另一侧的数据清掉：
+                请求体只发一条通道（服务端同名时 `sources` 会盖掉 `datasets`），
+                留着另一侧的行会让「当前用的是哪份数据」含糊不清。
+              */}
+              <Segmented
                 size="small"
-                style={{ minWidth: 180 }}
-                data-testid="grid-report-database"
-                placeholder="选择数据库"
-                value={dbSelection.database}
-                options={dbDatabases.map((d) => ({ label: d.label || d.name, value: d.name }))}
-                onChange={(v) => void selectDatabase(v, dbDatabases.find((d) => d.name === v)?.engine)}
+                data-testid="grid-report-data-source"
+                value={dataSourceKind}
+                onChange={(v) => {
+                  const k = v as DataSourceKind
+                  setDataSourceKind(k)
+                  if (k === 'db') clearInline()
+                }}
+                options={[
+                  { label: '数据库', value: 'db' },
+                  { label: '文件 · 接口', value: 'inline' },
+                ]}
               />
-              <Select
-                size="small"
-                style={{ minWidth: 180 }}
-                data-testid="grid-report-table"
-                placeholder="选择表"
-                value={dbSelection.table}
-                options={dbTables.map((t) => ({ label: t.name, value: t.name }))}
-                onChange={(v) => void selectTable(v)}
-              />
-              <Input
-                size="small"
-                style={{ width: 320 }}
-                placeholder="筛选条件（不含 WHERE，占位符用 ?），如 region = ?"
-                value={where}
-                onChange={(e) => setWhere(e.target.value)}
-                data-testid="grid-report-where"
-              />
-              <Input
-                size="small"
-                style={{ width: 200 }}
-                placeholder='参数 JSON 数组，如 ["华东", 1000]'
-                value={paramText}
-                onChange={(e) => setParamText(e.target.value)}
-                data-testid="grid-report-params"
-              />
+              {dataSourceKind === 'db' ? (
+                <>
+                  <Select
+                    size="small"
+                    style={{ minWidth: 180 }}
+                    data-testid="grid-report-database"
+                    placeholder="选择数据库"
+                    value={dbSelection.database}
+                    options={dbDatabases.map((d) => ({ label: d.label || d.name, value: d.name }))}
+                    onChange={(v) =>
+                      void selectDatabase(v, dbDatabases.find((d) => d.name === v)?.engine)
+                    }
+                  />
+                  <Select
+                    size="small"
+                    style={{ minWidth: 180 }}
+                    data-testid="grid-report-table"
+                    placeholder="选择表"
+                    value={dbSelection.table}
+                    options={dbTables.map((t) => ({ label: t.name, value: t.name }))}
+                    onChange={(v) => void selectTable(v)}
+                  />
+                  <Input
+                    size="small"
+                    style={{ width: 320 }}
+                    placeholder="筛选条件（不含 WHERE，占位符用 ?），如 region = ?"
+                    value={where}
+                    onChange={(e) => setWhere(e.target.value)}
+                    data-testid="grid-report-where"
+                  />
+                  <Input
+                    size="small"
+                    style={{ width: 200 }}
+                    placeholder='参数 JSON 数组，如 ["华东", 1000]'
+                    value={paramText}
+                    onChange={(e) => setParamText(e.target.value)}
+                    data-testid="grid-report-params"
+                  />
+                </>
+              ) : (
+                <>
+                  {/* 隐藏的文件入口 + 按钮触发（与 DataImportModal 同一套做法） */}
+                  <input
+                    ref={inlineFileRef}
+                    type="file"
+                    accept=".csv,.tsv,.txt,.json,.xlsx,.xls"
+                    style={{ display: 'none' }}
+                    data-testid="grid-report-inline-file"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0]
+                      // 清掉 value，否则**再选同一个文件不会触发 change**
+                      e.target.value = ''
+                      if (f) void loadInlineFile(f)
+                    }}
+                  />
+                  <Button
+                    size="small"
+                    loading={inlineBusy}
+                    onClick={() => inlineFileRef.current?.click()}
+                  >
+                    选择文件
+                  </Button>
+                  <Input
+                    size="small"
+                    style={{ width: 300 }}
+                    placeholder="或填接口地址，如 http://host/api/sales.csv"
+                    value={urlText}
+                    onChange={(e) => setUrlText(e.target.value)}
+                    onPressEnter={() => void loadInlineUrl()}
+                    data-testid="grid-report-inline-url"
+                  />
+                  <Button
+                    size="small"
+                    loading={inlineBusy}
+                    disabled={urlText.trim() === ''}
+                    onClick={() => void loadInlineUrl()}
+                    data-testid="grid-report-inline-fetch"
+                  >
+                    取数
+                  </Button>
+                </>
+              )}
             </Space>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              筛选条件与参数留空即全表（引擎分支不同占位符不同：sqlite 用 ?，postgres 用 ? 或 $1）
-            </Typography.Text>
+
+            {dataSourceKind === 'db' ? (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                筛选条件与参数留空即全表（引擎分支不同占位符不同：sqlite 用 ?，postgres 用 ? 或 $1）
+              </Typography.Text>
+            ) : (
+              <>
+                {/*
+                  ⚠️ 失败**必须显示出来**。取数失败退化成空表的话，
+                  「接口真的返回 0 行」和「跨域被挡 / 文件格式不对」在界面上长得一模一样。
+                */}
+                {inlineErr !== '' && (
+                  <Alert
+                    type="error"
+                    showIcon
+                    data-testid="grid-report-inline-error"
+                    message="数据来源出错"
+                    description={inlineErr}
+                  />
+                )}
+                {inlineErr === '' && inlineRows !== null && (
+                  <Typography.Text
+                    type="secondary"
+                    style={{ fontSize: 12 }}
+                    data-testid="grid-report-inline-summary"
+                  >
+                    数据来自 <b>{inlineSource}</b>：<b>{inlineRows.length}</b> 行 /{' '}
+                    <b>{inlineColumns.length}</b> 列
+                    {inlineColumns.length > 0 ? `（${inlineColumns.join('、')}）` : ''}
+                    —— 按模板里绑定的数据集名 <code>ds1</code> 送给服务端，不连库。
+                  </Typography.Text>
+                )}
+                {inlineErr === '' && inlineRows === null && (
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    选一个 CSV / TSV / TXT / JSON / XLSX 文件，或填一个接口地址（浏览器直连，
+                    跨域需对方给 CORS 头）。数据库那侧的选择在切回「数据库」后仍然有效。
+                  </Typography.Text>
+                )}
+              </>
+            )}
           </>
         )}
 

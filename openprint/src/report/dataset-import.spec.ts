@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest'
 import {
   DatasetParseError,
   dedupeColumns,
+  extensionForContentType,
+  fileExtension,
+  fileNameFromUrl,
   inferScalar,
+  isKnownExtension,
   parseCsv,
   parseCsvWithDelimiter,
   parseDatasetFile,
@@ -369,5 +373,73 @@ describe('parseDatasetFileAsync —— 文本来源', () => {
     await expect(parseDatasetFileAsync(new File(['x'], 'a.pdf'))).rejects.toThrow(
       /parseDatasetFileAsync/,
     )
+  })
+})
+
+describe('fileExtension', () => {
+  it('取最后一段后缀并小写化', () => {
+    expect(fileExtension('a/b/A.CSV')).toBe('csv')
+  })
+
+  it('查询串 / 锚点不算后缀', () => {
+    expect(fileExtension('sales.csv?token=1')).toBe('csv')
+    expect(fileExtension('sales.json#top')).toBe('json')
+  })
+
+  it('没有后缀 → 空串', () => {
+    expect(fileExtension('/api/sales')).toBe('')
+  })
+
+  it('⚠️ 目录名里的点不算后缀（`/api/v1.0/data` 没有后缀）', () => {
+    // 不先取 basename 的话这里会得出 `0/data` —— 一个「看着像后缀、其实不是」的
+    // 返回值，迟早会被别处直接当后缀用上。
+    expect(fileExtension('/api/v1.0/data')).toBe('')
+    expect(isKnownExtension(fileExtension('/api/v1.0/data'))).toBe(false)
+  })
+})
+
+describe('extensionForContentType', () => {
+  const CASES: Array<[string, string]> = [
+    ['application/json', 'json'],
+    ['application/json; charset=utf-8', 'json'],
+    ['text/json', 'json'],
+    ['application/vnd.api+json', 'json'],
+    ['text/csv', 'csv'],
+    ['text/csv;charset=gbk', 'csv'],
+    ['text/tab-separated-values', 'tsv'],
+    ['text/plain', 'txt'],
+    ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'xlsx'],
+    ['application/vnd.ms-excel', 'xls'],
+  ]
+  it('认得的 mime 都要认出来（大小写 / 参数不影响）', () => {
+    for (const [mime, want] of CASES) {
+      expect(extensionForContentType(mime), `${mime} → ${want}`).toBe(want)
+    }
+  })
+
+  it('⚠️ 认不出返回 null，**不猜**', () => {
+    // octet-stream 等于「什么都没说」，猜它就是在替作者决定格式
+    for (const mime of ['application/octet-stream', 'image/png', '', '  ', 'text/html']) {
+      expect(extensionForContentType(mime), `${mime} 不该认出`).toBeNull()
+    }
+  })
+})
+
+describe('fileNameFromUrl', () => {
+  it('取最后一段，去掉查询串与锚点', () => {
+    expect(fileNameFromUrl('http://a/b/sales.csv?x=1#y')).toBe('sales.csv')
+  })
+
+  it('百分号编码要还原', () => {
+    expect(fileNameFromUrl('http://a/%E9%94%80%E5%94%AE.csv')).toBe('销售.csv')
+  })
+
+  it('取不到就给中性名 data（后续靠 Content-Type 补后缀）', () => {
+    expect(fileNameFromUrl('http://a/')).toBe('data')
+    expect(fileNameFromUrl('http://a')).toBe('data')
+  })
+
+  it('⚠️ 畸形百分号编码不能抛（一个拼错的 URL 不该崩在解析文件名这步）', () => {
+    expect(fileNameFromUrl('http://a/%E0%A4%A.csv')).toBe('%E0%A4%A.csv')
   })
 })
