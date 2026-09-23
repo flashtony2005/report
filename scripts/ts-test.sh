@@ -19,6 +19,11 @@
 #   bash scripts/ts-test.sh                 # 跑全部前端单测
 #   bash scripts/ts-test.sh -t '合并'        # 按用例名过滤（参数透传给 vitest）
 #
+# ⚠️ 拷的是 `openprint/src/report/*.ts` **整个目录**，`include` 也是通配。
+# 早先这两处都写死成 `grid-report.ts` / `grid-report.spec.ts`，
+# 于是新增的 spec 文件**根本不会被跑到**，而脚本退出码仍然是 0 ——
+# 又一种「看着绿、其实没跑」的假绿。新增 spec 不需要再改本脚本。
+# （该目录下的 .ts 都是自包含的：`grid-report.ts` 连一个 import 都没有。）
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -44,18 +49,25 @@ fi
 
 # 被测文件：openprint 的纯函数层（无 DOM / 无 Univer 依赖）
 SRC_DIR="$ROOT/openprint/src/report"
-FILES=(grid-report.ts grid-report.spec.ts)
+if [[ ! -d "$SRC_DIR" ]]; then
+  echo "缺少源目录：$SRC_DIR" >&2
+  exit 2
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-for f in "${FILES[@]}"; do
-  if [[ ! -f "$SRC_DIR/$f" ]]; then
-    echo "缺少源文件：$SRC_DIR/$f" >&2
-    exit 2
-  fi
-  cp "$SRC_DIR/$f" "$WORK/"
+# 整个目录一起拷（含 spec），不做白名单 —— 白名单就是上次漏跑新 spec 的原因
+copied=0
+for f in "$SRC_DIR"/*.ts; do
+  [[ -e "$f" ]] || continue
+  cp "$f" "$WORK/"
+  copied=$((copied + 1))
 done
+if [[ "$copied" -eq 0 ]]; then
+  echo "源目录里一个 .ts 都没有：$SRC_DIR" >&2
+  exit 2
+fi
 
 # 存盘报表样本：`真实存盘报表的每一格经 = 方言往返` 那条用例要读真实文件。
 # 拷到 $WORK/reports/ 下 —— spec 的 findSavedReport() 会去 spec 同级的 reports/ 找，
@@ -67,7 +79,7 @@ cp "$ROOT/print-server/reports/sales-by-region.json" "$WORK/reports/"
 cat > "$WORK/vitest.config.mjs" <<'EOF'
 export default {
   test: {
-    include: ['grid-report.spec.ts'],
+    include: ['*.spec.ts'],
     environment: 'node',
     reporters: ['default'],
   },
