@@ -416,7 +416,7 @@ describe('预览取哪一页（分页结果）', () => {
   it('分页时取到的必须**不是**完整表（否则等于没修）', () => {
     const r = resp([sheet('表 (1/2)'), sheet('表 (2/2)')])
     for (const i of [0, 1]) {
-      expect(pickPreviewSheet(r, i)?.name).not.toBe(r.sheets[0].name)
+      expect(pickPreviewSheet(r, i)?.name).not.toBe(r.sheets[0]!.name)
     }
   })
 })
@@ -658,13 +658,13 @@ describe('自由模板：per-cell 属性按格直设', () => {
 
   it('设了就能活到提交', () => {
     const grid = emptyGrid(3, 2)
-    grid[1][0] = { value: null, model: { ds: 'ds1', field: 'city', expand_type: 'r', expand_min_count: 5 } }
+    grid[1]![0] = { value: null, model: { ds: 'ds1', field: 'city', expand_type: 'r', expand_min_count: 5 } }
     expect(submit(grid)?.expand_min_count).toBe(5)
   })
 
   it('固定列表展开（expand_expr）活着走完提交', () => {
     const grid = emptyGrid(3, 2)
-    grid[1][0] = {
+    grid[1]![0] = {
       value: null,
       model: { ds: 'ds1', field: 'month', expand_type: 'r', expand_expr: '["1月","2月","3月"]' },
     }
@@ -679,7 +679,7 @@ describe('自由模板：per-cell 属性按格直设', () => {
    */
   it('写了 expand_expr 就不再催数据集 —— 引擎确实认它', () => {
     const grid = emptyGrid(3, 2)
-    grid[1][0] = { value: null, model: { expand_type: 'r', expand_expr: '["1月","2月"]' } }
+    grid[1]![0] = { value: null, model: { expand_type: 'r', expand_expr: '["1月","2月"]' } }
     const tpl = { sheets: [gridToSheet(grid, '自由模板')] }
     const warns = validateTemplate(tpl)
     expect(warns.filter((w) => w.includes('A2'))).toEqual([])
@@ -687,7 +687,7 @@ describe('自由模板：per-cell 属性按格直设', () => {
 
   it('格上同时有 value_expr 时也要留住 —— withExportFormula 会重建 model', () => {
     const grid = emptyGrid(3, 2)
-    grid[1][0] = {
+    grid[1]![0] = {
       value: null,
       model: {
         ds: 'ds1',
@@ -705,7 +705,7 @@ describe('自由模板：per-cell 属性按格直设', () => {
 
   it('展示表达式 / 字典 / 数字格式 / 最多条数 / 空集保留 都活着走完提交', () => {
     const grid = emptyGrid(3, 2)
-    grid[1][0] = {
+    grid[1]![0] = {
       value: null,
       model: {
         ds: 'ds1',
@@ -733,7 +733,7 @@ describe('自由模板：per-cell 属性按格直设', () => {
 
   it('col_after / merge_to_end 也活着走完提交（且不互相串位）', () => {
     const grid = emptyGrid(3, 2)
-    grid[1][0] = {
+    grid[1]![0] = {
       value: null,
       model: { ds: 'ds1', field: 'amount', col_after: 'C1' },
       merge_to_end: true,
@@ -1040,23 +1040,23 @@ describe('自由模板：插删行列要重映射引用', () => {
   it('在第 1 行前插入一行：行引用整体 +1', () => {
     const g = insertGridRow(sample(), 0)
     // 在第 0 行前插入 → 原「标题」行降到第 1 行，region 那行降到第 2 行
-    expect(g[1][0].model).toBeUndefined()
-    expect(g[2][0].model?.field).toBe('region')
+    expect(g[1]![0]!.model).toBeUndefined()
+    expect(g[2]![0]!.model?.field).toBe('region')
     // A2 → A3
-    expect(g[2][1].model?.row_parent).toBe('A3')
+    expect(g[2]![1]!.model?.row_parent).toBe('A3')
     // B2 → B3；表达式里的 D3→D4、B3→B4
-    expect(g[2][2].model?.row_parent).toBe('B3')
-    expect(g[2][2].model?.value_expr).toBe('D4[B4:+0].sum()')
+    expect(g[2]![2]!.model?.row_parent).toBe('B3')
+    expect(g[2]![2]!.model?.value_expr).toBe('D4[B4:+0].sum()')
   })
 
   it('删除第 1 行：后面的 -1，指向被删行的引用清空', () => {
     const g = deleteGridRow(sample(), 0)
     // 原第 2 行升到第 1 行
-    expect(g[0][0].model?.field).toBe('region')
+    expect(g[0]![0]!.model?.field).toBe('region')
     // row_parent 原 A2 → 现在 A1
-    expect(g[0][1].model?.row_parent).toBe('A1')
+    expect(g[0]![1]!.model?.row_parent).toBe('A1')
     // 表达式 D3[B3:+0] → D2[B2:+0]
-    expect(g[0][2].model?.value_expr).toBe('D2[B2:+0].sum()')
+    expect(g[0]![2]!.model?.value_expr).toBe('D2[B2:+0].sum()')
   })
 
   it('删除被引用的那一行：引用清空而不是错位', () => {
@@ -1080,15 +1080,15 @@ describe('自由模板：插删行列要重映射引用', () => {
     )
     // 删掉 A1（被 A2 认作主格的那一行）
     const out = deleteGridRow(g, 0)
-    expect(out[0][0].model?.row_parent).toBeUndefined()
+    expect(out[0]![0]!.model?.row_parent).toBeUndefined()
   })
 
   it('插列：列引用平移', () => {
     const g = insertGridCol(sample(), 0)
     // A2 → B2（原来的 region 格右移了一列）
-    expect(g[1][0].model).toBeUndefined()
-    expect(g[1][1].model?.field).toBe('region')
-    expect(g[1][2].model?.row_parent).toBe('B2')
+    expect(g[1]![0]!.model).toBeUndefined()
+    expect(g[1]![1]!.model?.field).toBe('region')
+    expect(g[1]![2]!.model?.row_parent).toBe('B2')
   })
 
   it('数据集名 ds1 不会被当成单元格引用', () => {
@@ -1102,8 +1102,8 @@ describe('自由模板：插删行列要重映射引用', () => {
     )
     const out = insertGridRow(g, 0)
     // ds 名不变（关键：若把 ds1 当引用会变成 ds2）
-    expect(out[1][0].model?.ds).toBe('ds1')
-    expect(out[1][0].model?.field).toBe('city')
+    expect(out[1]![0]!.model?.ds).toBe('ds1')
+    expect(out[1]![0]!.model?.field).toBe('city')
   })
 
   it('B3:+0 的相对偏移不被平移', () => {
@@ -1127,7 +1127,7 @@ describe('自由模板：插删行列要重映射引用', () => {
     )
     const out = insertGridRow(g, 0)
     // B3 是引用 → B4；:+0 是偏移，必须原样保留
-    expect(out[2][0].model?.value_expr).toBe('B4:+0')
+    expect(out[2]![0]!.model?.value_expr).toBe('B4:+0')
   })
 
   it('setGridCell 越界不改网格', () => {
@@ -1151,8 +1151,8 @@ describe('自由模板：网格 ↔ SheetTpl', () => {
     )
     const sheet = gridToSheet(g, 'x')
     expect(sheet.rows.length).toBe(1)
-    expect(sheet.rows[0].cells.length).toBe(2)
-    expect(sheet.rows[0].cells[1].value).toBeNull()
+    expect(sheet.rows[0]!.cells.length).toBe(2)
+    expect(sheet.rows[0]!.cells[1]!.value).toBeNull()
   })
 })
 
@@ -1232,11 +1232,11 @@ describe('自由模板：合并单元格', () => {
     const r = setGridMerge(emptyGrid(4, 4), 0, 0, 2, 2)
     expect(r.ok).toBe(true)
     if (!r.ok) return
-    expect(mergeSpanOf(r.grid[0][0])).toMatchObject({ rows: 2, cols: 2 })
-    expect(isMergeAnchor(r.grid[0][0])).toBe(true)
+    expect(mergeSpanOf(r.grid[0]![0])).toMatchObject({ rows: 2, cols: 2 })
+    expect(isMergeAnchor(r.grid[0]![0])).toBe(true)
     // 被盖住的格必须是空的，否则服务端布局时那一格会冒出来
-    expect(formatCellText(r.grid[1][1])).toBe('')
-    expect(isMergeAnchor(r.grid[1][1])).toBe(false)
+    expect(formatCellText(r.grid[1]![1]!)).toBe('')
+    expect(isMergeAnchor(r.grid[1]![1])).toBe(false)
   })
 
   it('mergeAt 能从任意一格反查到整个合并块', () => {
@@ -1267,7 +1267,7 @@ describe('自由模板：合并单元格', () => {
 
   it('被覆盖的格有内容时拒绝 —— 不静默丢数据', () => {
     const grid = emptyGrid(3, 3)
-    grid[0][1] = { value: '表头', model: undefined }
+    grid[0]![1] = { value: '表头', model: undefined }
     const r = setGridMerge(grid, 0, 0, 1, 2)
     expect(r.ok).toBe(false)
     if (r.ok) return
@@ -1290,7 +1290,7 @@ describe('自由模板：合并单元格', () => {
     expect(r.ok).toBe(true)
     if (!r.ok) return
     const cleared = clearGridMerge(r.grid, 1, 1)
-    expect(isMergeAnchor(cleared[0][0])).toBe(false)
+    expect(isMergeAnchor(cleared[0]![0])).toBe(false)
     expect(mergeAt(cleared, 1, 1)).toBeNull()
   })
 
@@ -1301,14 +1301,14 @@ describe('自由模板：合并单元格', () => {
 
     // 插在第 2 行 → 落在 [0,1] 内部，块要长高
     const inside = insertGridRow(r.grid, 1)
-    expect(mergeSpanOf(inside[0][0])).toMatchObject({ rows: 3, cols: 2 })
+    expect(mergeSpanOf(inside[0]![0])).toMatchObject({ rows: 3, cols: 2 })
 
     // 插在第 4 行 → 合并块够不着
-    expect(mergeSpanOf(insertGridRow(r.grid, 3)[0][0]).rows).toBe(2)
+    expect(mergeSpanOf(insertGridRow(r.grid, 3)[0]![0]).rows).toBe(2)
 
     // 插在第 1 行 → 在锚点上方，锚点平移、跨度不变
     const above = insertGridRow(r.grid, 0)
-    expect(mergeSpanOf(above[1][0])).toMatchObject({ rows: 2, cols: 2 })
+    expect(mergeSpanOf(above[1]![0])).toMatchObject({ rows: 2, cols: 2 })
   })
 
   it('删行落在合并块内部 → 跨度 -1；缩到 1 行自动解除行合并', () => {
@@ -1317,31 +1317,31 @@ describe('自由模板：合并单元格', () => {
     if (!two.ok) return
     const shrunk = deleteGridRow(two.grid, 1)
     // 行跨度回到 1，但列跨度还在 → 整体仍算合并
-    expect(mergeSpanOf(shrunk[0][0])).toMatchObject({ rows: 1, cols: 2 })
-    expect(isMergeAnchor(shrunk[0][0])).toBe(true)
+    expect(mergeSpanOf(shrunk[0]![0])).toMatchObject({ rows: 1, cols: 2 })
+    expect(isMergeAnchor(shrunk[0]![0])).toBe(true)
 
     const three = setGridMerge(emptyGrid(6, 4), 0, 0, 3, 2)
     expect(three.ok).toBe(true)
     if (!three.ok) return
-    expect(mergeSpanOf(deleteGridRow(three.grid, 2)[0][0]).rows).toBe(2)
+    expect(mergeSpanOf(deleteGridRow(three.grid, 2)[0]![0]).rows).toBe(2)
   })
 
   it('删列落在合并块内部 → 列跨度 -1', () => {
     const r = setGridMerge(emptyGrid(6, 5), 0, 1, 2, 3)
     expect(r.ok).toBe(true)
     if (!r.ok) return
-    expect(mergeSpanOf(deleteGridCol(r.grid, 2)[0][1])).toMatchObject({ rows: 2, cols: 2 })
+    expect(mergeSpanOf(deleteGridCol(r.grid, 2)[0]![1])).toMatchObject({ rows: 2, cols: 2 })
   })
 
   it('合并跨度与位置引用两条重映射互不干扰', () => {
     const grid = emptyGrid(5, 4)
-    grid[3][0] = { value: null, model: { ds: 'ds1', field: 'a', row_parent: 'A2' } }
+    grid[3]![0] = { value: null, model: { ds: 'ds1', field: 'a', row_parent: 'A2' } }
     const r = setGridMerge(grid, 0, 0, 2, 2)
     expect(r.ok).toBe(true)
     if (!r.ok) return
     const out = insertGridRow(r.grid, 1)
-    expect(mergeSpanOf(out[0][0]).rows).toBe(3) // 合并块长高
-    expect(out[4][0].model?.row_parent).toBe('A3') // 引用同步平移
+    expect(mergeSpanOf(out[0]![0]).rows).toBe(3) // 合并块长高
+    expect(out[4]![0]!.model?.row_parent).toBe('A3') // 引用同步平移
   })
 
   it('体检能报出手写 JSON 里的越界与交叠合并', () => {
@@ -1371,7 +1371,7 @@ describe('自由模板：合并单元格', () => {
     const data = gridToWorkbookData(r.grid) as {
       sheets: Record<string, { mergeData: unknown[] }>
     }
-    expect(data.sheets.sheet1.mergeData).toEqual([
+    expect(data.sheets.sheet1!.mergeData).toEqual([
       { startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
     ])
   })
@@ -1380,22 +1380,22 @@ describe('自由模板：合并单元格', () => {
   // 强制把单元格当字符串，阻止 Univer 看到 `v` 以 `=` 开头就把它挪到 `f` 当公式。
   it('非空单元格一律带 t: 4（Univer FORCE_STRING），保住 `=` / `{{...}}` 字面量', () => {
     const grid = emptyGrid(4, 2)
-    grid[0][0] = { value: '=ds1.city', model: undefined }
-    grid[1][0] = { value: '=D3[B3:+0].sum()', model: undefined }
-    grid[2][0] = { value: '{{ds1.city}}', model: undefined }
-    grid[3][0] = { value: 'hello literal', model: undefined }
+    grid[0]![0] = { value: '=ds1.city', model: undefined }
+    grid[1]![0] = { value: '=D3[B3:+0].sum()', model: undefined }
+    grid[2]![0] = { value: '{{ds1.city}}', model: undefined }
+    grid[3]![0] = { value: 'hello literal', model: undefined }
     // B1 空 + 无 model：验证空单元格确实不进 cellData
     const data = gridToWorkbookData(grid) as {
       sheets: Record<string, {
         cellData: Record<string, Record<string, { v: unknown; t?: number }>>
       }>
     }
-    const cd = data.sheets.sheet1.cellData
-    expect(cd[0][0]).toEqual({ v: '=ds1.city', t: 4 })
-    expect(cd[1][0]).toEqual({ v: '=D3[B3:+0].sum()', t: 4 })
-    expect(cd[2][0]).toEqual({ v: '{{ds1.city}}', t: 4 })
-    expect(cd[3][0]).toEqual({ v: 'hello literal', t: 4 })
-    expect(cd[0][1]).toBeUndefined()
+    const cd = data.sheets.sheet1!.cellData
+    expect(cd[0]![0]).toEqual({ v: '=ds1.city', t: 4 })
+    expect(cd[1]![0]).toEqual({ v: '=D3[B3:+0].sum()', t: 4 })
+    expect(cd[2]![0]).toEqual({ v: '{{ds1.city}}', t: 4 })
+    expect(cd[3]![0]).toEqual({ v: 'hello literal', t: 4 })
+    expect(cd[0]![1]).toBeUndefined()
   })
 })
 
@@ -1487,9 +1487,9 @@ describe('自由模板：主格树（关系常显）', () => {
 
   it('parentChainOf：由近及远，只跟 row_parent', () => {
     const g = treeGrid()
-    expect(parentChainOf(g, g[1][2])).toEqual(['A2']) // C2
-    expect(parentChainOf(g, g[1][3])).toEqual(['A2']) // D2 的上主格 B2 不算进链
-    expect(parentChainOf(g, g[1][0])).toEqual([]) // A2 自己是根
+    expect(parentChainOf(g, g[1]![2])).toEqual(['A2']) // C2
+    expect(parentChainOf(g, g[1]![3])).toEqual(['A2']) // D2 的上主格 B2 不算进链
+    expect(parentChainOf(g, g[1]![0])).toEqual([]) // A2 自己是根
     expect(parentChainOf(g, undefined)).toEqual([])
   })
 
@@ -1500,7 +1500,7 @@ describe('自由模板：主格树（关系常显）', () => {
         cell(null, { ds: 'ds1', field: 'b', row_parent: 'A1' }),
       ],
     ]
-    expect(parentChainOf(g, g[0][0]).length).toBeLessThanOrEqual(2)
+    expect(parentChainOf(g, g[0]![0]).length).toBeLessThanOrEqual(2)
   })
 
   it('空网格 / 全字面量 → 空树，不报错', () => {
@@ -1553,7 +1553,7 @@ describe('自由模板：非线性语义画进网格', () => {
 
   /** 某格最终套到的样式对象；没套样式返回 null */
   const styleAt = (wb: Wb, r: number, c: number): Record<string, unknown> | null => {
-    const id = wb.sheets.sheet1.cellData[r]?.[c]?.s
+    const id = wb.sheets.sheet1!.cellData[r]?.[c]?.s
     return id ? wb.styles[id] ?? null : null
   }
   /** 深挖出样式表里出现过的所有 #rrggbb —— 用来交叉核对图例 */
@@ -1617,11 +1617,11 @@ describe('自由模板：非线性语义画进网格', () => {
     // 锚点仍然是黄色扩展格（Univer 会把底色铺满整个合并块，浏览器实测过）
     expect(styleAt(wb, 0, 0)?.bg).toEqual({ rgb: '#FFF1B8' })
     // 被覆盖的格已被清空，不该有内容也不该有样式
-    expect(wb.sheets.sheet1.cellData[0]?.[1]).toBeUndefined()
+    expect(wb.sheets.sheet1!.cellData[0]?.[1]).toBeUndefined()
     // 合并块本身要交给 Univer
     expect(
       (gridToWorkbookData(r.grid) as unknown as { sheets: Record<string, { mergeData: unknown[] }> })
-        .sheets.sheet1.mergeData,
+        .sheets.sheet1!.mergeData,
     ).toEqual([{ startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }])
   })
 
@@ -1642,35 +1642,38 @@ describe('自由模板：非线性语义画进网格', () => {
 
   it('选中格压过语义样式，主格高亮压过语义底色', () => {
     const wb = build('C2')
-    expect(wb.sheets.sheet1.cellData[1]?.[2]?.s).toBe(SELECTED_STYLE_ID)
+    expect(wb.sheets.sheet1!.cellData[1]?.[2]?.s).toBe(SELECTED_STYLE_ID)
     // C2 的左主格是 A2（本身是黄色扩展格），此时应该让位给主格色
-    expect(wb.sheets.sheet1.cellData[1]?.[0]?.s).toBe(PARENT_STYLE_ID)
-    expect(wb.styles[PARENT_STYLE_ID].bg).toEqual({ rgb: PARENT_HIGHLIGHT })
+    expect(wb.sheets.sheet1!.cellData[1]?.[0]?.s).toBe(PARENT_STYLE_ID)
+    expect(wb.styles[PARENT_STYLE_ID]!.bg).toEqual({ rgb: PARENT_HIGHLIGHT })
   })
 
   it('选中 / 主格样式不带边框 —— Univer 画不出 bd，加了是自欺', () => {
     const wb = build('C2')
-    expect(wb.styles[SELECTED_STYLE_ID].bd).toBeUndefined()
-    expect(wb.styles[PARENT_STYLE_ID].bd).toBeUndefined()
+    expect(wb.styles[SELECTED_STYLE_ID]!.bd).toBeUndefined()
+    expect(wb.styles[PARENT_STYLE_ID]!.bd).toBeUndefined()
     // 两者靠底色区分，且底色必须不同，否则主格高亮等于没有
-    expect(wb.styles[PARENT_STYLE_ID].bg).toEqual({ rgb: PARENT_HIGHLIGHT })
-    expect(wb.styles[PARENT_STYLE_ID].bg).not.toEqual(wb.styles[SELECTED_STYLE_ID].bg)
+    expect(wb.styles[PARENT_STYLE_ID]!.bg).toEqual({ rgb: PARENT_HIGHLIGHT })
+    expect(wb.styles[PARENT_STYLE_ID]!.bg).not.toEqual(wb.styles[SELECTED_STYLE_ID]!.bg)
   })
 
   it('没选中任何格时，不产生主格高亮', () => {
     const wb = build()
-    expect(wb.sheets.sheet1.cellData[1]?.[0]?.s).toBe('tpl-r-field')
+    expect(wb.sheets.sheet1!.cellData[1]?.[0]?.s).toBe('tpl-r-field')
   })
 
   it('图例里的每个颜色都真的被用上 —— 改了配色忘了改图例会红', () => {
     // 用不带 selected 的那份：选中 C2 会让 A2 让位给主格色，黄色就注册不进来了
     const used = allColors(build())
     const declared = SEMANTIC_LEGEND.flatMap((x) => [x.bg, x.fg]).filter(
-      (x): x is string => typeof x === 'string',
+      // 参数显式写 `unknown`：`filter` 的回调参数被推导成图例里那几个颜色的
+      // **字面量联合类型**，而 `x is string` 对它不是子类型 → TS2677。
+      // 写 `unknown` 让谓词成立，`declared` 也才真的是 `string[]`。
+      (x: unknown): x is string => typeof x === 'string',
     )
     expect(declared.length).toBeGreaterThan(0)
     for (const color of declared) {
-      expect(used).toContain(color.toUpperCase())
+      expect(used).toContain(color!.toUpperCase())
     }
   })
 
@@ -1686,8 +1689,8 @@ describe('自由模板：非线性语义画进网格', () => {
     }
     const pools: Record<string, Set<string>> = { bg: new Set(), fg: new Set() }
     for (const st of Object.values(wb.styles)) {
-      if (st.bg) walk(st.bg, pools.bg)
-      if (st.cl) walk(st.cl, pools.fg)
+      if (st.bg) walk(st.bg, pools.bg!)
+      if (st.cl) walk(st.cl, pools.fg!)
     }
     for (const it of SEMANTIC_LEGEND) {
       const color = (it.bg ?? it.fg) as string | null
@@ -1703,10 +1706,10 @@ describe('自由模板：非线性语义画进网格', () => {
 
   it('semanticBgOf：还原主格时要知道它本来的语义底色', () => {
     const g = semGrid()
-    expect(semanticBgOf(g[1][0])).toBe('#FFF1B8')
-    expect(semanticBgOf(g[1][1])).toBe('#D7F0E3')
-    expect(semanticBgOf(g[0][1])).toBeNull() // 字段格：字色有、底色无
-    expect(semanticBgOf(g[0][0])).toBeNull()
+    expect(semanticBgOf(g[1]![0])).toBe('#FFF1B8')
+    expect(semanticBgOf(g[1]![1])).toBe('#D7F0E3')
+    expect(semanticBgOf(g[0]![1])).toBeNull() // 字段格：字色有、底色无
+    expect(semanticBgOf(g[0]![0])).toBeNull()
     expect(semanticBgOf(undefined)).toBeNull()
   })
 
@@ -1714,15 +1717,15 @@ describe('自由模板：非线性语义画进网格', () => {
     const wb = build()
     const g = semGrid()
     // A2 是扩展格：它自己的语义底色 == 渲染时套的底色
-    expect(wb.styles['tpl-r-field'].bg).toEqual({ rgb: semanticBgOf(g[1][0]) })
-    expect(wb.styles['tpl-c-field'].bg).toEqual({ rgb: semanticBgOf(g[1][1]) })
+    expect(wb.styles['tpl-r-field']!.bg).toEqual({ rgb: semanticBgOf(g[1]![0]) })
+    expect(wb.styles['tpl-c-field']!.bg).toEqual({ rgb: semanticBgOf(g[1]![1]) })
   })
 
   it('parentPosOf：左右主格去重，没有主格返回空', () => {
     const g = semGrid()
-    expect(parentPosOf(g[1][2])).toEqual(['A2']) // C2 只有左主格
-    expect(parentPosOf(g[1][3])).toEqual(['A2', 'B2']) // D2 左右都有
-    expect(parentPosOf(g[0][0])).toEqual([])
+    expect(parentPosOf(g[1]![2])).toEqual(['A2']) // C2 只有左主格
+    expect(parentPosOf(g[1]![3])).toEqual(['A2', 'B2']) // D2 左右都有
+    expect(parentPosOf(g[0]![0])).toEqual([])
     expect(parentPosOf(undefined)).toEqual([])
     // 左右主格写同一格时只点亮一次
     expect(parentPosOf(cell(null, { row_parent: 'A2', col_parent: 'A2' }))).toEqual(['A2'])
@@ -1750,19 +1753,19 @@ describe('withLoopField：循环变量出 N 张表', () => {
     expect(withLoopField(src, null)).toBe(src)
     expect(withLoopField(src, undefined)).toBe(src)
     expect(withLoopField(src, '   ')).toBe(src)
-    expect(src.sheets[0].loop_field).toBeUndefined()
+    expect(src.sheets[0]!.loop_field).toBeUndefined()
   })
 
   it('前后空白要 trim', () => {
-    expect(withLoopField(tpl(), '  region  ').sheets[0].loop_field).toBe('region')
+    expect(withLoopField(tpl(), '  region  ').sheets[0]!.loop_field).toBe('region')
   })
 
   it('只动 loop_field，rows 和格子原样不动', () => {
     const src = tpl()
     const out = withLoopField(src, 'region')
-    expect(out.sheets[0].rows).toBe(src.sheets[0].rows)
-    expect(out.sheets[0].name).toBe('A')
-    expect(out.sheets[1].rows).toBe(src.sheets[1].rows)
+    expect(out.sheets[0]!.rows).toBe(src.sheets[0]!.rows)
+    expect(out.sheets[0]!.name).toBe('A')
+    expect(out.sheets[1]!.rows).toBe(src.sheets[1]!.rows)
   })
 })
 
@@ -1796,7 +1799,7 @@ describe('withPage：分页配置落到每张 sheet 上', () => {
     const src = tpl()
     expect(withPage(src, undefined)).toBe(src)
     expect(withPage(src, null)).toBe(src)
-    expect(src.sheets[0].page).toBeUndefined()
+    expect(src.sheets[0]!.page).toBeUndefined()
   })
 
   it('rows_per_page 给 0 / 负数兜底为 1 —— 给 0 服务端会静默退化成一页', () => {
