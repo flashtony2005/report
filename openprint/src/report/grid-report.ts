@@ -1811,10 +1811,12 @@ export function parseCellText(raw: string): CellText {
 
   const agg = AGG_RE.exec(body)
   if (agg) {
-    return { kind: 'field', ds: agg[1], field: agg[2], agg: agg[3] as AggType, expand }
+    // `!`：`AGG_RE` 的捕获组都是**非可选**的（`(...)` 没有 `?`），匹配成功即保证
+    // 1/2/3 存在；`noUncheckedIndexedAccess` 表达不了「正则组在匹配后必然存在」。
+    return { kind: 'field', ds: agg[1]!, field: agg[2]!, agg: agg[3]! as AggType, expand }
   }
   const fld = FIELD_RE.exec(body)
-  if (fld) return { kind: 'field', ds: fld[1], field: fld[2], expand }
+  if (fld) return { kind: 'field', ds: fld[1]!, field: fld[2]!, expand }
   // 既不是 ds.field 也不是 ds.field.agg()：当表达式（层次坐标 / 条件表达式等）
   return { kind: 'expr', expr: body, expand }
 }
@@ -1901,7 +1903,8 @@ export function templateToGrid(sheet: SheetTpl, minRows = 20, minCols = 10): Tem
   const g = emptyGrid(rows, cols)
   src.forEach((row, r) => {
     ;(row.cells ?? []).forEach((cell, c) => {
-      if (c < cols) g[r][c] = cell
+      // `!`：`g` 是 `emptyGrid(rows, cols)` 出来的**矩形**，且这里已挡了 `c < cols`
+      if (c < cols) g[r]![c] = cell
     })
   })
   return g
@@ -2025,7 +2028,12 @@ export function setGridMerge(
         return { ok: false, message: `${cellPos(hit.r, hit.c)} 那里已经有一个合并块，先取消它` }
       }
       if (i === r && j === c) continue
-      if (formatCellText(grid[i][j]) !== '') {
+      // `!`：网格是**矩形** —— 唯一来源 `emptyGrid` / `templateToGrid` 都按 rows×cols
+      // 铺满；且上面已用 `r + height <= rowCount` / `c + width <= colCount` 挡住越界。
+      // ⚠️ 这个「矩形」是**隐式约定**（`colCount` 取的是第 `r` 行的长度，不是每行都核过）：
+      // 哪天有人往 `setGridMerge` 传参差不齐的网格，这里会读到 `undefined`。
+      // 真要做参差网格，得先在这儿补一次矩形校验。
+      if (formatCellText(grid[i]![j]!) !== '') {
         return { ok: false, message: `${cellPos(i, j)} 有内容，先清空再合并（合并会把它丢掉）` }
       }
     }
@@ -2089,7 +2097,8 @@ export function colIndex(name: string): number {
 export function parsePos(pos: string): { r: number; c: number } | null {
   const m = /^([A-Z]{1,3})([1-9]\d{0,6})$/.exec(pos)
   if (!m) return null
-  return { r: Number(m[2]) - 1, c: colIndex(m[1]) }
+  // `!`：同上，捕获组非可选，匹配成功即保证 1/2 存在
+  return { r: Number(m[2]!) - 1, c: colIndex(m[1]!) }
 }
 
 /**
