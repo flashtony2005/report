@@ -6,6 +6,7 @@ import {
   parseCsv,
   parseCsvWithDelimiter,
   parseDatasetFile,
+  parseDatasetFileAsync,
   parseJsonRows,
   rowsFromMatrix,
   sniffDelimiter,
@@ -304,5 +305,69 @@ describe('parseDatasetFile —— 按后缀分发', () => {
 describe('parseCsvWithDelimiter', () => {
   it('显式分隔符优先于 sniff', () => {
     expect(parseCsvWithDelimiter('a;b\n1;2', ';').columns).toEqual(['a', 'b'])
+  })
+})
+
+/**
+ * `Date` 格的处理（xlsx 走 `raw: true` + `cellDates: true` 时会拿到 `Date`）。
+ *
+ * 判据是**UTC 零点输出纯日期**，真带时间的输出完整 ISO。
+ * 直接 `JSON.stringify(Date)` 会得到 `2024-01-02T00:00:00.000Z` ——
+ * 一列日期全是这种带时分秒的串，报表里没法看，而时分秒通常**不是作者写的**，
+ * 是 Excel 序列号换算出来的噪声。
+ */
+describe('rowsFromMatrix —— Date 格', () => {
+  it('纯日期格（UTC 零点）→ `YYYY-MM-DD`', () => {
+    const t = rowsFromMatrix([['日期'], [new Date('2024-01-02T00:00:00.000Z')]])
+    expect(t.rows).toEqual([{ 日期: '2024-01-02' }])
+  })
+
+  it('真带时间的格 → 完整 ISO（不截断，信息不丢）', () => {
+    const t = rowsFromMatrix([['时刻'], [new Date('2024-01-02T08:30:00.000Z')]])
+    expect(t.rows).toEqual([{ 时刻: '2024-01-02T08:30:00.000Z' }])
+  })
+
+  it('`null` 格仍是 `null`，不是字符串 `"null"`', () => {
+    const t = rowsFromMatrix([['a', 'b'], [null, 1]])
+    expect(t.rows).toEqual([{ a: null, b: 1 }])
+  })
+})
+
+/**
+ * `parseDatasetFileAsync` —— 异步入口，`.xlsx` / `.xls` 走 SheetJS，其余走同步解析器。
+ *
+ * 这里只测**文本那几条**（csv / json / txt）：`.xlsx` 要真的 SheetJS 包，
+ * 而 `ts-test.sh` 的临时目录里没有 `node_modules`（只有借来的 vitest），
+ * 所以 xlsx 那条在 `designer-react` 的 vitest 里测 ——
+ * 见 `designer-react/src/report/dataset-import-xlsx.spec.ts`。
+ */
+describe('parseDatasetFileAsync —— 文本来源', () => {
+  it('.csv 走同步解析器（含数值推断）', async () => {
+    const t = await parseDatasetFileAsync(new File(['城市,金额\n上海,1234.5'], 'a.csv'))
+    expect(t.columns).toEqual(['城市', '金额'])
+    expect(t.rows).toEqual([{ 城市: '上海', 金额: 1234.5 }])
+  })
+
+  it('.json 不做数值推断（JSON 自带类型）', async () => {
+    const t = await parseDatasetFileAsync(new File(['[{"金额":"1234.5"}]'], 'a.json'))
+    // 作者写的就是字符串 → 保持字符串（与 CSV 相反）
+    expect(t.rows).toEqual([{ 金额: '1234.5' }])
+  })
+
+  it('.txt 当 CSV 处理', async () => {
+    const t = await parseDatasetFileAsync(new File(['x\n1'], 'a.txt'))
+    expect(t.rows).toEqual([{ x: 1 }])
+  })
+
+  it('⚠️ 解析失败要抛，不返回空表', async () => {
+    await expect(parseDatasetFileAsync(new File(['[1,2'], 'a.json'))).rejects.toThrow(
+      DatasetParseError,
+    )
+  })
+
+  it('⚠️ 不认识的扩展名 → 报错（且提示 xlsx 要走异步入口）', async () => {
+    await expect(parseDatasetFileAsync(new File(['x'], 'a.pdf'))).rejects.toThrow(
+      /parseDatasetFileAsync/,
+    )
   })
 })

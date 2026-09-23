@@ -11,6 +11,11 @@ docx 的子元素顺序检查是死代码、part 闭合检查被 `Default Extens
 3. 渲染请求不带 `datasets` → 「基础渲染」必须红
 4. xlsx 导出不带 `datasets` → 「明细是数值格」必须红
    （3 和 4 分开：渲染对、导出错是完全可能的，两条路各自要有人守）
+5. xlsx 读法改成 `raw: false` → 「货币格式金额是数字」必须红
+6. xlsx 读法去掉 `cellDates` → 「日期是 `YYYY-MM-DD`」必须红
+   （5 和 6 是 `parseWorkbookFile` 那两个选项的**唯一**证据。没有它们，
+   那三行 options 就是「看着合理、没人守」的代码 —— 改回 `raw: false`
+   会让货币格式的金额**静默变成文本**，而这正是本模块存在的理由。）
 
 **第 3 条是被换过的**。原先写的是「探针不摘掉样例模板自带的 datasets」，
 按「不摘就会测到旧数据」的假设 —— 结果**没红**，因为假设本身错了：
@@ -74,6 +79,20 @@ INJECTIONS: list[tuple[str, Path, str, str, str]] = [
         '        "/api/report/xlsx",\n        {"template": sample_template_without_datasets(), "datasets": {"ds1": rows}, "sources": None, "dump": None},',
         '        "/api/report/xlsx",\n        {"template": sample_template_without_datasets(), "datasets": None, "sources": None, "dump": None},',
         "case_number_detail_is_numeric_in_xlsx",
+    ),
+    (
+        "xlsx 读法改成 raw:false（按显示格式读 → 货币金额变 '¥1,234.50' 字符串）",
+        PARSER,
+        "    raw: true,\n",
+        "    raw: false,\n",
+        "case_xlsx_currency_cell_is_numeric",
+    ),
+    (
+        "xlsx 读法去掉 cellDates（日期变 Excel 序列号 45293.33）",
+        PARSER,
+        "{ type: 'array', cellDates: true }",
+        "{ type: 'array', cellDates: false }",
+        "case_xlsx_date_cell_is_date_string",
     ),
 ]
 

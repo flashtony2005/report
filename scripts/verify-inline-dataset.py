@@ -48,6 +48,14 @@ from pathlib import Path
 SERVER = "http://127.0.0.1:18888"
 ROOT = Path(__file__).resolve().parent.parent
 PARSER_TS = ROOT / "openprint" / "src" / "report" / "dataset-import.ts"
+# SheetJS 的 ESM 入口。临时脚本落在 /tmp，从那里裸写 `import 'xlsx'` **解析不到**
+# （裸标识符按导入文件所在目录逐级上溯，/tmp 上没有 node_modules），所以按绝对路径引。
+# 注意这不影响解析器自己那份 `import('xlsx')` —— 它的基准是 dataset-import.ts
+# 所在目录，能正常走到 openprint/node_modules。
+XLSX_MJS = ROOT / "openprint" / "node_modules" / "xlsx" / "xlsx.mjs"
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from node_bin import resolve_node  # noqa: E402  （必须在 sys.path 之后）
 
 # ⚠️ 沙箱里 `HTTP_PROXY` 指向本地代理，探 127.0.0.1 会被拦成 **502**（看着像服务没起来）。
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -79,21 +87,12 @@ def http(path: str, body=None, method: str | None = None) -> tuple[int, bytes]:
 # ---------------------------------------------------------------- 真解析器
 
 def _node_bin() -> str:
-    """和 shell 脚本同一套探测顺序，避免又写死一个会随环境重发的版本号。"""
-    base = Path.home() / ".workbuddy-ai" / "binaries" / "node"
-    env = os.environ.get("NODE_BIN")
-    if env and Path(env).is_file():
-        return env
-    cur = base / "versions" / "current"
-    if cur.is_file():
-        v = cur.read_text().strip()
-        cand = base / "versions" / v / "bin" / "node"
-        if cand.is_file():
-            return str(cand)
-    cands = sorted((base / "versions").glob("*/bin/node"))
-    if cands:
-        return str(cands[-1])
-    raise RuntimeError("找不到可用的 node（见 scripts/node-bin.sh）")
+    """node 路径解析**委托**给 `scripts/node_bin.py`（它再委托 `node-bin.sh`）。
+
+    这里原先又抄了一遍探测顺序 —— 三份实现必然漂移，而漂移方向恰好最坏
+    （修好一份、另两份还写死着）。现在只留一个转口。
+    """
+    return resolve_node()
 
 
 def parse_csv_with_real_parser(csv_text: str) -> dict:
@@ -123,6 +122,85 @@ process.stdout.write(JSON.stringify(out))
         return json.loads(proc.stdout)
     finally:
         os.unlink(path)
+
+
+def _run_node_ts(helper_src: str, stdin: bytes = b"") -> bytes:
+    """把一段 TS 丢给 node 跑（`--experimental-strip-types`），返回 stdout 原始字节。"""
+    with tempfile.NamedTemporaryFile("w", suffix=".ts", delete=False) as f:
+        f.write(helper_src)
+        path = f.name
+    try:
+        proc = subprocess.run(
+            [_node_bin(), "--experimental-strip-types", path],
+            input=stdin,
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"node 跑失败：{proc.stderr.decode('utf8', 'ignore')[-800:]}")
+        return proc.stdout
+    finally:
+        os.unlink(path)
+
+
+def make_xlsx_with_real_lib() -> bytes:
+    """用 SheetJS **生成**一个带「货币格式 / 文本前导零 / 日期」的 xlsx。
+
+    为什么要真造这些格式：这几条**恰恰**是 `raw: false` 会读错的地方。
+    手搓 CSV 是测不出来的 —— 问题只在「有类型 + 有显示格式」的文件里才出现。
+
+    列名对齐样例模板的字段（`region / city / salesman / amount`），
+    这样解析出的行能直接喂给 `/api/report/render`。
+    """
+    src = f"""
+import * as XLSX from {json.dumps(str(XLSX_MJS))}
+const aoa = [
+  ['region', 'city', 'salesman', 'amount', '工号', '日期'],
+  ['华东', '上海', '张三', 1234.5, '007', new Date('2024-01-02T00:00:00.000Z')],
+  ['华南', '广州', '孙七', 100, '008', new Date('2024-03-05T00:00:00.000Z')],
+]
+const ws = XLSX.utils.aoa_to_sheet(aoa, {{ cellDates: true }})
+// 给「金额」套**货币格式**。这是关键：raw:false 会按显示格式读成 "¥1,234.50"，
+// raw:true 才拿得到底层的 1234.5。
+ws['D2'].z = '"¥"#,##0.00'
+ws['D3'].z = '"¥"#,##0.00'
+const wb = XLSX.utils.book_new()
+XLSX.utils.book_append_sheet(wb, ws, 'S1')
+process.stdout.write(XLSX.write(wb, {{ type: 'buffer', bookType: 'xlsx', cellDates: true }}))
+"""
+    out = _run_node_ts(src)
+    if not out.startswith(b"PK"):
+        raise RuntimeError(f"生成的 xlsx 不是 zip（前 8 字节：{out[:8]!r}）")
+    return out
+
+
+def parse_xlsx_with_real_parser(xlsx_bytes: bytes) -> dict:
+    """把 xlsx 交给**真的** `parseWorkbookFile`，取回 `{columns, rows}`。
+
+    与 `parse_csv_with_real_parser` 同样的道理：要测的是**接缝**，
+    所以必须用仓库里那一份解析器，不能在 Python 里另写一遍。
+    """
+    src = f"""
+import {{ parseWorkbookFile }} from {json.dumps(str(PARSER_TS))}
+import {{ readFileSync }} from 'node:fs'
+const file = new File([readFileSync(0)], 'data.xlsx')
+process.stdout.write(JSON.stringify(await parseWorkbookFile(file)))
+"""
+    return json.loads(_run_node_ts(src, xlsx_bytes).decode("utf8"))
+
+
+# 生成 / 解析各要起一个 node 进程，三条 xlsx 用例共用同一份结果 —— 缓存住。
+_XLSX_BYTES: bytes | None = None
+_XLSX_ROWS: list[dict] | None = None
+
+
+def _parsed_xlsx_rows() -> list[dict]:
+    """那份带货币格式 / 文本前导零 / 日期的 xlsx 解析出来的行（**只造一次**）。"""
+    global _XLSX_BYTES, _XLSX_ROWS
+    if _XLSX_ROWS is None:
+        if _XLSX_BYTES is None:
+            _XLSX_BYTES = make_xlsx_with_real_lib()
+        _XLSX_ROWS = parse_xlsx_with_real_parser(_XLSX_BYTES)["rows"]
+    return _XLSX_ROWS
 
 
 def sample_template_without_datasets() -> dict:
@@ -324,6 +402,67 @@ def case_parser_conservatism_survives_the_whole_chain() -> None:
     check("7" not in texts, "出现了 7 —— 说明 007 被当成数字转过了")
 
 
+def case_xlsx_currency_cell_is_numeric() -> None:
+    """⚠️ 套了**货币格式**的金额格必须解析成**数字** —— 本探针里最值钱的一条。
+
+    它直接决定 `parseWorkbookFile` 用 `raw: true` 还是 `raw: false`。
+    `raw: false`（`@/design/utils/data-import` 的 `parseDataFile` 用的就是它）
+    会按**显示格式**把值读成字符串 `"¥1,234.50"`。
+
+    后果比普通字符串数字**更重**：
+    - 普通字符串数字 `"100"`：`as_num()` 的 `parse::<f64>()` 能成功 → **合计是对的**
+      （所以预览看不出来，只有导出的文件才露馅）
+    - `"¥1,234.50"`：`parse::<f64>()` **直接失败** → **连合计都是错的**
+
+    所以这里**两头都验**：解析结果里是数字，导出的 xlsx 里也进 `<v>` 而不是 sharedStrings。
+    """
+    rows = _parsed_xlsx_rows()
+    amt = rows[0].get("amount")
+    check(
+        isinstance(amt, (int, float)) and not isinstance(amt, bool),
+        f"货币格式的金额格应当是数字，实际 {amt!r} —— raw:false 会读成 '¥1,234.50' 字符串",
+    )
+    check(amt == 1234.5, f"金额值应当是 1234.5，实际 {amt!r}")
+
+    st, sheet, ss = xlsx_with(rows)
+    check(st == 200, f"导出失败：{st}")
+    if st != 200:
+        return
+    dumps.append(("xlsx sheet（xlsx 来源）", sheet))
+    check("<v>1234.5</v>" in sheet, f"1234.5 没写成数值格 —— 又变成文本了：{sheet[:600]}")
+    check("1234.5" not in ss, f"1234.5 进了 sharedStrings（= 文本格）：{ss[:400]}")
+
+
+def case_xlsx_text_leading_zero_preserved() -> None:
+    """xlsx 里的**文本格** `007` 仍是字符串 —— 前导零不能被吃掉。
+
+    与 `case_parser_conservatism_survives_the_whole_chain` 是一对：
+    那条走 CSV（判据是我们自己的 `inferScalar`），这条走 xlsx（判据是 SheetJS 的
+    `raw: true` —— 真数字给数字、文本格给字符串）。**两条通路的结论必须一致**，
+    否则同一个文件存成 csv 和存成 xlsx 会导出成两种东西。
+    """
+    rows = _parsed_xlsx_rows()
+    check(rows[0].get("工号") == "007", f"007 应当保持字符串，实际 {rows[0].get('工号')!r}")
+    check(rows[1].get("工号") == "008", f"008 应当保持字符串，实际 {rows[1].get('工号')!r}")
+
+
+def case_xlsx_date_cell_is_date_string() -> None:
+    """日期格 → `YYYY-MM-DD`。三种读法的差别（都实测过）：
+
+    | 读法 | 得到 |
+    | --- | --- |
+    | `raw: false` | `"1/2/24"` —— 随 locale 变，不可复现 |
+    | `raw: true` | `45293.33` —— Excel 序列号，报表里没法看 |
+    | `raw: true` + `cellDates` | `Date` → 我们转成 `"2024-01-02"` ✅ |
+    """
+    rows = _parsed_xlsx_rows()
+    check(rows[0].get("日期") == "2024-01-02", f"日期应当是 2024-01-02，实际 {rows[0].get('日期')!r}")
+    check(rows[1].get("日期") == "2024-03-05", f"日期应当是 2024-03-05，实际 {rows[1].get('日期')!r}")
+    v = str(rows[0].get("日期"))
+    check("T" not in v, f"日期带了时分秒（应当是纯日期）：{v!r}")
+    check(not v.replace(".", "").isdigit(), f"日期成了 Excel 序列号：{v!r}")
+
+
 def case_sources_win_over_datasets() -> None:
     """两条通道同时给、且同名时：**`sources` 覆盖 `datasets`**（`mod.rs:491`）。
 
@@ -386,6 +525,9 @@ def main() -> int:
         case_number_detail_is_numeric_in_xlsx,
         case_string_amounts_sum_right_but_export_as_text,
         case_parser_conservatism_survives_the_whole_chain,
+        case_xlsx_currency_cell_is_numeric,
+        case_xlsx_text_leading_zero_preserved,
+        case_xlsx_date_cell_is_date_string,
         case_sources_win_over_datasets,
         case_empty_dataset_does_not_crash,
     ):

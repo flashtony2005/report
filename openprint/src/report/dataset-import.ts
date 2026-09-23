@@ -201,6 +201,37 @@ export function splitCsv(text: string, delimiter?: string): string[][] {
   return rows
 }
 
+/**
+ * `Date` → 字符串。
+ *
+ * SheetJS 在 `cellDates: true` 下把**日期格**读成 `Date`。直接 `JSON.stringify`
+ * 会得到 `2024-01-02T00:00:00.000Z` —— 一列日期全是这种带时分秒的串，报表里很难看。
+ * 而日期格的时分秒通常**不是作者写的**，是 Excel 序列号换算出来的噪声。
+ *
+ * 判据：**UTC 零点就输出 `YYYY-MM-DD`**（纯日期），否则输出完整 ISO（真带时间的格）。
+ * 这条是**可判定**的，不是猜——真写了时间的格不会被截断。
+ */
+function dateToString(d: Date): string {
+  const iso = d.toISOString()
+  return iso.endsWith('T00:00:00.000Z') ? iso.slice(0, 10) : iso
+}
+
+/**
+ * 单元格 → 值。CSV 与 xlsx **共用**这一条，保证两种来源口径一致。
+ *
+ * - `null` / `undefined` → `null`（空值不是 0，聚合会跳过）
+ * - `Date` → 字符串（见 `dateToString`）
+ * - 字符串 → `inferScalar`（**只有无类型来源才需要猜**；xlsx 走 `raw: true` 时
+ *   数字已经是数字，落到这里的是真文本格）
+ * - 其它（数字 / 布尔）→ 原样
+ */
+function cellToValue(v: unknown): unknown {
+  if (v == null) return null
+  if (v instanceof Date) return dateToString(v)
+  if (typeof v === 'string') return inferScalar(v)
+  return v
+}
+
 /** 矩阵 + 表头行号 → 矩形数据集。CSV / xlsx 共用 */
 export function rowsFromMatrix(matrix: unknown[][], headerRow = 0): ParsedTable {
   if (matrix.length === 0) throw new DatasetParseError('文件里没有任何行')
@@ -242,8 +273,7 @@ export function rowsFromMatrix(matrix: unknown[][], headerRow = 0): ParsedTable 
     const row: DataRow = {}
     // 遍历 `columns` 取列名，而不是 `columns[c]` —— 后者是 `string | undefined`
     for (const [c, col] of columns.entries()) {
-      const v = cells[c]
-      row[col] = typeof v === 'string' ? inferScalar(v) : (v ?? null)
+      row[col] = cellToValue(cells[c])
     }
     rows.push(row)
   }
@@ -359,7 +389,10 @@ export function parseDatasetFile(fileName: string, content: string): ParsedTable
     return ext === 'tsv' ? parseCsvWithDelimiter(content, '\t') : parseCsv(content)
   }
   if (ext === 'json') return parseJsonRows(content)
-  throw new DatasetParseError(`不认识的扩展名 .${ext} —— 目前支持 .csv / .tsv / .json / .xlsx`)
+  throw new DatasetParseError(
+    `不认识的扩展名 .${ext} —— 文本来源支持 .csv / .tsv / .txt / .json；` +
+      `.xlsx / .xls 是二进制，请走 parseDatasetFileAsync()`,
+  )
 }
 
 /** `parseCsv` 的显式分隔符版本（.tsv 用） */
@@ -368,4 +401,62 @@ export function parseCsvWithDelimiter(text: string, delimiter: string): ParsedTa
   const nonEmpty = matrix.filter((r) => r.some((c) => c.trim() !== ''))
   if (nonEmpty.length === 0) throw new DatasetParseError('文件是空的')
   return rowsFromMatrix(nonEmpty as unknown[][], 0)
+}
+
+/**
+ * xlsx / xls → 数据集。
+ *
+ * ## 为什么不复用 `@/design/utils/data-import` 的 `parseDataFile`
+ *
+ * 那个用 `raw: false`（按**显示格式**把值转成字符串）。对「画布数据表」那类用途
+ * 没问题，但对**报表**是**静默错**。实测（`scripts/` 里验过，不是猜的）：
+ *
+ * | 单元格 | `raw: false` | `raw: true` + `cellDates` |
+ * | --- | --- | --- |
+ * | 套了货币格式 `"¥"#,##0.00` 的 1234.5 | `"¥1,234.50"` 字符串 | `1234.5` 数字 |
+ * | 日期格 2024-01-02 | `"1/2/24"`（随 locale 变） | `Date` → `2024-01-02` |
+ * | 文本格 `007` | `"007"` | `"007"` |
+ *
+ * 第一行就是本模块文件头讲的那条静默：字符串数字 → 服务端 `raw_number: None` →
+ * `xlsx.rs` 走 `write_string` → **导出成文本**，而**合计仍然是对的**，预览看不出来。
+ * 套了货币格式的金额列是最常见的触发方式。
+ *
+ * 所以这里用 `raw: true` + `cellDates: true`：数字保持数字、日期保持日期。
+ * 再用 `header: 1` 要**矩阵**而不是对象 —— 于是 `rowsFromMatrix` 的全套校验
+ * （列数不一致 / 整行空表头 / 重名列 / 空行跳过）全都复用得上，不必为 xlsx 再写一遍。
+ */
+export async function parseWorkbookFile(file: File): Promise<ParsedTable> {
+  const buf = await file.arrayBuffer()
+  const XLSX = await import('xlsx')
+  const wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: true })
+  const sheetName = wb.SheetNames[0]
+  if (sheetName === undefined) throw new DatasetParseError('Excel 文件里没有工作表')
+  const sheet = wb.Sheets[sheetName]
+  if (sheet === undefined) throw new DatasetParseError(`工作表「${sheetName}」读不出来`)
+  // ⚠️ 这里**不能**写 `sheet_to_json<unknown[]>(...)`：
+  // `ts-check.sh` 是带 `--noResolve` 跑的，`import('xlsx')` 解析不到 → `XLSX` 是 `any`
+  // → 带类型实参的调用会报 TS2347「Untyped function calls may not accept type arguments」。
+  // 假错会盖住真错，所以改成返回后 `as` 断言。
+  const matrix = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    raw: true,
+    // 整行空行由 `rowsFromMatrix` 统一跳过，这里也关掉，两条路一致
+    blankrows: false,
+    // 行尾缺的格补 `null`（不是 `''`）——否则会撞上「列数不一致」的报错
+    defval: null,
+  }) as unknown[][]
+  if (matrix.length === 0) throw new DatasetParseError('工作表里没有任何行')
+  return rowsFromMatrix(matrix as unknown[][], 0)
+}
+
+/**
+ * 按扩展名分发到对应解析器。**只认后缀**，认不出就报错（不猜格式）。
+ *
+ * - `.xlsx` / `.xls` → `parseWorkbookFile`（二进制，走 SheetJS）
+ * - 其余 → `parseDatasetFile`（文本）
+ */
+export async function parseDatasetFileAsync(file: File): Promise<ParsedTable> {
+  const ext = file.name.toLowerCase().split('.').pop() ?? ''
+  if (ext === 'xlsx' || ext === 'xls') return parseWorkbookFile(file)
+  return parseDatasetFile(file.name, await file.text())
 }
