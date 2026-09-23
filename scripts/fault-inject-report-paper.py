@@ -31,6 +31,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from node_bin import resolve_node  # noqa: E402  （必须在 sys.path 之后）
+
 ROOT = Path(__file__).resolve().parent.parent
 SERVER_DIR = ROOT / "print-server"
 BIN = Path.home() / ".cargo/target/debug/print-server"
@@ -41,9 +44,8 @@ XLSX = SERVER_DIR / "src/report/xlsx.rs"
 # TS 镜像侧（页面设置的预检与存盘接线都在这一层）
 GR_TS = ROOT / "openprint/src/report/grid-report.ts"
 REQ_TS = ROOT / "designer-react/src/modals/grid-report-request.ts"
-NODE = os.environ.get(
-    "NODE_BIN", "/Users/lushaohui/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node"
-)
+# node 路径**不写死**：版本后缀是环境发的，写死过一次就整个跑不起来（见 node_bin.py）
+NODE = resolve_node()
 # vitest 走 vite 工具链，不挂这两个 preload 会被 broker 拦（见 skill sandbox-broker-workarounds）
 PRELOAD = (
     f"--require {ROOT / 'scripts/vite-safe-delete-bypass.cjs'} "

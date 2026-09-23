@@ -21,12 +21,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from node_bin import resolve_node  # noqa: E402  （必须在 sys.path 之后）
+
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = ROOT / "designer-react" / "src" / "modals" / "grid-report-request.ts"
 SPEC = "src/modals/grid-report-request.spec.ts"
 DESIGNER = ROOT / "designer-react"
 
-NODE = "/Users/lushaohui/.workbuddy-ai/binaries/node/versions/22.22.2-3/bin/node"
+# node 路径**不写死**：版本后缀是环境发的，写死过一次就整个跑不起来（见 node_bin.py）
+NODE = resolve_node()
 PRELOADS = [
     ROOT / "scripts" / "vite-safe-delete-bypass.cjs",
     ROOT / "scripts" / "broker-mkdir-throttle.cjs",

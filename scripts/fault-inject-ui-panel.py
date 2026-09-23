@@ -33,6 +33,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from node_bin import resolve_node  # noqa: E402  （必须在 sys.path 之后）
+
 ROOT = Path(__file__).resolve().parent.parent
 MODAL = "designer-react/src/modals/GridReportModal.tsx"
 GR = "openprint/src/report/grid-report.ts"
@@ -41,9 +44,8 @@ CHART_SPEC = "src/modals/grid-report-cell-chart.spec.tsx"
 # 服务端错误文案要活着到界面（#74 的客户端一侧）
 ERROR_SPEC = "src/modals/grid-report-render-error.spec.tsx"
 
-NODE = os.environ.get(
-    "NODE_BIN", "/Users/lushaohui/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node"
-)
+# node 路径**不写死**：版本后缀是环境发的，写死过一次就整个跑不起来（见 node_bin.py）
+NODE = resolve_node()
 # 不挂这两个 preload，vitest 会被 broker 拦（见模块注释）
 PRELOAD = (
     f"--require {ROOT / 'scripts/vite-safe-delete-bypass.cjs'} "
