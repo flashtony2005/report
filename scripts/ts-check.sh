@@ -21,7 +21,10 @@
 set -e
 
 TSC=/Users/lushaohui/project/admin/demo/web/node_modules/typescript/bin/tsc
-NODE=/Users/lushaohui/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node
+# node 路径**不写死**：版本后缀随环境重发而变（2026-09-23 变过一次，
+# 三个闸同时失效，且本脚本会把「找不到 node」当成类型错误报出来 → 假红）。
+. "$(dirname "$0")/node-bin.sh"
+NODE="$(require_node)"
 
 if [ ! -f "$TSC" ]; then
   echo "找不到 tsc：$TSC" >&2

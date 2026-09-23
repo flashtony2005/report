@@ -246,3 +246,91 @@ describe('校验与早退分支', () => {
     expect(req({ dump: true }).req.dump).toBe(true)
   })
 })
+
+/**
+ * 内联数据集（数据文件 / 接口 → `datasets`）。
+ *
+ * 这一组的重点是**别让两条数据通道同时出现**、以及**数据集名必须和模板绑的一致**：
+ * 名字写错的话模板取不到数据、渲染出一张空表，服务端只给一条 warning，
+ * 界面看着是「成功」的。
+ */
+describe('内联数据集：sources 与 datasets 二选一', () => {
+  const ROWS = [
+    { city: '上海', amount: 100 },
+    { city: '北京', amount: 250 },
+  ]
+
+  it('inline 时不要求库/表，且只发 datasets、不发 sources', () => {
+    // dbSelection 刻意留空：证明 inline 路径确实不看它
+    const out = req({ dataSourceKind: 'inline', inlineRows: ROWS, dbSelection: {} })
+    expect(out.req.datasets).toEqual({ ds1: ROWS })
+    expect(out.req.sources).toBeUndefined()
+  })
+
+  it('数据集名就是模板里绑的那个（写错 → 空表 + 只有 warning）', () => {
+    // 模板的格子上绑的是 `ds: 'ds1'`（见 buildGroupTemplate 的调用），
+    // 所以 datasets 的键必须同名。这条钉住这个**跨模块约定**。
+    const out = req({ dataSourceKind: 'inline', inlineRows: ROWS, dbSelection: {} })
+    expect(Object.keys(out.req.datasets!)).toEqual(['ds1'])
+    const bound = allCells(out.req.template)
+      .map((c) => c.model?.ds)
+      .filter((d): d is string => typeof d === 'string')
+    expect(bound.length).toBeGreaterThan(0)
+    for (const d of bound) expect(Object.keys(out.req.datasets!)).toContain(d)
+  })
+
+  it('inline 但一行数据都没有 → error，不渲染空表', () => {
+    expect(buildRenderRequest(base({ dataSourceKind: 'inline', inlineRows: [], dbSelection: {} }))).toEqual({
+      kind: 'error',
+      message: '请先选择数据文件或接口 —— 当前没有任何数据行',
+    })
+    expect(
+      buildRenderRequest(base({ dataSourceKind: 'inline', inlineRows: undefined, dbSelection: {} })).kind,
+    ).toBe('error')
+  })
+
+  it('inline 时不解析 where / paramText —— 它们是 SQL 侧的东西', () => {
+    // 坏 JSON 在 db 模式下是 error；inline 模式下不该因为它而拦住渲染，
+    // 否则「填了参数框」这个无关状态会把文件数据集搞挂。
+    expect(buildRenderRequest(base({ paramText: '{oops' })).kind).toBe('error')
+    const out = req({
+      dataSourceKind: 'inline',
+      inlineRows: ROWS,
+      dbSelection: {},
+      paramText: '{oops',
+      where: ' amount > 0 ',
+    })
+    expect(out.req.datasets).toEqual({ ds1: ROWS })
+  })
+
+  it('不传 dataSourceKind 就是 db —— 既有调用方一行都不用改', () => {
+    const out = req({})
+    expect(out.req.sources![0]!.name).toBe('ds1')
+    expect(out.req.datasets).toBeUndefined()
+  })
+
+  it('db 模式绝不带 datasets（两条通道不能同时出现）', () => {
+    const out = req({ inlineRows: ROWS })
+    expect(out.req.datasets).toBeUndefined()
+    expect(out.req.sources).toHaveLength(1)
+  })
+
+  it('自由模板也接了内联数据源（free 分支单独 return，容易漏）', () => {
+    const out = req({
+      mode: 'free',
+      grid: [[{ value: 'x' }]],
+      dataSourceKind: 'inline',
+      inlineRows: ROWS,
+      dbSelection: {},
+    })
+    expect(out.req.datasets).toEqual({ ds1: ROWS })
+    expect(out.req.sources).toBeUndefined()
+  })
+
+  it('inline 下缺库/表不再报错，但缺数据仍然报错（判据没被换成另一个）', () => {
+    // 这条守的是「抽出 dataChannel 时把两件事搞混」：
+    // inline 该跳过的是「库/表」检查，不是「有没有数据」检查。
+    expect(req({ dataSourceKind: 'inline', inlineRows: ROWS, dbSelection: {} }).kind).toBe('request')
+    expect(buildRenderRequest(base({ dataSourceKind: 'inline', dbSelection: {} })).kind).toBe('error')
+  })
+})

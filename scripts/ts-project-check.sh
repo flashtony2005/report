@@ -35,7 +35,9 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-NODE="${NODE_BIN:-/Users/lushaohui/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node}"
+# node 路径**不写死**，解析顺序见 scripts/node-bin.sh（版本后缀会随环境重发而变）
+. "$ROOT/scripts/node-bin.sh"
+NODE="$(require_node)"
 TARGET_DIR="${1:-designer-react}"
 DONOR=/Users/lushaohui/project/admin/demo/web/node_modules/typescript/bin/tsc
 

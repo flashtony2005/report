@@ -12,14 +12,15 @@
  * 输入就是原先那个 `useCallback` 的依赖数组 —— 它本来就是这段逻辑的全部输入，
  * 所以这次搬迁是**等价的**，不是重写。
  *
- * ## 两条约定，改动时别踩
+ * ## 三条约定，改动时别踩
  *
  * 1. **`rawTemplate` 必须是后处理之前的那份。** 它和 `options` 一起存盘，
  *    打开报表时由服务端 `store::apply_options` 再套一次；存「已经套过的模板」
  *    会重复施加，而且用户就改不了开关了。
- * 2. **选项要套到模板上才算数。** 请求体是 `{ template, dump, sources }`，
+ * 2. **选项要套到模板上才算数。** 请求体是 `{ template, dump, sources | datasets }`，
  *    **不带 `options`** —— 服务端只读 `template.sheets[*].page` 这类字段。
  *    往 `options` 里塞一个字段、却没在模板上体现，等于没写。
+ * 3. **数据通道 `sources` 与 `datasets` 二选一。** 见 `dataChannel`。
  */
 import {
   buildCrossTemplate,
@@ -38,12 +39,22 @@ import {
   type PageConfig,
   type RenderRequest,
   type ReportOptions,
+  type ReportSource,
   type ReportTemplate,
   type TemplateGrid,
 } from '@/report/grid-report'
+import type { DataRow } from '@/report/dataset-import'
 import type { DbEngine } from '@/core/print-client/types'
 
 export type TemplateMode = 'sample' | 'group' | 'cross' | 'canvas' | 'free'
+
+/**
+ * 数据从哪来。
+ *
+ * - `db`（默认）：发 `sources`，服务端连库现查 —— 一直以来的行为
+ * - `inline`：发 `datasets`，行由调用方（数据文件 / 接口）直接给，**不连库**
+ */
+export type DataSourceKind = 'db' | 'inline'
 
 /** 画布里选中的表格控件（`canvas` 模式用）；只用到这两个字段，收窄成结构类型 */
 export interface CanvasTableLike {
@@ -93,6 +104,15 @@ export interface RenderRequestInput {
   loopField: string
   dbSelection: { database?: string; table?: string; engine?: DbEngine }
   grid: TemplateGrid
+  /**
+   * 数据来源；**不写就是 `db`**，保持既有调用方不用改。
+   *
+   * `inline` 时不再要求 `dbSelection`，也不再解析 `where` / `paramText`
+   * （那两个是 SQL 侧的东西，对着内存数据没有意义）。
+   */
+  dataSourceKind?: DataSourceKind
+  /** `inline` 时的数据行；为空会**报错**而不是渲染出空表 */
+  inlineRows?: DataRow[]
 }
 
 /**
@@ -126,11 +146,61 @@ export function buildRenderRequest(input: RenderRequestInput): BuildResult {
     loopField,
     dbSelection,
     grid,
+    dataSourceKind,
+    inlineRows,
   } = input
 
   if (mode === 'sample') return { kind: 'sample' }
 
   const dsName = 'ds1'
+
+  /**
+   * 数据通道的产物：`sources`（连库现查）与 `datasets`（调用方直接给行）
+   * **只会有一个被设上**。
+   *
+   * ⚠️ 刻意**不写** `Pick<RenderRequest, 'sources' | 'datasets'>`：
+   * `ts-check.sh` 是带 `--noResolve` 跑的，解析不到 `RenderRequest` 时
+   * `Pick` 会把这两个属性都当成**必填**，于是报两条 TS2741 **假错** ——
+   * 而假错会盖住真错（这个闸的可信度全靠「它一响就是真问题」）。
+   * 本地显式写一遍属性，两个闸看到的就都是真话。
+   */
+  interface DataChannelPart {
+    sources?: ReportSource[]
+    datasets?: Record<string, DataRow[]>
+  }
+
+  /**
+   * 数据通道：`sources` 与 `datasets` 二选一。
+   *
+   * 抽成一个函数，而不是在 free 分支和通用分支各写一遍取库/表 + 解析参数：
+   * 本项目已经因为「同一判据写两遍、只改一处」栽过（xlsx 的 `is_placeholder`，
+   * 见 `xlsx-export-verify` skill）。加数据来源时**只改这一处**才是对的。
+   */
+  const dataChannel = (): { ok: true; part: DataChannelPart } | { ok: false; message: string } => {
+    if (dataSourceKind === 'inline') {
+      if (!inlineRows || inlineRows.length === 0) {
+        return { ok: false, message: '请先选择数据文件或接口 —— 当前没有任何数据行' }
+      }
+      // 键**必须**是模板里绑的那个数据集名。写错的话模板取不到数据、渲染出一张
+      // 空表，而服务端只会给一条 warning（很容易被忽略）—— 用同一个常量就错不了。
+      return { ok: true, part: { datasets: { [dsName]: inlineRows } } }
+    }
+    const { database, table, engine } = dbSelection
+    if (!database || !table) return { ok: false, message: '请先在数据源里选择库和表' }
+    // 参数框是 JSON 数组；空串按「无参数」处理
+    const parsed = parseParams(paramText)
+    if (!parsed.ok) return { ok: false, message: parsed.message ?? '参数不合法' }
+    const params = parsed.params?.length ? parsed.params : undefined
+    return {
+      ok: true,
+      part: {
+        sources: [
+          { name: dsName, database, engine, table, where: where.trim() || undefined, params },
+        ],
+      },
+    }
+  }
+
   let template: ReportTemplate
   if (mode === 'free') {
     const tpl = { sheets: [gridToSheet(grid, '自由模板')] }
@@ -150,26 +220,11 @@ export function buildRenderRequest(input: RenderRequestInput): BuildResult {
       exportFormula: exportFormula || undefined,
       dump: dump || undefined,
     }
-    const { database: db1, table: tb1, engine: eg1 } = dbSelection
-    if (!db1 || !tb1) return { kind: 'error', message: '请先在数据源里选择库和表' }
-    const p1 = parseParams(paramText)
-    if (!p1.ok) return { kind: 'error', message: p1.message ?? '参数不合法' }
+    const ch1 = dataChannel()
+    if (!ch1.ok) return { kind: 'error', message: ch1.message }
     return {
       kind: 'request',
-      req: {
-        template,
-        dump: dump ? true : undefined,
-        sources: [
-          {
-            name: dsName,
-            database: db1,
-            engine: eg1,
-            table: tb1,
-            where: where.trim() || undefined,
-            params: p1.params?.length ? p1.params : undefined,
-          },
-        ],
-      },
+      req: { template, dump: dump ? true : undefined, ...ch1.part },
       headerRows: 0,
       rawTemplate,
       options: opts,
@@ -254,22 +309,12 @@ export function buildRenderRequest(input: RenderRequestInput): BuildResult {
   // 强行切成每页 1 行。没开分页时页面设置已经由上面的 `withPageSetup` 写进模板了。
   if (page?.rows_per_page) template = withPage(template, page)
 
-  const { database, table, engine } = dbSelection
-  if (!database || !table) return { kind: 'error', message: '请先在数据源里选择库和表' }
-
-  // 参数框是 JSON 数组；空串按「无参数」处理
-  const parsed = parseParams(paramText)
-  if (!parsed.ok) return { kind: 'error', message: parsed.message ?? '参数不合法' }
-  const params = parsed.params?.length ? parsed.params : undefined
-  const whereClause = where.trim() ? where.trim() : undefined
+  const ch = dataChannel()
+  if (!ch.ok) return { kind: 'error', message: ch.message }
 
   return {
     kind: 'request',
-    req: {
-      template,
-      dump: dump ? true : undefined,
-      sources: [{ name: dsName, database, engine, table, where: whereClause, params }],
-    },
+    req: { template, dump: dump ? true : undefined, ...ch.part },
     headerRows: headerRowCount(template),
     rawTemplate,
     options: opts,

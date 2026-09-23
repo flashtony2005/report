@@ -28,7 +28,9 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-NODE_BIN="${NODE_BIN:-/Users/lushaohui/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node}"
+# node 路径**不写死**，解析顺序见 scripts/node-bin.sh（版本后缀会随环境重发而变）
+. "$ROOT/scripts/node-bin.sh"
+NODE_BIN="$(require_node)"
 
 # 借用的 node_modules：挑第一个真的装着 vitest 的
 BORROWED="${BORROWED_MODULES:-}"
