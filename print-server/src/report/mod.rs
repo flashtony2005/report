@@ -11,6 +11,7 @@ pub mod barcode_svg;
 pub mod chart;
 pub mod chart_svg;
 pub mod csv;
+pub mod docx;
 pub mod engine;
 pub mod expr;
 pub mod import;
@@ -18,6 +19,7 @@ pub mod model;
 pub mod png;
 pub mod store;
 pub mod xlsx;
+pub(crate) mod zip;
 
 use axum::extract::{Json, Path, State};
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
@@ -964,6 +966,36 @@ pub async fn import_handler(
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("base64 解码失败：{e}")))?;
     let tpl = import::import_xlsx(&bytes).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     Ok(Json(tpl))
+}
+
+/// `POST /api/report/docx`：渲染并直接返回 Word 文件
+///
+/// 与 csv 同一套取数（分页时按页导出，否则整表），只是容器换成 Word 表格。
+/// **不做表头行数那套口径**：docx 没有「重复表头行」的概念（那是打印/分页的概念），
+/// 一个 sheet 就是一张表。
+pub async fn docx_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RenderRequest>,
+) -> Result<HttpResponse<axum::body::Body>, (StatusCode, String)> {
+    let resp = render_with_sources(&state, req).await.map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let sheets = resp.pages.as_ref().unwrap_or(&resp.sheets);
+    let buf = docx::to_docx(sheets).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let filename = match resp.sheets.first() {
+        Some(s) if !s.name.trim().is_empty() => format!("{}.docx", s.name),
+        _ => "report.docx".to_string(),
+    };
+    HttpResponse::builder()
+        .status(StatusCode::OK)
+        .header(
+            CONTENT_TYPE,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        .header(
+            CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename.replace('"', "")),
+        )
+        .body(axum::body::Body::from(buf))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 /// `POST /api/report/csv`：渲染并直接返回 CSV 文件

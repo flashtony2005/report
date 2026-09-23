@@ -198,6 +198,7 @@ async fn main() {
         // 网格报表（类 Excel 非线性报表）：展开/求值在服务端完成，前端只做 UI
         .route("/api/report/render", post(report::render_handler))
         .route("/api/report/xlsx", post(report::xlsx_handler))
+        .route("/api/report/docx", post(report::docx_handler))
         .route("/api/report/csv", post(report::csv_handler))
         .route("/api/report/import", post(report::import_handler))
         .route("/api/report/sample", get(report::sample_handler))

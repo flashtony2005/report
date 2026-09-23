@@ -112,18 +112,9 @@ fn zlib_stored(raw: &[u8]) -> Vec<u8> {
     out
 }
 
-/// PNG 每块尾部用的 CRC-32（ISO-HDLC 多项式，与 zlib 的 CRC 同一条）
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
-    for &b in data {
-        crc ^= u32::from(b);
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    !crc
-}
+// PNG 块尾的 CRC 与 ZIP 条目的 CRC 是**同一条多项式**（CRC-32/ISO-HDLC），
+// 已收进 `zip.rs` 一份，两边共用 —— 各写一遍迟早不一致。
+use super::zip::crc32;
 
 fn adler32(data: &[u8]) -> u32 {
     const MOD: u32 = 65521; // 小于 2^16 的最大素数
