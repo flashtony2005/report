@@ -616,3 +616,111 @@ assert old.replace('!','') == new.replace('!','')   # 逐字节相同
   注释要写清「为什么必然存在」）。
 - TS2677（谓词类型不是参数类型的子类型）：`filter` 回调参数被推导成**字面量联合**
   时，`(x): x is string` 不成立 → 参数显式写 `unknown`。
+
+## 十八、Word 导出 `/api/report/docx`（2026-09-23 补上，差距分析 B6）
+
+### 核心难点：docx 的失败是**全有全无**
+
+Word 遇到结构错（`[Content_Types].xml` 漏声明一个 part、`<w:pPr>` 写在 `<w:r>` 之后、
+XML 1.0 非法控制字符）不是「版式差一点」，而是**整个文件打不开**（"unreadable content"）。
+而这类错**Rust 单测完全看不见** —— 单测只能断言「写了 N 字节 / 含某个子串」，
+真正会拒绝它的是**另一个程序**。
+
+**本机没有 docx oracle**：没装 Word / LibreOffice / WPS（只有 Pages），
+`python-docx` 也一开始没有。所以「Word 能不能打开」**本机验不了，不许声称**。
+
+### 用四条**可判定**不变量替代 oracle
+
+| # | 不变量 | 谁来验 |
+| --- | --- | --- |
+| 1 | 每个 part 都是**良构 XML** | `verify-docx.py` |
+| 2 | 每个 part 都在 `[Content_Types].xml` 里声明 | 同上 |
+| 3 | 每个 `r:id` 关系都指向**存在的** part（无悬空） | 同上 |
+| 4 | 子元素顺序符合 ECMA-376 的 `CT_*` 内容模型 | 同上 |
+
+顺序表**从 `python-docx` 的 `_tag_seq` 抽**（`scripts/docx-order-table.py`），
+不是凭记忆写 —— 本项目的记忆式断言**已经被证伪过**（`png.rs`/`barcode.rs` 的 MSRV 假理由）。
+python-docx 是**独立来源但不是权威**，手写的条目在输出 JSON 里**明确标注**。
+
+⚠️ **`python-docx` 不能当主 oracle**：它按标签名找元素、**不检查顺序**，
+而顺序恰恰是 Word 敏感的东西。它的价值只在于提供**规范衍生的顺序表**。
+
+`docx-order-table.py` **缺 python-docx 就 exit 2**，绝不静默退化成空表。
+
+### zip：只写 method 0（不压缩）
+
+ZIP 允许**存储式条目**（method 0）→ 不需要 deflate 编码器，~120 行够用
+（本地头 + 数据 + 中央目录 + EOCD）。代价：文件大 ~5×，这个量级无所谓。
+
+- **CRC-32 与 PNG 块尾是同一条多项式**（CRC-32/ISO-HDLC）→ 从 `png.rs` 提到 `zip.rs`
+  共用一份（各写一遍迟早不一致）。已用**两个独立实现**验过 zip：
+  Python `zipfile.testzip()` → `None`、BSD `unzip -t` → "No errors detected"。
+- **时间戳写死 2020-01-01**（`DOS_DATE`/`DOS_TIME`）：不取当前时间，否则同一份报表
+  每次导出字节都不同，探针没法做逐字节比对。`output_is_deterministic` 钉住这条。
+
+### 内容侧四条硬约束
+
+1. **XML 1.0 表示不了 0x00 / 0x0C**（XML 1.1 的 `&#x1;` Word 不认）→ 只能**丢掉**，
+   是**刻意的数据丢失**，换「文件能打开」。`is_xml_char()` 就是 Char 产生式。
+2. **`w:t` 不认 `\n`** → 换行必须变 `<w:br/>`。
+3. **合并语义按轴不同**：
+   - 横向（`colspan`）→ 被盖的格**不输出**，由 `gridSpan` 吸收；
+   - 纵向（`rowspan`）→ 被盖的格**必须照样输出**成空的 `<w:vMerge/>` 续格，
+     否则**整列错位**。
+4. **被合并盖住的格，各导出格式都丢掉**：样例模板 `城市小计` 在 r4c1，
+   落在 `上海`（rowspan 3）的合并里 —— `/api/report/render` 返回它，
+   **xlsx 与 docx 导出都丢**（xlsx 那格是空的 `<c r="B5" s="3"/>`）。
+   这不是我定的，是既有跨格式语义，已用 `case_covered_cells_are_dropped_like_xlsx_does` 钉住。
+
+### 单位锚点
+
+**Word 自己的 A4 = 11906 × 16838 twips**（不是我按 mm 四舍五入的 11907 × 16840）。
+1 inch = 1440 twips；1 mm = 56.6929 twips。测试以 Word 的值为准。
+
+### 故障注入挖出**两个假绿**（本节最值钱的部分）
+
+第一轮 14 条注入，**5 条没被抓到**，其中 **2 条是真·探针 bug**：
+
+1. **子元素顺序检查是死代码**。`check_child_order` 写成「元素没有 `CT_*` 模型就 return」
+   —— 而根节点 `w:document` 本来就没有模型，于是**整棵树被剪掉**。
+   这条检查**从来没跑过**，却一直是绿的。
+   → 修法：**没有模型也要继续递归**。修完注入 #3/#4 立刻变红。
+2. **part 闭合检查太宽**。只要求「有 Default 或 Override 兜住」，而
+   `Default Extension="xml"` **能兜住一切 XML** —— 删掉主文档的 `Override` 也照样绿。
+   → 修法：显式断言 `Override[@PartName='/word/document.xml']` 且
+   ContentType 是 `...document.main+xml`（`Default Extension` 表达不了「这是主文档」）。
+
+另外 3 条是**锚点没匹配上**（Rust 源码的 `\"` 转义、缩进写错）——
+**锚点匹配 0 次会伪装成「闸没抓到」**。所以注入脚本**先报告每条锚点匹配几次**，
+必须恰好 1 次，否则当场算 miss。
+
+最终矩阵：**14/14 全抓到**。分布 —— 只有探针能抓 4 条（悬空 `r:id`、顺序 ×2、格子文本错）、
+只有单测能抓 7 条、两边都能抓 3 条。
+
+### 探针自身的两处判据错（也是我写的）
+
+1. **数 `tc` 个数 ≠ 占的列数**：标题行是一个 `gridSpan=4` 的 tc，一个人占 4 列。
+   → 列数判据要**累加 gridSpan**。
+2. **合并盖住的格不算「可见文本」** → `visible_texts()` 要排除（见上面第 4 条）。
+
+### 验证入口与数字
+
+```sh
+cargo test --bin print-server -- report::docx      # ⚠️ 是 --bin 不是 --lib（print-server 是二进制 crate）
+python3 scripts/verify-docx.py                     # 12 条，需服务端在 18888
+python3 scripts/fault-inject-docx.py               # 14 条注入 × 2 道闸
+```
+
+- Rust 全量 **510 passed / 0 failed / 14 ignored**（+21：zip 6 / docx 15）。
+- 探针 **12/12**；注入矩阵 **14/14**；还原后基线复绿。
+- `crc32` 搬家后复跑 `verify-barcode` / `verify-xlsx-barcode` / `verify-xlsx-image` /
+  `verify-report-paper` 全 OK（无回归）。
+
+### 明确的覆盖缺口（每次都要说）
+
+**「真 Word 能打开」本机未验证。** 只验了四条可判定不变量 + 内容回读。
+
+### v1 刻意不做
+
+`styles.xml` / 具名样式 · 毫米级列宽（现交给 Word 自动适配）· docx 页眉页脚页码 ·
+docx 里的图片 / 图表 / 条码 · `.docx` 导入。
