@@ -114,6 +114,64 @@ describe('rawTemplate：存盘只存开关，服务端再套一次', () => {
   })
 })
 
+/**
+ * 页面设置**不是开关，是模板内容** —— 所以它必须进 `rawTemplate`。
+ *
+ * 这一组守的是一个**真实踩过的坑**（与上面那条同源，但更隐蔽）：
+ * `withPage` 跑在 `rawTemplate` 快照**之后**，而 `ReportOptions` 里根本没有
+ * 纸张 / 页码这几个字段，于是页面设置**永远到不了存盘文件**。
+ * 症状：存了 A3，重新打开显示「不指定」，再一保存就真把纸张抹掉了 ——
+ * 而每一步都不报错。
+ */
+describe('页面设置：必须进 rawTemplate（options 里没有这几个字段）', () => {
+  const SETUP = { paper: 'A3', orientation: 'landscape', page_number: '{page}/{pages}' }
+  /** 「只配纸张、不开分页」—— 这是新面板最容易走的那条路 */
+  const SETUP_ONLY = { rows_per_page: 0, ...SETUP }
+
+  it('只配纸张（不开分页）：rawTemplate 与请求体上都带页面设置', () => {
+    const out = req({ page: SETUP_ONLY })
+    expect(out.rawTemplate.sheets[0]!.page).toMatchObject(SETUP)
+    expect(out.req.template.sheets[0]!.page).toMatchObject(SETUP)
+  })
+
+  it('只配纸张时**不套** withPage —— 否则 rows_per_page 被抬成 1，报表切成每页 1 行', () => {
+    // `withPage` 的 0→1 兜底是给「开关打开却没填行数」用的。
+    // 用在这里会把一张只想换纸的报表切碎，而且不报错。
+    const out = req({ page: SETUP_ONLY })
+    expect(out.req.template.sheets[0]!.page?.rows_per_page).toBe(0)
+    expect(out.rawTemplate.sheets[0]!.page?.rows_per_page).toBe(0)
+  })
+
+  it('页面设置 + 分页同时配：分页只进 options 与请求体，rawTemplate 里是 0', () => {
+    // 与服务端 `apply_options`（`rows_per_page.filter(|v| *v > 0)`）对齐：
+    // 存盘只存开关，打开时服务端再套一次 —— 两条路才等价。
+    const out = req({ page: { rows_per_page: 3, repeat_header_rows: 1, ...SETUP } })
+    expect(out.options.rowsPerPage).toBe(3)
+    expect(out.rawTemplate.sheets[0]!.page?.rows_per_page).toBe(0) // 存盘那份：分页没套
+    expect(out.rawTemplate.sheets[0]!.page).toMatchObject(SETUP) // 但纸张在
+    expect(out.req.template.sheets[0]!.page?.rows_per_page).toBe(3) // 请求那份：套了
+    expect(out.req.template.sheets[0]!.page).toMatchObject(SETUP)
+  })
+
+  it('options 里不含页面设置字段 —— 它是模板属性，别「顺手」加进开关', () => {
+    // **契约**用例。`ReportOptions` 一旦加上 paper，就会出现
+    // 「options 里存了一份、服务端不读」的两处真相源，迟早漂。
+    const keys = Object.keys(req({ page: SETUP_ONLY }).options)
+    for (const k of ['paper', 'orientation', 'page_number', 'margin_mm', 'center_horizontally']) {
+      expect(keys, `options 里不该有 ${k}`).not.toContain(k)
+    }
+  })
+
+  it('自由模板忽略页面设置 —— 那条路的面板本来就不显示，别以为接上了', () => {
+    // free 分支在 `withPageSetup` **之前**就 return 了。现在 UI 上
+    // `mode !== 'free'` 才显示页面设置面板，所以用户配不出来；
+    // 哪天有人在 free 模式下也把面板打开，这条会红，提醒他补这条线。
+    const out = req({ mode: 'free', grid: [[{ value: 'x' }]], page: SETUP_ONLY })
+    expect(out.req.template.sheets[0]!.page ?? null).toBeNull()
+    expect(out.rawTemplate.sheets[0]!.page ?? null).toBeNull()
+  })
+})
+
 describe('后处理搬家后一步都没少', () => {
   it('导出公式：带 value_expr 的格被打上 export_formula', () => {
     const out = req({ exportFormula: true })

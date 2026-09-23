@@ -32,6 +32,7 @@ import {
   withExportFormula,
   withLoopField,
   withPage,
+  withPageSetup,
   type AggType,
   type CellFormatSpec,
   type PageConfig,
@@ -221,6 +222,10 @@ export function buildRenderRequest(input: RenderRequestInput): BuildResult {
 
   // 循环变量是**模板的一部分**（不在 options 里），必须落在 rawTemplate 里才存得住
   template = withLoopField(template, loopField)
+  // 页面设置**也是模板的一部分** —— `ReportOptions` 里没有纸张 / 页码这几个字段，
+  // 所以必须进 rawTemplate。只靠下面的 `withPage` 是存不住的：
+  // 它在 `rawTemplate` 之后才跑，存盘文件里从头到尾没有纸张。
+  template = withPageSetup(template, page)
 
   // 存原样：打开报表时由服务端按 options 再套一次
   const rawTemplate = template
@@ -244,7 +249,10 @@ export function buildRenderRequest(input: RenderRequestInput): BuildResult {
     maxCount: expandMax,
     keepEmpty: keepExpandEmpty,
   })
-  template = withPage(template, page)
+  // ⚠️ **只有真开了分页才套 `withPage`**：它会把 `rows_per_page` 兜底成 1
+  //（那是给「开关打开却没填行数」兜底的），用在这里会把一张只配了纸张的报表
+  // 强行切成每页 1 行。没开分页时页面设置已经由上面的 `withPageSetup` 写进模板了。
+  if (page?.rows_per_page) template = withPage(template, page)
 
   const { database, table, engine } = dbSelection
   if (!database || !table) return { kind: 'error', message: '请先在数据源里选择库和表' }

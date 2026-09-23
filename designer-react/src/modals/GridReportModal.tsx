@@ -85,6 +85,8 @@ import {
   isGs1Relevant,
   isValueBarcode,
   normaliseSymbology,
+  PAPER_NAMES,
+  pageSetupProblem,
   utf8ByteLength,
   type AggType,
   type CellBarcode,
@@ -101,6 +103,7 @@ import {
   type CellTpl,
   type ExpandDir,
   type MergeRect,
+  type PageConfig,
   type RenderResponse,
   type RenderedSheet,
   type ReportDef,
@@ -1594,6 +1597,22 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const [rowsPerPage, setRowsPerPage] = useState(20)
   const [repeatHeader, setRepeatHeader] = useState(1)
   const [repeatFooter, setRepeatFooter] = useState(0)
+  /*
+   * 页面设置（纸张 / 方向 / 页边距 / 页码 / 居中）。
+   *
+   * ⚠️ 它与分页**同挂在服务端的 `PageConfig` 上**，所以开关打开与否都会影响
+   * 「`page` 要不要下发」——只配了纸张、不开分页时，`page` 也必须给出去，
+   * 否则服务端拿不到纸张（`page` 缺省 = 什么都不要）。见下面 `page` 那个 memo。
+   */
+  const [paper, setPaper] = useState<string | undefined>(undefined)
+  const [orientation, setOrientation] = useState<'portrait' | 'landscape' | undefined>(undefined)
+  /** 页边距：**整体开关**。关着 = 不下发 `margin_mm`，两端各用各的默认 */
+  const [customMargins, setCustomMargins] = useState(false)
+  /** 默认值取 Excel 的（上下 0.75"、左右 0.7"），与服务端 `DEFAULT_MARGINS` 同口径 */
+  const [margins, setMargins] = useState({ top: 19.05, right: 17.78, bottom: 19.05, left: 17.78 })
+  /** 页码模板；空 = 不印页码 */
+  const [pageNumber, setPageNumber] = useState('')
+  const [centerH, setCenterH] = useState(false)
   /**
    * 服务端返回的**分页结果**（`RenderResponse.pages`）。
    * 这里曾被整个忽略：开了分页、每页 20 行，预览仍渲染 `sheets[0]`（完整不分页的表），
@@ -1799,21 +1818,47 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   )
 
   /**
-   * 分页配置。必须 memo：buildRequest 是 useCallback，而预览有一层 400ms 去抖，
+   * 分页 + 页面设置配置。必须 memo：buildRequest 是 useCallback，而预览有一层 400ms 去抖，
    * 若 page 每次渲染都换新对象，doRender 身份随之变化，去抖会退化成反复请求。
    */
-  const page = useMemo(
-    () =>
-      paging
-        ? {
-            // rows_per_page 兜底为 1：0 会让服务端把整表退化成一页
-            rows_per_page: Math.max(1, rowsPerPage),
-            repeat_header_rows: Math.max(0, repeatHeader),
-            repeat_footer_rows: Math.max(0, repeatFooter),
-          }
-        : undefined,
-    [paging, rowsPerPage, repeatHeader, repeatFooter],
-  )
+  const page = useMemo(() => {
+    // 只放**作者明确要的**项：没写的一律不出现，服务端那边「没写 = 听打印机的」。
+    // 尤其页边距：给它填 Excel 的默认值就等于替作者钉了一套边距，
+    // 而 HTML 与 xlsx 的默认本来就不一样（浏览器 ≈10mm / Excel 19.05·17.78）。
+    const setup: PageConfig = {
+      ...(paper ? { paper } : {}),
+      ...(orientation ? { orientation } : {}),
+      ...(customMargins ? { margin_mm: { ...margins } } : {}),
+      ...(pageNumber.trim() ? { page_number: pageNumber.trim() } : {}),
+      ...(centerH ? { center_horizontally: true } : {}),
+    }
+    // 页面设置与分页在服务端是**同一个 `PageConfig`**，所以只要配了纸张之类，
+    // `page` 就必须给出去 —— 给 `undefined` 会把页面设置一起丢掉（服务端按「什么都没配」处理）。
+    if (!paging && Object.keys(setup).length === 0) return undefined
+    return {
+      // 不开分页时给 0：服务端 `is_effective` 要求 `rows_per_page > 0`，
+      // 0 就是「不分页」。**不能省这个字段**：省了 `page` 里就只剩页面设置，
+      // 服务端读 `repeat_header_rows` 兜底 1，会把 2 行表头静默变成 1 行。
+      rows_per_page: paging ? Math.max(1, rowsPerPage) : 0,
+      repeat_header_rows: paging ? Math.max(0, repeatHeader) : 0,
+      repeat_footer_rows: paging ? Math.max(0, repeatFooter) : 0,
+      ...setup,
+    }
+  }, [
+    paging,
+    rowsPerPage,
+    repeatHeader,
+    repeatFooter,
+    paper,
+    orientation,
+    customMargins,
+    margins,
+    pageNumber,
+    centerH,
+  ])
+
+  /** 页面设置预检（只提示不拦；服务端才是最终判据） */
+  const pageProblem = useMemo(() => pageSetupProblem(page), [page])
 
   /**
    * 组装渲染请求。逻辑搬到了 `grid-report-request.ts`（纯函数，可单测）——
@@ -2032,6 +2077,19 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       if (def.options?.repeatFooterRows != null) setRepeatFooter(def.options.repeatFooterRows)
       // 循环字段存在**模板**里（不是 options），从第一张 sheet 上取回来
       setLoopField(def.template?.sheets?.[0]?.loop_field ?? '')
+      /*
+       * 页面设置也**存在模板里**（不是 options）—— 它跟着 sheet 走，
+       * 所以从第一张 sheet 的 `page` 上取回来。
+       * 不回填的话「打开报表 → 纸张显示『不指定』」但存盘文件里其实是 A3，
+       * 再一保存就**真的把纸张抹掉了**。
+       */
+      const pg = def.template?.sheets?.[0]?.page
+      setPaper(pg?.paper ?? undefined)
+      setOrientation((pg?.orientation as 'portrait' | 'landscape' | undefined) ?? undefined)
+      setCustomMargins(!!pg?.margin_mm)
+      if (pg?.margin_mm) setMargins({ ...pg.margin_mm })
+      setPageNumber(pg?.page_number ?? '')
+      setCenterH(!!pg?.center_horizontally)
       // 数据源回填到左侧选择器，让人看得见数据从哪来
       const s0 = def.sources?.[0]
       if (s0?.database && s0?.table) {
@@ -2907,6 +2965,115 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
                       data-testid="grid-report-repeat-footer"
                     />
                   </Space>
+                </>
+              )}
+              {/*
+                页面设置（纸张 / 方向 / 页边距 / 页码 / 居中）。
+                与分页**同挂在服务端的 `PageConfig` 上**，所以 free 模式同样不显示
+                —— 理由与上面分页那条一样（free 分支不套 `page`，这些开关进不了请求）。
+                这里只**提示**不**拦**：判据是服务端校验的子集，见 `pageSetupProblem`。
+              */}
+              {mode !== 'free' && (
+                <>
+                  <Space size={4}>
+                    <Typography.Text style={{ fontSize: 12 }}>纸张</Typography.Text>
+                    <Select
+                      size="small"
+                      style={{ width: 92 }}
+                      value={paper ?? ''}
+                      onChange={(v: string) => setPaper(v || undefined)}
+                      data-testid="grid-report-paper"
+                      options={[
+                        { value: '', label: '不指定' },
+                        ...PAPER_NAMES.map((p) => ({ value: p, label: p })),
+                      ]}
+                    />
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text style={{ fontSize: 12 }}>方向</Typography.Text>
+                    <Select
+                      size="small"
+                      style={{ width: 84 }}
+                      value={orientation ?? ''}
+                      onChange={(v: string) =>
+                        setOrientation((v || undefined) as 'portrait' | 'landscape' | undefined)
+                      }
+                      data-testid="grid-report-orientation"
+                      options={[
+                        { value: '', label: '默认' },
+                        { value: 'portrait', label: '纵向' },
+                        { value: 'landscape', label: '横向' },
+                      ]}
+                    />
+                  </Space>
+                  <Space size={4}>
+                    <Switch
+                      size="small"
+                      checked={centerH}
+                      onChange={(v: boolean) => setCenterH(v)}
+                      data-testid="grid-report-center-h"
+                    />
+                    <Typography.Text style={{ fontSize: 12 }}>水平居中</Typography.Text>
+                  </Space>
+                  <Space size={4}>
+                    <Switch
+                      size="small"
+                      checked={customMargins}
+                      onChange={(v: boolean) => setCustomMargins(v)}
+                      data-testid="grid-report-custom-margins"
+                    />
+                    <Typography.Text style={{ fontSize: 12 }}>页边距</Typography.Text>
+                    {customMargins &&
+                      (
+                        [
+                          ['top', '上'],
+                          ['right', '右'],
+                          ['bottom', '下'],
+                          ['left', '左'],
+                        ] as const
+                      ).map(([k, label]) => (
+                        <InputNumber
+                          key={k}
+                          size="small"
+                          style={{ width: 96 }}
+                          min={0}
+                          max={200}
+                          step={1}
+                          addonBefore={label}
+                          addonAfter="mm"
+                          value={margins[k]}
+                          onChange={(v: number | null) =>
+                            setMargins((m) => ({ ...m, [k]: v ?? 0 }))
+                          }
+                          data-testid={`grid-report-margin-${k}`}
+                        />
+                      ))}
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text style={{ fontSize: 12 }}>页码</Typography.Text>
+                    <Input
+                      size="small"
+                      style={{ width: 160 }}
+                      placeholder="如 第 {page} / {pages} 页"
+                      value={pageNumber}
+                      onChange={(e) => setPageNumber(e.target.value)}
+                      data-testid="grid-report-page-number"
+                    />
+                  </Space>
+                  {/*
+                    页码只在**真分页**时印得进预览：服务端那时才知道一共几页。
+                    提前说清楚，免得作者以为页码功能坏了（配置明明写着、预览里没有）。
+                  */}
+                  {pageNumber.trim() && !paging && (
+                    <Typography.Text type="warning" style={{ fontSize: 12 }}>
+                      没开分页，预览里印不出页码（导出 xlsx 不受影响）
+                    </Typography.Text>
+                  )}
+                  {pageProblem && (
+                    <Typography.Text type="danger" style={{ fontSize: 12 }}>
+                      {pageProblem}
+                    </Typography.Text>
+                  )}
                 </>
               )}
               {pages.length > 0 && mode !== 'free' && (

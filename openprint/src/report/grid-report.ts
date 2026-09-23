@@ -603,16 +603,154 @@ export interface GridCell {
 export interface RenderedSheet {
   name: string
   rows: GridCell[][]
+  /**
+   * 这张 sheet 的页面设置（服务端**已解析校验过**，含换过方向的宽高）。
+   * 没配任何页面设置时缺省。
+   */
+  page_setup?: ResolvedPageSetup | null
 }
 
-/** 分页配置（页面级：按数据行数切页，表头/表尾每页重复） */
+/** 页边距（四边，单位 **mm**） */
+export interface PageMargins {
+  top: number
+  right: number
+  bottom: number
+  left: number
+}
+
+/** 服务端解析校验后的页面设置（只读回显用；模板里存的是 `PageConfig`） */
+export interface ResolvedPageSetup {
+  /** 纸张名；没写纸张时缺省（= 听打印机的） */
+  paper?: string | null
+  /** 纸张宽（mm），**已按方向换算** */
+  width_mm: number
+  /** 纸张高（mm），已按方向换算 */
+  height_mm: number
+  landscape: boolean
+  /** 作者**明写的**页边距；缺省 = 没写（两端各用各的默认） */
+  margin_mm?: PageMargins | null
+  page_number?: string | null
+  center_horizontally: boolean
+}
+
+/**
+ * 分页配置（页面级：按数据行数切页，表头/表尾每页重复）+ 页面设置。
+ *
+ * 两件事放一个结构体里，因为它们只在同一个场合出现（打印这张 sheet），
+ * 而拆成 `page` / `paper` 两个字段名会非常容易混。语义与服务端
+ * `PageConfig` 逐字段一致（`scripts/mirror-check.py` 钉住）。
+ */
 export interface PageConfig {
-  /** 每页容纳的**数据**行数（不含重复的表头/表尾） */
+  /** 每页容纳的**数据**行数（不含重复的表头/表尾）；0 / 缺省 = 不分页 */
   rows_per_page?: number
   /** 每页顶部重复的模板行数（表头） */
   repeat_header_rows?: number
   /** 每页底部重复的模板行数（表尾 / 签字栏等） */
   repeat_footer_rows?: number
+
+  /** 纸张名（`A3` / `A4` / `A5` / `B5` / `Letter` / `Legal`，大小写不敏感） */
+  paper?: string | null
+  /** `portrait`（纵向，默认）或 `landscape`（横向） */
+  orientation?: string | null
+  /** 四边页边距；不写则两端各用各的默认（浏览器默认 / Excel 默认） */
+  margin_mm?: PageMargins | null
+  /**
+   * 页码模板，如 `第 {page} / {pages} 页`。只认 `{page}` / `{pages}` 两个占位符。
+   *
+   * ⚠️ 预览（HTML）里只在**真分页**时印得出 —— 那时服务端才知道一共几页。
+   * 导出 xlsx 不受影响（Excel 原生页脚，Excel 自己知道共几页）。
+   */
+  page_number?: string | null
+  /** 内容在纸面上水平居中 */
+  center_horizontally?: boolean | null
+}
+
+/**
+ * 支持的纸张名（= Rust `model.rs::PAPERS` 的名字列，**一律纵向**）。
+ *
+ * 设计器的下拉框从这个清单生成；`scripts/mirror-check.py` 会拿它跟 Rust 那张表对账，
+ * 免得以后服务端加了纸张、界面还是老几项，而**界面上看不出来少了一个**。
+ *
+ * 注意 `B5` 是 **JIS 182×257**（Excel 纸张码 13，界面上也写「B5」），
+ * 不是 ISO 的 176×250 —— 口径在 Rust 那边有详细说明。
+ */
+export const PAPER_NAMES = ['A3', 'A4', 'A5', 'B5', 'Letter', 'Legal'] as const
+
+/** 页码模板的 `{...}` 占位符检查（只认 `{page}` / `{pages}`）→ 有问题的返回一句话 */
+function pageNumberTplProblem(tpl: string): string | null {
+  let rest = tpl
+  for (;;) {
+    const open = rest.indexOf('{')
+    if (open < 0) return null
+    const close = rest.indexOf('}', open)
+    if (close < 0) return `页码模板里的 \`{\` 没有闭合：${tpl}`
+    const name = rest.slice(open + 1, close)
+    if (name !== 'page' && name !== 'pages') {
+      return `页码模板里有认不出的占位符「{${name}}」（只认 {page} 与 {pages}）`
+    }
+    rest = rest.slice(close + 1)
+  }
+}
+
+/**
+ * 设计器里的页面设置预检：返回一句话问题描述，没问题是 `null`。
+ *
+ * 与 `barcodeProblem` / `chartProblem` 同一套路：只**提示**不**拦**
+ *（服务端才是最终判据 —— 认不出纸张 / 占位符会 400 并点名）。
+ *
+ * ⚠️ **刻意是服务端校验的一个子集**：
+ * 「页边距吃掉整张纸」那条要拿纸张尺寸（mm）才能算，而尺寸表只在 Rust 里
+ *（`model.rs::PAPERS`）。在这儿复制一份就是第二个真相源，迟早漂。
+ * 子集只会**漏报**、不会**误报**，所以不会出现「服务端能编、设计器却拦下」。
+ * 纸张**名字**这一层由 `scripts/mirror-check.py` 与 Rust 表对账，不会漂。
+ *
+ * 上面那句「不会误报」是**有前提的**：凡是在这里判的东西，判据必须与服务端**逐字一致**。
+ * 已经踩过一次 —— 纸张名原本按大小写敏感比对，而服务端 `paper_mm` 用的是
+ * `eq_ignore_ascii_case`，于是 `"a4"` 会被设计器拦下、服务端照样编得出来。
+ * 现在两边都大小写不敏感（见下），并由单测钉住。
+ */
+export function pageSetupProblem(page: PageConfig | null | undefined): string | null {
+  if (!page) return null
+
+  // 纸张名**大小写不敏感**：服务端 `paper_mm` / `paper_excel_id` 都是
+  // `n.eq_ignore_ascii_case(name.trim())`。这里跟着不敏感，
+  // 否则 `"a4"`（手改配置 / 导入模板很常见）会被误报成「不认识的纸张」。
+  const paper = (page.paper ?? '').trim()
+  if (paper && !(PAPER_NAMES as readonly string[]).some((n) => n.toLowerCase() === paper.toLowerCase())) {
+    return `不认识的纸张「${paper}」，支持：${PAPER_NAMES.join(' / ')}`
+  }
+
+  // 方向**只 trim、不忽略大小写** —— 服务端就是这样的
+  //（`Some("portrait") => false` / `Some("landscape") => true` / 其余报错），
+  // 所以 `"Landscape"` 服务端会拒。两边口径必须一样，别在这儿「顺手」放宽。
+  const o = (page.orientation ?? '').trim()
+  if (o && o !== 'portrait' && o !== 'landscape') {
+    return `不认识的纸张方向「${o}」，只认 portrait（纵向）/ landscape（横向）`
+  }
+
+  const m = page.margin_mm
+  if (m) {
+    for (const k of ['top', 'right', 'bottom', 'left'] as const) {
+      const v = m[k]
+      if (!Number.isFinite(v) || v < 0) {
+        return `页边距「${k}」不合法：${v}（须是不小于 0 的数，单位 mm）`
+      }
+    }
+  }
+
+  const tpl = page.page_number ?? ''
+  if (tpl.trim()) {
+    const bad = pageNumberTplProblem(tpl)
+    if (bad) return bad
+    // 与 Rust `validate_page_number_tpl` 同口径：Excel 页脚上限 255 **字符**（含 `&C`）。
+    // 超了 `set_footer` 会**静默丢弃** —— 导出成功但页脚不见，最难查的那类。
+    const escaped = [...tpl].length + (tpl.match(/&/g)?.length ?? 0)
+    if (escaped + 2 > 255) {
+      return `页码模板太长（${escaped} 字符）：Excel 页脚上限 255 字符，超了会被静默丢掉`
+    }
+  }
+
+  return null
 }
 
 export interface RenderResponse {
@@ -2390,6 +2528,41 @@ export function withExportFormula(tpl: ReportTemplate, on = true): ReportTemplat
 }
 
 /**
+ * 页面设置（纸张 / 方向 / 页边距 / 页码 / 居中）：写进**每张** sheet 的 `page`。
+ *
+ * 与 `withPage` 的分工在**存盘语义**：
+ * - `withPage` 连「分页三项」一起写 —— 那是**渲染期**的事，服务端会按
+ *   `options` 再套一次，所以模板里那份分页值只对这次预览有意义；
+ * - `withPageSetup` **只写页面设置**，`rows_per_page` 固定 0（= 不分页）。
+ *
+ * 为什么页面设置必须单独进**存盘模板**：它**不是开关**，是模板内容
+ *（跟 `loop_field` 一样）—— 服务端 `ReportOptions` 里根本没有这几个字段，
+ * 不写进模板就等于没存。症状很难查：存了 A3，重新打开显示「不指定」，
+ * 再一保存就**真把纸张抹掉了**（存盘文件里从头到尾都没写过）。
+ */
+export function withPageSetup(tpl: ReportTemplate, page?: PageConfig | null): ReportTemplate {
+  if (!page) return tpl
+  const { paper, orientation, margin_mm, page_number, center_horizontally } = page
+  const setup: PageConfig = {
+    ...(paper ? { paper } : {}),
+    ...(orientation ? { orientation } : {}),
+    ...(margin_mm ? { margin_mm } : {}),
+    ...(page_number ? { page_number } : {}),
+    ...(center_horizontally ? { center_horizontally: true } : {}),
+  }
+  // 一项都没配就别写 `page` —— 写了会让服务端把这张 sheet 当成「配了页面设置」，
+  // 于是多 sheet 时凭空多出一条「纸张不一致」告警。
+  if (Object.keys(setup).length === 0) return tpl
+  const cfg: PageConfig = {
+    rows_per_page: 0,
+    repeat_header_rows: 0,
+    repeat_footer_rows: 0,
+    ...setup,
+  }
+  return { ...tpl, sheets: tpl.sheets.map((s) => ({ ...s, page: cfg })) }
+}
+
+/**
  * 分页配置：写进**每张** sheet 的 `page`。
  *
  * 与服务端 `store::apply_options` 里那段逐字对应（「分页：写进每个 sheet 的 page」）——
@@ -2403,12 +2576,23 @@ export function withExportFormula(tpl: ReportTemplate, on = true): ReportTemplat
  * 存盘只存开关（`options.rowsPerPage`），由服务端再套，与
  * `withExportFormula` / `withExpandControl` 同一套约定。
  *
- * `rows_per_page` 兜底为 1：服务端的 `is_paginated` 要求它 > 0，
- * 给 0 会静默退化成「不分页」，开关看着像没生效。
+ * ⚠️ 它同时承载**页面设置**（纸张 / 方向 / 页边距 / 页码 / 居中）——
+ * 这两件事在服务端是同一个 `PageConfig`，所以这里也只走一个入口。
+ * 结果是：`page` 为 `undefined` 时页面设置也会一起丢掉，所以**只要配了纸张就
+ * 必须传 `page`**（哪怕不开分页），见 `GridReportModal` 里那个 memo。
  */
 export function withPage(tpl: ReportTemplate, page?: PageConfig | null): ReportTemplate {
   if (!page) return tpl
   const cfg: PageConfig = {
+    // 页面设置（纸张 / 方向 / 页边距 / 页码 / 居中）**原样带过来**。
+    // 这里是结构体字面量，不 spread 就会把作者设的纸张静默抹掉
+    //（与服务端 `apply_options` 踩过的是同一个坑，那边用 `with_pagination_of` 解决）。
+    ...page,
+    // `rows_per_page` 兜底为 1：服务端 `is_effective` 要求它 > 0，给 0 会**静默**
+    // 退化成「不分页」—— 开关看着像没生效，还不报任何错。这条有单测钉着。
+    //
+    // ⚠️ 所以「只配纸张、不开分页」**不要走这个函数**（它会把 0 抬成 1，
+    // 把一张 A3 报表强行切成每页 1 行）—— 那条路走 `withPageSetup`。
     rows_per_page: Math.max(1, Math.floor(page.rows_per_page ?? 1)),
     repeat_header_rows: Math.max(0, Math.floor(page.repeat_header_rows ?? 0)),
     repeat_footer_rows: Math.max(0, Math.floor(page.repeat_footer_rows ?? 0)),

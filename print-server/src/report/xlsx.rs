@@ -4,8 +4,8 @@
 //! 数值列写 number（保留可计算性），文本写 string；跨行跨列还原为 merge_range。
 
 use crate::report::model::{
-    is_hex_color, parse_image_data_uri, CellStyle, Graphic, GridCell, HAlign, RenderedSheet,
-    ResolvedChart, VAlign,
+    is_hex_color, paper_excel_id, parse_image_data_uri, CellStyle, Graphic, GridCell, HAlign,
+    RenderedSheet, ResolvedChart, VAlign, MM_PER_INCH,
 };
 use rust_xlsxwriter::{
     Chart, ChartType, Format, FormatAlign, FormatBorder, Image, Workbook, Worksheet,
@@ -643,10 +643,54 @@ pub fn to_xlsx(sheets: &[RenderedSheet], repeat_rows: usize) -> Result<Vec<u8>, 
         // 那半页既没有表头、也看不出属于哪一行。
         // 高度给 0 = 不限页数，纵向该几页就几页。
         // 这个调用会把 print_scale 固定成 100，所以**只会缩小、不会放大**。
-        //
-        // 纸张大小与方向**刻意不设**：用什么纸取决于现场打印机
-        //（A4 / 241 连续纸 / 标签纸都可能），写死反而可能不对。
         ws.set_print_fit_to_pages(1, 0);
+
+        // 页面设置（纸张 / 方向 / 页边距 / 页码 / 居中）。
+        //
+        // 与 HTML 侧最大的不同：xlsx **每 sheet 一份**，HTML 的 `@page` 是文档级。
+        // 所以「A 表 A4、B 表 A3」在这里表达得了，在 HTML 里不行（那边取第一份并告警，
+        // 见 `check_paper_consistency`）—— 这个差异是纸张格式本身决定的，不是偷懒。
+        //
+        // **作者没写的项一律不设**，保持「不配 = 听打印机的」这个既有行为。
+        // 尤其纸张：以前这里连纸张都不设（现场可能是 A4 / 241 连续纸 / 标签纸），
+        // 现在也只是把作者**明确要的**补上，没配的照样不写 paperSize。
+        if let Some(setup) = &sheet.page_setup {
+            if let Some(paper) = &setup.paper {
+                let id = paper_excel_id(paper).ok_or_else(|| {
+                    format!("sheet「{}」的 paper「{paper}」没有对应的 Excel 纸张码", sheet.name)
+                })?;
+                ws.set_paper_size(id);
+            }
+            // `portrait` 本来就是 Excel 的默认（`write_page_setup` 无论如何都会写
+            // `orientation="portrait"`），所以只在横向时才需要调 ——
+            // 调 `set_portrait()` 是空操作，少一次调用少一处「它到底改了什么」的疑惑。
+            if setup.landscape {
+                ws.set_landscape();
+            }
+            if let Some(m) = setup.margin_mm {
+                // ⚠️ 两个坑：单位是**英寸**（不是 mm），而且是 **6 个**参数
+                //（比四边多出 header / footer 两个「页眉页脚到纸边的距离」）。
+                // header/footer 我们没暴露，传 Excel 的默认 0.3" ——
+                // 与完全不调 `set_margins` 时的取值一致，所以不会顺手把页眉页脚位置挪掉。
+                ws.set_margins(
+                    m.left / MM_PER_INCH,
+                    m.right / MM_PER_INCH,
+                    m.top / MM_PER_INCH,
+                    m.bottom / MM_PER_INCH,
+                    0.3,
+                    0.3,
+                );
+            }
+            if let Some(footer) = setup.page_number_excel_footer() {
+                // `&C` = 居中段。这是 Excel **原生**页脚，任何情况都印得出
+                //（不像 HTML 侧要靠服务端分页才知道共几页）。长度上限在
+                // `resolve_setup` 里已经拦过 —— `set_footer` 超长是**静默丢弃**。
+                ws.set_footer(format!("&C{footer}"));
+            }
+            if setup.center_horizontally {
+                ws.set_print_center_horizontally(true);
+            }
+        }
     }
 
     wb.save_to_buffer().map_err(|e| e.to_string())
@@ -748,7 +792,9 @@ fn display_width(s: &str) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report::model::{GridCell, ResolvedBarcode, ResolvedChartSeries};
+    use crate::report::model::{
+        GridCell, PageConfig, PageMargins, ResolvedBarcode, ResolvedChartSeries,
+    };
 
     fn cell(text: &str, rowspan: usize, colspan: usize, num: Option<f64>) -> GridCell {
         GridCell {
@@ -944,6 +990,7 @@ mod tests {
                 vec![cell("地区", 1, 1, None), cell("金额", 1, 1, None)],
                 vec![cell("华东", 1, 1, None), cell("37,900", 1, 1, Some(37900.0))],
             ],
+            page_setup: None,
         };
         let buf = to_xlsx(&[sheet], 1).unwrap();
         // xlsx 本质是 zip：本地文件头 PK\x03\x04
@@ -968,6 +1015,7 @@ mod tests {
                 vec![cell("地区", 1, 1, None), cell("金额", 1, 1, None)],
                 vec![cell("华东", 1, 1, None), cell("37,900", 1, 1, Some(37900.0))],
             ],
+            page_setup: None,
         };
         // 0 → 至少 1 行
         assert!(to_xlsx(&[sheet()], 0).is_ok(), "repeat_rows=0 应夹成 1");
@@ -978,6 +1026,7 @@ mod tests {
         let one = RenderedSheet {
             name: "单行".into(),
             rows: vec![vec![cell("标题", 1, 1, None)]],
+            page_setup: None,
         };
         assert!(to_xlsx(&[one], 3).is_ok());
     }
@@ -1248,6 +1297,7 @@ mod tests {
         let sheet = RenderedSheet {
             name: "图片".into(),
             rows: vec![vec![png_cell(PNG_120X80, "A1")]],
+            page_setup: None,
         };
         let buf = to_xlsx(&[sheet], 1).expect("带图片的导出应当成功");
         let hay = String::from_utf8_lossy(&buf);
@@ -1263,7 +1313,7 @@ mod tests {
     #[test]
     fn xlsx_embeds_a_barcode_bitmap() {
         let sheet =
-            RenderedSheet { name: "条码".into(), rows: vec![vec![barcode_cell("A1", "ORDER-1")]] };
+            RenderedSheet { name: "条码".into(), rows: vec![vec![barcode_cell("A1", "ORDER-1")]], page_setup: None };
         let buf = to_xlsx(&[sheet], 1).expect("带条码的导出应当成功");
         let hay = String::from_utf8_lossy(&buf);
         assert!(hay.contains("xl/media/image1.png"), "条码要作为位图嵌进去");
@@ -1283,7 +1333,7 @@ mod tests {
     fn an_image_shadowing_a_chart_does_not_also_embed_the_chart() {
         let mut c = png_cell(PNG_120X80, "A1");
         c.chart = Some(a_chart());
-        let sheet = RenderedSheet { name: "t".into(), rows: vec![vec![c]] };
+        let sheet = RenderedSheet { name: "t".into(), rows: vec![vec![c]], page_setup: None };
         let buf = to_xlsx(&[sheet], 1).expect("导得出");
         let hay = String::from_utf8_lossy(&buf);
         assert!(hay.contains("xl/media/image1.png"), "图片要嵌");
@@ -1295,7 +1345,7 @@ mod tests {
     fn a_chart_shadowing_a_barcode_does_not_also_embed_the_bitmap() {
         let mut c = barcode_cell("A1", "ORDER-1");
         c.chart = Some(a_chart());
-        let sheet = RenderedSheet { name: "t".into(), rows: vec![vec![c]] };
+        let sheet = RenderedSheet { name: "t".into(), rows: vec![vec![c]], page_setup: None };
         let buf = to_xlsx(&[sheet], 1).expect("导得出");
         let hay = String::from_utf8_lossy(&buf);
         assert!(hay.contains("xl/charts/chart"), "图表要画");
@@ -1306,7 +1356,7 @@ mod tests {
     #[test]
     fn undecodable_image_errors_with_cell_pos() {        let mut c = png_cell(PNG_120X80, "C7");
         c.image = Some("data:image/png;base64,%%%not-base64%%%".into());
-        let sheet = RenderedSheet { name: "坏图".into(), rows: vec![vec![c]] };
+        let sheet = RenderedSheet { name: "坏图".into(), rows: vec![vec![c]], page_setup: None };
         let err = to_xlsx(&[sheet], 1).unwrap_err();
         assert!(err.contains("C7"), "报错要带格位，实际：{err}");
     }
@@ -1316,7 +1366,7 @@ mod tests {
     fn image_cell_writes_alt_text_not_cell_text() {
         let mut c = png_cell(PNG_120X80, "A1");
         c.text = "产品图".into();
-        let sheet = RenderedSheet { name: "alt".into(), rows: vec![vec![c]] };
+        let sheet = RenderedSheet { name: "alt".into(), rows: vec![vec![c]], page_setup: None };
         let buf = to_xlsx(&[sheet], 1).expect("应导出成功");
         let hay = String::from_utf8_lossy(&buf);
         // 图不是被丢掉的
@@ -1338,5 +1388,66 @@ mod tests {
         let imgs = decode_images(&[vec![png_cell(PNG_120X80, "A1")]]).unwrap();
         let d = imgs.get(&(0, 0)).expect("应解出来");
         assert_eq!((d.size.w, d.size.h), (120, 80), "96dpi 的图就是像素数本身");
+    }
+
+    /* ------------------------------ 页面设置 ------------------------------ */
+
+    /// 一份带页面设置的 sheet（用 `resolve_setup` 造，与真实链路同一份解析逻辑）
+    fn sheet_with(cfg: PageConfig) -> RenderedSheet {
+        RenderedSheet {
+            name: "页设置".into(),
+            rows: vec![
+                vec![cell("地区", 1, 1, None), cell("金额", 1, 1, None)],
+                vec![cell("华东", 1, 1, None), cell("37,900", 1, 1, Some(37900.0))],
+            ],
+            page_setup: cfg.resolve_setup("页设置").unwrap(),
+        }
+    }
+
+    /// ⚠️ 这条**证明不了纸设对了** —— xlsx 是 zip，`xl/worksheets/sheet1.xml` 是
+    /// deflate 过的，Rust 单测在字节里搜不到 `paperSize` / `oddFooter`。
+    ///
+    /// 它守的是「走一遍不 panic、不报错」这一段；**真正的断言在
+    /// `scripts/verify-report-paper.py`**（拆 zip 读 XML 对 paperSize / orientation /
+    /// pageMargins / oddFooter）。别把这条当成「页面设置已验证」。
+    #[test]
+    fn xlsx_accepts_a_page_setup_without_erroring() {
+        let cfg = PageConfig {
+            paper: Some("A4".into()),
+            orientation: Some("landscape".into()),
+            margin_mm: Some(PageMargins { top: 10.0, right: 8.0, bottom: 10.0, left: 8.0 }),
+            page_number: Some("第 {page} / {pages} 页".into()),
+            center_horizontally: Some(true),
+            ..Default::default()
+        };
+        let buf = to_xlsx(&[sheet_with(cfg)], 1).expect("带页面设置应当导得出");
+        assert_eq!(&buf[..4], &[0x50, 0x4B, 0x03, 0x04], "还是合法 zip");
+    }
+
+    /// 一项都没配 → `page_setup` 是 `None` → 导出器**一个 setter 都不调**。
+    /// 这是「老模板导出逐字节不变」的那条路。
+    #[test]
+    fn xlsx_without_a_page_setup_still_exports() {
+        let s = RenderedSheet {
+            name: "t".into(),
+            rows: vec![vec![cell("a", 1, 1, None)]],
+            page_setup: PageConfig::default().resolve_setup("t").unwrap(),
+        };
+        assert!(s.page_setup.is_none());
+        assert!(to_xlsx(&[s], 1).is_ok());
+    }
+
+    /// 纸张名映射不到 Excel 码时**报错**，不许静默出一张默认纸。
+    ///
+    /// 正常路径上 `resolve_setup` 已经拦了错名字，所以这条守的是
+    /// 「以后有人绕过 `resolve_setup` 直接造 `ResolvedPageSetup`」这种情况 ——
+    /// 那时候静默用默认纸打出来才发现不对，是典型的静默失败。
+    #[test]
+    fn xlsx_rejects_a_paper_without_an_excel_code() {
+        let mut s = sheet_with(PageConfig { paper: Some("A4".into()), ..Default::default() });
+        s.page_setup.as_mut().unwrap().paper = Some("A6".into());
+        let e = to_xlsx(&[s], 1).unwrap_err();
+        assert!(e.contains("A6"), "要点名那个纸：{e}");
+        assert!(e.contains("页设置"), "要点名是哪张 sheet：{e}");
     }
 }

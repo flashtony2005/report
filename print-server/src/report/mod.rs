@@ -120,7 +120,7 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
     let want_dump = req.dump.unwrap_or(false);
     let mut sheets = Vec::new();
     let mut dumps: Vec<String> = Vec::new();
-    let mut all_pages: Vec<RenderedSheet> = Vec::new();
+    let mut all_pages: Vec<(RenderedSheet, usize, usize, bool)> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     for sheet in tpl.sheets.iter_mut() {
         let (sheet_datasets, primary, ds_warns) = prepare_dataset(&tpl.datasets, sheet);
@@ -141,6 +141,12 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
             } else {
                 format!("{} - {}", sheet.name, suffix)
             };
+            // 页面设置：解析 + 校验放在**展开之前** —— 纸张名写错时没必要先把整张表算一遍，
+            // 而且此时报错文案里能用上带后缀的 sheet 名（循环变量展开出来的那张）。
+            let page_setup = match &sheet.page {
+                Some(cfg) => cfg.resolve_setup(&sheet_name)?,
+                None => None,
+            };
             let mut engine = engine::Engine::new_multi(sub_ds, primary.clone());
             let rows = engine.expand_sheet(sheet);
             for w in engine.warnings() {
@@ -152,6 +158,12 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
             if let Some(cfg) = &sheet.page {
                 let grids = paginate(&rows, cfg);
                 let n = grids.len();
+                // **服务端到底知不知道这份表有几页？**
+                // 只有 `rows_per_page > 0` 且表够长（`is_effective`）时才真的切过页，
+                // 那时 `n` 才是页数。否则 `paginate` 原样返回一整页，
+                // 浏览器仍会把它切成好几张纸 —— 此时印「第 1 / 1 页」是**错的**，
+                // 比不印更坏（作者会照着一个错的页码去找第 3 页）。
+                let effective = cfg.is_effective(rows.len());
                 // 公式是按**整表**的行列位置生成的，逐页复制后行号就对不上了——
                 // 第 2 页的 SUM(C2:C5) 只会算到本页那几行，跟同一格显示的静态值不一致。
                 // 半对不对的公式比静态值危险，多页时统一回落写值并告警。
@@ -163,6 +175,15 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
                     warnings.push(format!(
                         "[{}] 分页导出时公式坐标按整表生成、与逐页复制后的行号不一致，已回落写值",
                         sheet_name
+                    ));
+                }
+                // 配了页码却没真正分页 → 印不出页码，且**必须说清为什么**。
+                // 静默不印的话，作者只会看到「配置明明写了、输出里就是没有」。
+                if !effective && page_setup.as_ref().is_some_and(|p| p.page_number.is_some()) {
+                    warnings.push(format!(
+                        "[{}] 配了页码但这份模板没真正分页（rows_per_page = {}）：HTML 里印不出页码；\
+                         导出 xlsx 不受影响（那是 Excel 原生页脚）",
+                        sheet_name, cfg.rows_per_page
                     ));
                 }
                 for (i, grid) in grids.into_iter().enumerate() {
@@ -180,29 +201,50 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
                     } else {
                         grid
                     };
-                    all_pages.push(RenderedSheet {
-                        name: format!("{} ({}/{})", sheet_name, i + 1, n),
-                        rows,
-                    });
+                    all_pages.push((
+                        RenderedSheet {
+                            name: format!("{} ({}/{})", sheet_name, i + 1, n),
+                            rows,
+                            // 每页共享同一份页面设置（纸张是整张表的属性，不随页变）
+                            page_setup: page_setup.clone(),
+                        },
+                        // 页码要「第几页 / 共几页」，**每张 sheet 各算各的**
+                        //（`all_pages` 是把所有 sheet 的页拍平在一起的，
+                        //  用扁平下标当页码会把 B 表的第一页印成第 4 页）
+                        i + 1,
+                        n,
+                        // 这一页的「共几页」是不是真的（见上面的 `effective`）
+                        effective,
+                    ));
                 }
             }
-            sheets.push(RenderedSheet { name: sheet_name, rows });
+            sheets.push(RenderedSheet { name: sheet_name, rows, page_setup });
         }
     }
-    let html = to_html(&sheets)?;
+    let html = to_html(&sheets, None)?;
     let dump = if want_dump { Some(dumps.join("\n")) } else { None };
-    let pages_html = if all_pages.is_empty() {
+    // 先记下来：下面 `all_pages` 会被 `into_iter` 吃掉
+    let paginated = !all_pages.is_empty();
+    let pages_html = if !paginated {
         None
     } else {
         // 逐页渲染。任何一页的样式非法都整体报错 —— 与主 html 同口径，
         // 免得「预览报了错、分页 HTML 悄悄少了样式」这种半截结果。
         let mut v: Vec<String> = Vec::with_capacity(all_pages.len());
-        for p in &all_pages {
-            v.push(to_html(std::slice::from_ref(p))?);
+        for (p, i, n, effective) in &all_pages {
+            // 没真正分页时不传页码 —— `page_no` 就是「服务端知道共几页」这个信号，
+            // 传 `None` 等于承认不知道，于是 `to_html` 不印页脚。
+            let pno = if *effective { Some((*i, *n)) } else { None };
+            v.push(to_html(std::slice::from_ref(p), pno)?);
         }
         Some(v)
     };
-    let pages = if all_pages.is_empty() { None } else { Some(all_pages) };
+    let pages = if paginated {
+        Some(all_pages.into_iter().map(|(s, _, _, _)| s).collect())
+    } else {
+        None
+    };
+    check_paper_consistency(&sheets, &mut warnings);
     let warnings = if warnings.is_empty() { None } else { Some(warnings) };
     Ok(RenderResponse { sheets, html, dump, pages, pages_html, warnings })
 }
@@ -710,15 +752,113 @@ fn html_style_attr(st: Option<&CellStyle>, pos: &str) -> Result<String, String> 
     Ok(format!(" style=\"{}\"", css.join(";")))
 }
 
+/// 多 sheet 纸张设置不一致 → 告警
+///
+/// `@page` 是**文档级**规则，一篇 HTML 只能表达一份纸张设置；而 xlsx 是每 sheet 一份。
+/// 所以「A 表 A4、B 表 A3」在 xlsx 里能表达、在 HTML 里**不能**。
+/// 这里取第一份并明确告警，**不静默挑一个** —— 否则是打出来才发现另一张纸不对。
+///
+/// 判据用「纸张 + 方向 + 页边距 + 居中」四元组，而不是只比纸张名：
+/// 只比纸张名会漏掉「同一张 A4，一张横向一张纵向」这种同样印不对的情况。
+fn check_paper_consistency(sheets: &[RenderedSheet], warnings: &mut Vec<String>) {
+    let mut seen: Vec<(Option<String>, bool, Option<PageMargins>, bool)> = Vec::new();
+    for s in sheets {
+        let Some(p) = s.page_setup.as_ref() else {
+            continue;
+        };
+        let key = (p.paper.clone(), p.landscape, p.margin_mm, p.center_horizontally);
+        if !seen.contains(&key) {
+            seen.push(key);
+        }
+    }
+    if seen.len() <= 1 {
+        return;
+    }
+    let first = sheets.iter().find_map(|s| s.page_setup.as_ref());
+    warnings.push(format!(
+        "多张 sheet 的纸张设置不一致（{} 种）：HTML 的 @page 是文档级规则、只能表达一份，已按第一张「{}」出；导出的 xlsx 每张 sheet 各按自己的设置",
+        seen.len(),
+        first
+            .map(|p| p
+                .paper
+                .clone()
+                .unwrap_or_else(|| "未指定纸张（听打印机的）".to_string()))
+            .unwrap_or_default(),
+    ));
+}
+
 /// 展开结果 → 自包含 HTML（设计器预览走的就是这条路）
 ///
 /// **返回 `Result` 而不是 `String`**：作者样式的颜色 / 字号要在这里校验，
 /// 认不出来必须报错点名 —— 与 `xlsx::with_style` 同口径，见 `html_style_attr`。
-fn to_html(sheets: &[RenderedSheet]) -> Result<String, String> {
+///
+/// `page_no`：分页那条路传 `Some((第几页, 共几页))`（**1 基**）。
+/// 页码只有「服务端自己知道一共几页」时才印得出来 —— 不分页的那份 HTML 是交给
+/// 浏览器去切页的，服务端不知道会切成几页，所以传 `None`。
+/// 这一点不是偷懒：Chrome 的 `--print-to-pdf` **不支持** `@page` 的 margin box
+/// （`counter(page)`），`print_job.rs` 正是用这个 CLI 出 PDF 的，所以
+/// 「让浏览器自己填页码」这条路在本项目里不存在。xlsx 侧不受影响（Excel 原生页脚）。
+fn to_html(sheets: &[RenderedSheet], page_no: Option<(usize, usize)>) -> Result<String, String> {
     let mut out = String::new();
+
+    // `@page` 是**文档级**规则（不像 xlsx 那样每 sheet 一份），所以整篇只能有一份纸张设置。
+    // 多 sheet 纸张不一致时取第一份并在 `render()` 里告警（见 `check_paper_consistency`）。
+    // 没有任何 sheet 配页面设置时**一个字都不吐** —— 输出与加这个功能之前逐字节一致。
+    //
+    // **只吐作者明写的项**：`size` 要写了纸张才吐；只写了方向时吐 CSS 的裸 `landscape`
+    // 关键字（纸交给打印机定），**不替作者把纸钉成 A4**；`margin` 要写了页边距才吐。
+    // 否则「只配了个页码」的模板会连纸张和页边距一起被钉死，而作者从没要求过。
+    if let Some(setup) = sheets.iter().find_map(|s| s.page_setup.as_ref()) {
+        let mut decls: Vec<String> = Vec::new();
+        if setup.paper.is_some() {
+            decls.push(format!("size:{:.2}mm {:.2}mm", setup.width_mm, setup.height_mm));
+        } else if setup.landscape {
+            decls.push("size:landscape".to_string());
+        }
+        if let Some(m) = setup.margin_mm {
+            decls.push(format!(
+                "margin:{:.2}mm {:.2}mm {:.2}mm {:.2}mm",
+                m.top, m.right, m.bottom, m.left
+            ));
+        }
+        if !decls.is_empty() {
+            out.push_str(&format!("<style>@page{{{}}}</style>\n", decls.join(";")));
+        }
+    }
+
     for sheet in sheets {
+        // 配了页码时把这一页包成一个「纸高」的竖排容器，页脚靠 `margin-top:auto` 顶到底。
+        // 不配页码时**不加这个包装** —— 保持既有输出不变。
+        let setup = sheet.page_setup.as_ref();
+        let footer = match (setup.and_then(|s| s.page_number.as_ref()), page_no) {
+            (Some(_), Some((p, n))) => setup.and_then(|s| s.page_number_text(p, n)),
+            _ => None,
+        };
+        if let Some(text) = &footer {
+            let s = setup.expect("有页脚就一定有 setup");
+            // 纸高减去上下页边距 = 可印区高度。页脚要落在可印区底部。
+            // 作者没写页边距时按 `DEFAULT_MARGINS` 估 —— 这里只是**算落点**，
+            // 不是替作者声明页边距（那件事由上面 `@page` 的 `margin` 决定）。
+            let m = s.margin_mm.unwrap_or(DEFAULT_MARGINS);
+            let body_mm = (s.height_mm - m.top - m.bottom).max(1.0);
+            out.push_str(&format!(
+                "<div style=\"min-height:{body_mm:.2}mm;display:flex;flex-direction:column\">\n"
+            ));
+            out.push_str(&format!(
+                "<div style=\"margin-top:auto;text-align:center;font-size:10pt\">{}</div>\n",
+                escape(text)
+            ));
+        }
+
         out.push_str(&format!("<h3>{}</h3>\n", escape(&sheet.name)));
-        out.push_str("<table border=\"1\" cellspacing=\"0\" cellpadding=\"6\" style=\"border-collapse:collapse\">\n");
+        // 水平居中：`@page` 没有 auto 边距，所以居中要在**内容**上做 ——
+        // 表格宽度是「收缩到内容」，`margin:0 auto` 就是在可印区里居中，
+        // 与 xlsx 的 `set_print_center_horizontally` 同一效果。
+        let center = setup.map(|s| s.center_horizontally).unwrap_or(false);
+        out.push_str(&format!(
+            "<table border=\"1\" cellspacing=\"0\" cellpadding=\"6\" style=\"border-collapse:collapse{}\">\n",
+            if center { ";margin-left:auto;margin-right:auto" } else { "" }
+        ));
         let nrows = sheet.rows.len();
         let ncols = sheet.rows.iter().map(|r| r.len()).max().unwrap_or(0);
         // 被合并覆盖的格子必须从 HTML 里省略：rowspan/colspan 只写在起始格上，
@@ -787,6 +927,9 @@ fn to_html(sheets: &[RenderedSheet]) -> Result<String, String> {
             out.push_str("</tr>\n");
         }
         out.push_str("</table>\n");
+        if footer.is_some() {
+            out.push_str("</div>\n");
+        }
     }
     Ok(out)
 }
@@ -851,28 +994,29 @@ pub async fn csv_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
+/// xlsx 导出用的表头行数。
+///
+/// **只有真开了分页**（`rows_per_page > 0`）才信模板里的 `repeat_header_rows`；
+/// 否则按模板本身算（`ReportTemplate::header_row_count`，与前端 `headerRowCount` 同一套判据）。
+///
+/// 为什么需要这个前置条件：`page` 变成 `Some` 的原因**不止分页** ——
+/// 页面设置（纸张 / 方向 / 页边距 / 页码）也挂在同一个 `PageConfig` 里，
+/// 而那时 `repeat_header_rows` 是 0（作者根本没填）。不判分页就取它，
+/// 会把「预览 2 行表头」静默变成「导出 1 行」—— 正是这段代码当初要修的那个 bug。
+fn xlsx_header_rows(tpl: &ReportTemplate) -> usize {
+    tpl.sheets
+        .first()
+        .and_then(|s| s.page.as_ref())
+        .filter(|p| p.rows_per_page > 0)
+        .map_or_else(|| tpl.header_row_count().max(1), |p| p.repeat_header_rows.max(1))
+}
+
 pub async fn xlsx_handler(
     State(state): State<AppState>,
     Json(req): Json<RenderRequest>,
 ) -> Result<HttpResponse<axum::body::Body>, (StatusCode, String)> {
-    // 表头行数：优先用模板分页配置里的 `repeat_header_rows`（与分页渲染同一个值，
-    // 是用户显式填的）；没配分页就**按模板算**（`ReportTemplate::header_row_count`，
-    // 与前端 `headerRowCount` 同一套判据）。
-    //
-    // 这里曾经写死 1：生成器产出的模板第一行是标题、第二行才是列头，于是导出的
-    // xlsx 只有标题行是表头样式、列头掉进正文，打印时列头也不跨页重复 ——
-    // 而同一时刻的预览是按 2 行画的，两边对不上。
-    //
     // 必须在 `render_with_sources` 之前取 —— 它会把 `req` 整个吃掉。
-    let head = req
-        .template
-        .sheets
-        .first()
-        .and_then(|s| s.page.as_ref())
-        .map_or_else(
-            || req.template.header_row_count().max(1),
-            |p| p.repeat_header_rows.max(1),
-        );
+    let head = xlsx_header_rows(&req.template);
     let resp = render_with_sources(&state, req).await.map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     // 模板配了分页时按页导出（每页一个 sheet），否则导出整表。
     // 文件名始终取未分页的 sheet 名，避免带上「 (1/3)」这类页码后缀。
@@ -941,7 +1085,10 @@ pub async fn reports_get_handler(
         .map_err(|e| (StatusCode::NOT_FOUND, e))
 }
 
-/// `PUT /api/reports/:id` —— 保存（新建或覆盖）
+/// `PUT /api/reports/save` —— 保存（新建或覆盖）。
+///
+/// ⚠️ 路径是 `/api/reports/save`，**不是** `/api/reports/:id`（见 `main.rs` 的路由表）。
+/// `:id` 只挂 GET / DELETE。`id` 从请求体的 `ReportDef` 里取。
 pub async fn reports_save_handler(
     State(state): State<AppState>,
     Json(def): Json<store::ReportDef>,
@@ -1008,11 +1155,15 @@ pub async fn reports_xlsx_handler(
     // 存盘的模板是**未套分页**的原样，所以先看模板里的分页配置，
     // 再退回 options 里的 repeat_header_rows，最后才按模板本身算表头行数
     // （`header_row_count`；与前端预览同一套判据，避免「预览 2 行表头、导出 1 行」）。
+    //
+    // 模板那一段同样要 `.filter(|p| p.rows_per_page > 0)`：只配了纸张的模板
+    // `repeat_header_rows` 也是 0，见 `xlsx_header_rows` 的注释。
     let head = def
         .template
         .sheets
         .first()
         .and_then(|s| s.page.as_ref())
+        .filter(|p| p.rows_per_page > 0)
         .map(|p| p.repeat_header_rows)
         .or_else(|| def.options.repeat_header_rows.map(|v| v as usize))
         .filter(|n| *n > 0)
@@ -3574,6 +3725,7 @@ mod tests {
             rows_per_page: 10,
             repeat_header_rows: 2, // 标题 + 表头
             repeat_footer_rows: 0,
+            ..Default::default()
         });
         let resp = render(RenderRequest {
             template: tpl,
@@ -3642,6 +3794,7 @@ mod tests {
             rows_per_page: 10,
             repeat_header_rows: 2,
             repeat_footer_rows: 1, // 总计行
+            ..Default::default()
         });
         let resp = render(RenderRequest {
             template: tpl,
@@ -3686,10 +3839,324 @@ mod tests {
             .collect();
         let pages = paginate(
             &rows,
-            &PageConfig { rows_per_page: 1, repeat_header_rows: 2, repeat_footer_rows: 1 },
+            &PageConfig { rows_per_page: 1, repeat_header_rows: 2, repeat_footer_rows: 1, ..Default::default() },
         );
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].len(), 3);
+    }
+
+    /* ------------------------- 页面设置（HTML 侧） ------------------------- */
+
+    /// 告警拼成一段文本，便于 `contains` 断言（`render_tpl` 见上）
+    fn warns(resp: &RenderResponse) -> String {
+        resp.warnings.clone().unwrap_or_default().join("\n")
+    }
+
+    /// **没配页面设置 → HTML 里一个字都不吐。**
+    ///
+    /// 这是「老模板输出逐字节不变」的守门人：新功能只该在用到它时改变输出。
+    /// 一旦 `@page` / 页码包装 div / 居中样式无条件吐出来，
+    /// 所有既有模板的打印版面都会被改掉，而预览里**看不出来**。
+    #[test]
+    fn html_has_no_page_rule_without_page_setup() {
+        let resp = render_tpl(sample_template());
+        assert!(!resp.html.contains("@page"), "不该有 @page：{}", resp.html);
+        assert!(!resp.html.contains("margin-top:auto"), "不该有页码包装");
+        assert!(!resp.html.contains("margin-left:auto"), "不该有居中样式");
+    }
+
+    /// 配了纸张 → 吐 `@page{size:…}`；**没配页边距就不吐 `margin`**
+    ///（拿 `DEFAULT_MARGINS` 冒充作者的选择是替用户做决定）
+    #[test]
+    fn html_emits_size_only_when_paper_is_named() {
+        let mut tpl = sample_template();
+        tpl.sheets[0].page = Some(PageConfig { paper: Some("A4".into()), ..Default::default() });
+        let resp = render_tpl(tpl);
+        assert!(resp.html.contains("@page{size:210.00mm 297.00mm}"), "{}", resp.html);
+        assert!(!resp.html.contains("margin:"), "没写页边距就不该吐 margin：{}", resp.html);
+    }
+
+    /// 横向要换宽高（`@page` 的 `size` 是「宽 高」，不是「纸 方向」）
+    #[test]
+    fn html_landscape_swaps_dimensions() {
+        let mut tpl = sample_template();
+        tpl.sheets[0].page = Some(PageConfig {
+            paper: Some("A4".into()),
+            orientation: Some("landscape".into()),
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+        assert!(resp.html.contains("@page{size:297.00mm 210.00mm}"), "{}", resp.html);
+    }
+
+    /// 只写方向、不写纸张 → 吐 CSS 的裸 `landscape` 关键字。
+    ///
+    /// **不许**替作者把纸钉成 A4：作者只说了「横过来」，
+    /// 替他选一张纸就是静默改了他没碰过的东西（xlsx 侧同样不写 paperSize，两边才一致）。
+    #[test]
+    fn html_orientation_without_paper_uses_the_keyword() {
+        let mut tpl = sample_template();
+        tpl.sheets[0].page =
+            Some(PageConfig { orientation: Some("landscape".into()), ..Default::default() });
+        let resp = render_tpl(tpl);
+        assert!(resp.html.contains("@page{size:landscape}"), "{}", resp.html);
+        assert!(!resp.html.contains("210.00mm"), "不许替作者选 A4：{}", resp.html);
+    }
+
+    /// 页边距的 CSS 顺序是「上 右 下 左」—— 顺序写错会静默印歪
+    #[test]
+    fn html_emits_margins_in_css_order() {
+        let mut tpl = sample_template();
+        tpl.sheets[0].page = Some(PageConfig {
+            paper: Some("A4".into()),
+            margin_mm: Some(PageMargins { top: 1.0, right: 2.0, bottom: 3.0, left: 4.0 }),
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+        assert!(
+            resp.html.contains("@page{size:210.00mm 297.00mm;margin:1.00mm 2.00mm 3.00mm 4.00mm}"),
+            "{}",
+            resp.html
+        );
+    }
+
+    /// 配了 `center_horizontally` → 表格加 `margin-left/right:auto`
+    ///（`@page` 没有 auto 边距，居中只能在**内容**上做）
+    #[test]
+    fn html_center_horizontally_centers_the_table() {
+        let mut tpl = sample_template();
+        tpl.sheets[0].page = Some(PageConfig {
+            paper: Some("A4".into()),
+            center_horizontally: Some(true),
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+        assert!(resp.html.contains("margin-left:auto"), "{}", resp.html);
+
+        // 不配就不加（不表态）
+        let mut tpl2 = sample_template();
+        tpl2.sheets[0].page = Some(PageConfig { paper: Some("A4".into()), ..Default::default() });
+        assert!(!render_tpl(tpl2).html.contains("margin-left:auto"));
+    }
+
+    /// **没真正分页时不许印页码**（印一个错的比不印更坏），而且必须告警。
+    ///
+    /// `page_number` 挂在 `page` 里，所以「配了页码」必然让 `page` 是 `Some` ——
+    /// 于是 `paginate` 被调用、`pages` 里有一项。但 `rows_per_page = 0` 时
+    /// `paginate` **原样返回一整页**，`n` 恒为 1，浏览器仍会把长表切成好几张纸。
+    /// 此时印「第 1 / 1 页」是错的：作者会照着一个错的页码去找第 3 页。
+    #[test]
+    fn html_page_number_needs_real_pagination_and_warns_otherwise() {
+        let mut tpl = sample_template();
+        tpl.sheets[0].page = Some(PageConfig {
+            // 刻意不给 rows_per_page：有页面设置、但没有分页
+            page_number: Some("第 {page} / {pages} 页".into()),
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+
+        // 逐页 HTML 里不许出现任何页码 —— 尤其是「第 1 / 1 页」这种错的
+        for h in resp.pages_html.clone().unwrap_or_default() {
+            assert!(!h.contains("页"), "印了个错的页码：{h}");
+        }
+        assert!(warns(&resp).contains("页码"), "要告警说明原因：{}", warns(&resp));
+        assert!(warns(&resp).contains("rows_per_page"), "要点名是哪个开关没开：{}", warns(&resp));
+    }
+
+    /// 反过来：`rows_per_page` 配了、表却短得装得下一页 → **仍然印页码**。
+    ///
+    /// 「第 1 / 1 页」在这里是**对的**：作者要了分页，`paginate` 真的按行数切过，
+    /// 服务端知道就一页。所以判据是「有没有真的切过页」（`is_effective`），
+    /// 不是「页数 > 1」。
+    #[test]
+    fn html_page_number_printed_when_pagination_is_on_but_table_fits_one_page() {
+        let mut tpl = sample_template();
+        tpl.sheets[0].page = Some(PageConfig {
+            rows_per_page: 999, // 远大于 23 行 → 一页装得下
+            repeat_header_rows: 2,
+            repeat_footer_rows: 0,
+            page_number: Some("第 {page} / {pages} 页".into()),
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+        let h = resp.pages_html.clone().expect("配了分页");
+        assert_eq!(h.len(), 1);
+        assert!(h[0].contains("第 1 / 1 页"), "这是对的页码，要印出来：{}", h[0]);
+        assert!(!warns(&resp).contains("页码"), "不该告警：{}", warns(&resp));
+    }
+
+    /// 分页 + 页码 → 逐页 HTML 里印出**真实的**「第几页 / 共几页」
+    #[test]
+    fn html_page_number_is_printed_per_page_when_paginated() {
+        let mut tpl = sample_template();
+        tpl.sheets[0].page = Some(PageConfig {
+            rows_per_page: 10,
+            repeat_header_rows: 2,
+            repeat_footer_rows: 0,
+            page_number: Some("第 {page} / {pages} 页".into()),
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+        let pages_html = resp.pages_html.clone().expect("分页应逐页出 HTML");
+        assert_eq!(pages_html.len(), 3);
+        assert!(pages_html[0].contains("第 1 / 3 页"), "{}", pages_html[0]);
+        assert!(pages_html[1].contains("第 2 / 3 页"), "{}", pages_html[1]);
+        assert!(pages_html[2].contains("第 3 / 3 页"), "{}", pages_html[2]);
+        // 不告警（这次真印出来了）
+        assert!(!warns(&resp).contains("页码"), "{}", warns(&resp));
+    }
+
+    /// 两个 sheet、各 3 行数据、每页 2 行 → 各出 2 页，各带页码。
+    ///
+    /// 用来钉「页码是**每张 sheet 各算各的**」：`all_pages` 把所有 sheet 的页
+    /// 拍平在一个 Vec 里，拿扁平下标当页码会把第二张表的第一页印成「第 3 页」——
+    /// 单张表的测试**完全看不出来**（那时候两者恰好相等）。
+    fn two_sheet_paginated_template() -> ReportTemplate {
+        let cell = |t: &str| CellTpl {
+            image: None,
+            chart: None,
+            barcode: None,
+            pos: None,
+            value: Some(JsonValue::from(t)),
+            model: None,
+            merge_across: 0,
+            merge_down: 0,
+            merge_to_end: false,
+        };
+        let sheet = |name: &str| SheetTpl {
+            name: name.to_string(),
+            page: Some(PageConfig {
+                rows_per_page: 2,
+                repeat_header_rows: 1,
+                repeat_footer_rows: 0,
+                page_number: Some("第 {page} / {pages} 页".into()),
+                ..Default::default()
+            }),
+            rows: vec![
+                RowTpl { cells: vec![cell("表头")] },
+                RowTpl { cells: vec![cell("a1")] },
+                RowTpl { cells: vec![cell("a2")] },
+                RowTpl { cells: vec![cell("a3")] },
+            ],
+            loop_field: None,
+        };
+        ReportTemplate { sheets: vec![sheet("甲"), sheet("乙")], datasets: BTreeMap::new() }
+    }
+
+    #[test]
+    fn html_page_numbers_restart_per_sheet() {
+        let resp = render_tpl(two_sheet_paginated_template());
+        let h = resp.pages_html.clone().expect("两张表都配了分页");
+        assert_eq!(h.len(), 4, "两张表各 2 页");
+        assert!(h[0].contains("第 1 / 2 页"), "{}", h[0]);
+        assert!(h[1].contains("第 2 / 2 页"), "{}", h[1]);
+        // 关键：乙表的第一页是「第 1 页」，不是扁平下标算出来的「第 3 页」
+        assert!(h[2].contains("第 1 / 2 页"), "乙表首页页码错了：{}", h[2]);
+        assert!(!h[2].contains("第 3"), "用了扁平下标：{}", h[2]);
+        assert!(h[3].contains("第 2 / 2 页"), "{}", h[3]);
+    }
+
+    /// 多 sheet 纸张不一致 → **告警**，不静默挑一个。
+    ///
+    /// `@page` 是文档级规则，一篇 HTML 只能表达一份纸张设置；
+    /// xlsx 是每 sheet 一份。所以「A 表 A4、B 表 A3」在 xlsx 里对、在 HTML 里做不到。
+    #[test]
+    fn html_warns_when_sheets_disagree_on_paper() {
+        let mut tpl = sample_template();
+        tpl.sheets[0].page = Some(PageConfig { paper: Some("A4".into()), ..Default::default() });
+        tpl.sheets.push(tpl.sheets[0].clone());
+        tpl.sheets[1].name = "第二张".into();
+        tpl.sheets[1].page = Some(PageConfig { paper: Some("A3".into()), ..Default::default() });
+
+        let resp = render_tpl(tpl);
+        assert!(warns(&resp).contains("不一致"), "要告警：{}", warns(&resp));
+        // 取第一份出 HTML（并说清了）
+        assert!(resp.html.contains("@page{size:210.00mm 297.00mm}"), "{}", resp.html);
+    }
+
+    /// 只比纸张名会漏掉「同一张 A4，一张横向一张纵向」—— 那同样印不对，
+    /// 所以判据是「纸张 + 方向 + 页边距 + 居中」四元组。
+    #[test]
+    fn html_warns_when_only_orientation_differs() {
+        let mut tpl = sample_template();
+        tpl.sheets[0].page = Some(PageConfig {
+            paper: Some("A4".into()),
+            orientation: Some("portrait".into()),
+            ..Default::default()
+        });
+        tpl.sheets.push(tpl.sheets[0].clone());
+        tpl.sheets[1].name = "第二张".into();
+        tpl.sheets[1].page = Some(PageConfig {
+            paper: Some("A4".into()),
+            orientation: Some("landscape".into()),
+            ..Default::default()
+        });
+        let resp = render_tpl(tpl);
+        assert!(warns(&resp).contains("不一致"), "纸张同名但方向不同也要告警：{}", warns(&resp));
+    }
+
+    /// 一致时**不**告警 —— 否则告警变成噪音，真出问题时没人看
+    #[test]
+    fn html_does_not_warn_when_papers_agree() {
+        let mut tpl = sample_template();
+        tpl.sheets[0].page = Some(PageConfig {
+            paper: Some("A4".into()),
+            margin_mm: Some(PageMargins { top: 5.0, right: 5.0, bottom: 5.0, left: 5.0 }),
+            ..Default::default()
+        });
+        tpl.sheets.push(tpl.sheets[0].clone());
+        tpl.sheets[1].name = "第二张".into();
+        let resp = render_tpl(tpl);
+        assert!(!warns(&resp).contains("不一致"), "{}", warns(&resp));
+    }
+
+    /// 纸张名写错 → 整个渲染**报错**（不是告警），且点名是哪张 sheet 的哪个值
+    #[test]
+    fn html_bad_paper_name_fails_the_render() {
+        let mut tpl = sample_template();
+        tpl.sheets[0].page = Some(PageConfig { paper: Some("A6".into()), ..Default::default() });
+        let e = render(RenderRequest {
+            template: tpl,
+            datasets: None,
+            sources: None,
+            dump: None,
+        })
+        .unwrap_err();
+        assert!(e.contains("A6"), "{e}");
+        assert!(e.contains("销售分组汇总"), "要点名 sheet：{e}");
+    }
+
+    /// **配了纸张但没开分页时，xlsx 的表头行数仍要按模板算。**
+    ///
+    /// `page` 变成 `Some` 的原因不止分页 —— 页面设置也挂在同一个 `PageConfig` 里，
+    /// 而那时 `repeat_header_rows` 是 0（作者没填）。若不判分页就取它，
+    /// 表头行数会从 2 静默掉到 1：预览里是「标题 + 列头」两行表头，
+    /// 导出却只有标题行有表头样式、列头掉进正文，打印时列头也不跨页重复。
+    #[test]
+    fn xlsx_header_rows_ignores_page_setup_without_pagination() {
+        // 样例模板：第 1 行标题、第 2 行列头 → 2 行表头
+        let base = sample_template();
+        assert_eq!(base.header_row_count(), 2, "样例模板应当算 2 行表头");
+        assert_eq!(xlsx_header_rows(&base), 2, "没配 page 时按模板算");
+
+        // 只配纸张（没开分页）→ 仍是 2，不能被 repeat_header_rows=0 带偏
+        let mut paper_only = sample_template();
+        paper_only.sheets[0].page =
+            Some(PageConfig { paper: Some("A4".into()), ..Default::default() });
+        assert_eq!(
+            xlsx_header_rows(&paper_only),
+            2,
+            "只配纸张时表头行数掉到 1 了（页面设置不该影响表头口径）"
+        );
+
+        // 真开了分页 → 用作者填的 repeat_header_rows
+        let mut paginated = sample_template();
+        paginated.sheets[0].page = Some(PageConfig {
+            rows_per_page: 10,
+            repeat_header_rows: 3,
+            ..Default::default()
+        });
+        assert_eq!(xlsx_header_rows(&paginated), 3);
     }
 
     fn gcell(text: &str, rowspan: usize) -> GridCell {
@@ -3745,7 +4212,7 @@ mod tests {
             rows.push(vec![gcell("", 1), gcell("明细", 1)]);
             rows.push(vec![gcell("", 1), gcell("明细", 1)]);
         }
-        let cfg = PageConfig { rows_per_page: 4, repeat_header_rows: 2, repeat_footer_rows: 0 };
+        let cfg = PageConfig { rows_per_page: 4, repeat_header_rows: 2, repeat_footer_rows: 0, ..Default::default() };
         let pages = paginate(&rows, &cfg);
 
         // 不变量一：页内任何 rowspan>1 的格，都必须完整落在本页里
@@ -3783,7 +4250,7 @@ mod tests {
         for _ in 1..10 {
             rows.push(vec![gcell("", 1)]);
         }
-        let cfg = PageConfig { rows_per_page: 4, repeat_header_rows: 1, repeat_footer_rows: 0 };
+        let cfg = PageConfig { rows_per_page: 4, repeat_header_rows: 1, repeat_footer_rows: 0, ..Default::default() };
         let pages = paginate(&rows, &cfg);
         assert_eq!(pages.len(), 1, "整张表被一个合并格罩住，切不开就只有 1 页");
         assert_eq!(pages[0].len(), 11, "1 行表头 + 10 行大组");
@@ -5151,6 +5618,7 @@ mod tests {
             rows_per_page: 3,
             repeat_header_rows: 2,
             repeat_footer_rows: 0,
+            ..Default::default()
         });
         // 给带 value_expr 的格打开 export_formula
         for row in tpl.sheets[0].rows.iter_mut() {
@@ -5227,6 +5695,7 @@ mod tests {
             rows_per_page: 3,
             repeat_header_rows: 2,
             repeat_footer_rows: 0,
+            ..Default::default()
         });
         let resp =
             render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None }).unwrap();
@@ -6163,7 +6632,7 @@ mod tests {
             ..Default::default()
         };
         let resp = render_tpl(image_tpl(cell, vec!["unused"]));
-        let html = to_html(&resp.sheets).expect("样例模板没有样式，不该报错");
+        let html = to_html(&resp.sheets, None).expect("样例模板没有样式，不该报错");
         assert!(html.contains("<img src=\"data:image/png;base64,"), "应当出 img，实际：{html}");
         assert!(html.contains("alt=\"logo\""), "text 应当当 alt，实际：{html}");
     }
@@ -6406,7 +6875,7 @@ mod tests {
     fn html_preview_emits_inline_svg_for_chart_cells() {
         let tpl = chart_tpl(bar_chart(&["A3"], vec![series_decl("销售额", "B3")]));
         let resp = render_tpl(tpl);
-        let html = to_html(&resp.sheets).expect("样例模板没有样式，不该报错");
+        let html = to_html(&resp.sheets, None).expect("样例模板没有样式，不该报错");
         assert!(html.contains("<svg "), "应当出内联 SVG，实际：{html}");
         assert!(html.contains("华东"), "类目名要画进图里，实际：{html}");
     }
@@ -6625,7 +7094,7 @@ mod tests {
     fn html_preview_emits_inline_svg_for_barcode_cells() {
         let tpl = barcode_tpl(CellBarcode { value: "ORDER-2026-0001".into(), ..Default::default() });
         let resp = render_tpl(tpl);
-        let html = to_html(&resp.sheets).expect("样例模板没有样式，不该报错");
+        let html = to_html(&resp.sheets, None).expect("样例模板没有样式，不该报错");
         assert!(html.contains("<svg "), "应当出内联 SVG，实际：{html}");
         assert!(html.contains("shape-rendering=\"crispEdges\""), "条码必须关抗锯齿：{html}");
         assert!(html.contains("fill=\"#000\""), "条必须是黑的：{html}");
@@ -7059,7 +7528,7 @@ mod tests {
             ..Default::default()
         });
         let resp = render_tpl(tpl);
-        let html = to_html(&resp.sheets).expect("合法颜色不该报错");
+        let html = to_html(&resp.sheets, None).expect("合法颜色不该报错");
         let tag = td_opening_tag_with(&html, "华东");
         assert!(tag.contains("background-color:#FFF2CC"), "底色该在「华东」那格：{tag}");
         // 表头 A2 没有 model，不该被带上样式
@@ -7072,7 +7541,7 @@ mod tests {
     #[test]
     fn html_preview_has_no_style_attr_when_unstyled() {
         let resp = render_tpl(one_number_template(1.0, None));
-        let html = to_html(&resp.sheets).expect("没样式更不该报错");
+        let html = to_html(&resp.sheets, None).expect("没样式更不该报错");
         assert!(
             html.contains("<td rowspan=\"1\" colspan=\"1\">1</td>"),
             "没样式时不该多出 style 属性：{html}"
@@ -7098,7 +7567,7 @@ mod tests {
             v_align: Some(VAlign::Middle),
         });
         let resp = render_tpl(tpl);
-        let html = to_html(&resp.sheets).expect("都合法");
+        let html = to_html(&resp.sheets, None).expect("都合法");
         let tag = td_opening_tag_with(&html, "7");
         for want in [
             "font-weight:bold",
@@ -7125,7 +7594,7 @@ mod tests {
             ..Default::default()
         });
         let resp = render_tpl(tpl);
-        let html = to_html(&resp.sheets).expect("合法");
+        let html = to_html(&resp.sheets, None).expect("合法");
         assert!(!html.contains("font-weight"), "Some(false) 不该写 font-weight：{html}");
         assert!(!html.contains("font-style"), "Some(false) 不该写 font-style：{html}");
         // 全 false 等于没有可画的字段 → 整格回到「没有 style 属性」
@@ -7181,7 +7650,7 @@ mod tests {
             tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().style =
                 Some(CellStyle { h_align: Some(h), ..Default::default() });
             let resp = render_tpl(tpl);
-            let html = to_html(&resp.sheets).expect("合法");
+            let html = to_html(&resp.sheets, None).expect("合法");
             let tag = td_opening_tag_with(&html, "1");
             assert!(tag.contains(want), "h_align={h:?} 应映射成 {want}：{tag}");
         }
@@ -7194,7 +7663,7 @@ mod tests {
             tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().style =
                 Some(CellStyle { v_align: Some(v), ..Default::default() });
             let resp = render_tpl(tpl);
-            let html = to_html(&resp.sheets).expect("合法");
+            let html = to_html(&resp.sheets, None).expect("合法");
             let tag = td_opening_tag_with(&html, "1");
             assert!(tag.contains(want), "v_align={v:?} 应映射成 {want}：{tag}");
         }
@@ -7226,7 +7695,7 @@ mod tests {
         tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().conditional =
             Some(vec![rule("gt", 1000.0)]);
         let resp = render_tpl(tpl);
-        let html = to_html(&resp.sheets).expect("合法");
+        let html = to_html(&resp.sheets, None).expect("合法");
         let tag = td_opening_tag_with(&html, "5,000");
         assert!(tag.contains("color:#FF0000"), "超标格该在预览里标红：{tag}");
     }
@@ -7239,7 +7708,7 @@ mod tests {
         tpl.sheets[0].rows[0].cells[0].model.as_mut().unwrap().conditional =
             Some(vec![rule("gt", 1000.0)]);
         let resp = render_tpl(tpl);
-        let html = to_html(&resp.sheets).expect("合法");
+        let html = to_html(&resp.sheets, None).expect("合法");
         assert!(!html.contains("color:#FF0000"), "没命中不该标红：{html}");
         assert!(
             all_td_tags(&html).iter().all(|t| !t.contains(" style=")),

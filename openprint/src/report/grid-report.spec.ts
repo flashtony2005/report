@@ -11,6 +11,7 @@ import {
   headerRowCount,
   labelOf,
   parseParams,
+  pageSetupProblem,
   pickPreviewSheet,
   applyCellText,
   colIndex,
@@ -26,6 +27,7 @@ import {
   isMergeAnchor,
   mergeAt,
   mergeSpanOf,
+  PAPER_NAMES,
   PARENT_HIGHLIGHT,
   PARENT_STYLE_ID,
   parentChainOf,
@@ -49,7 +51,9 @@ import {
   withExportFormula,
   withLoopField,
   withPage,
+  withPageSetup,
   type CellTpl,
+  type PageConfig,
   type RenderedSheet,
   type RenderResponse,
   type ReportTemplate,
@@ -1840,6 +1844,203 @@ describe('withPage：分页配置落到每张 sheet 上', () => {
     expect(c.sheets[0]!.page ?? null).toBeNull()
     // 明细模板是唯一把 opts.page 透传的，但它自己不会凭空造 page
     expect(d.sheets[0]!.page ?? null).toBeNull()
+  })
+})
+
+/**
+ * 页面设置**不是开关，是模板内容** —— 所以它得单独写进存盘模板。
+ *
+ * 这里盯的是一个真实踩过的坑：`ReportOptions` 里**根本没有**纸张 / 页码这几个字段
+ * （只有 `rowsPerPage` 那三个分页项），所以光靠 `withPage` 存不住 ——
+ * 它在 `rawTemplate` 快照**之后**才跑。症状：存了 A3，重新打开显示「不指定」，
+ * 再一保存就**真把纸张抹掉了**，而存盘文件里从头到尾都没写过它。
+ *
+ * 与 `withPage` 的分工在**存盘语义**：`withPage` 连分页三项一起写（渲染期的事，
+ * 服务端会按 `options` 再套一次），`withPageSetup` **只写页面设置**。
+ */
+describe('withPageSetup：页面设置写进存盘模板', () => {
+  const mk = (value: string | null): CellTpl => ({ value })
+  const tpl = (): ReportTemplate => ({
+    sheets: [
+      { name: 'A', rows: [{ cells: [mk('x')] }] },
+      { name: 'B', rows: [{ cells: [mk('y')] }] },
+    ],
+  })
+
+  it('五项设置都落到**每张** sheet 上，rows_per_page 固定 0', () => {
+    const out = withPageSetup(tpl(), {
+      paper: 'A3',
+      orientation: 'landscape',
+      margin_mm: { top: 10, right: 8, bottom: 10, left: 8 },
+      page_number: '第 {page} / {pages} 页',
+      center_horizontally: true,
+    })
+    const want: PageConfig = {
+      rows_per_page: 0,
+      repeat_header_rows: 0,
+      repeat_footer_rows: 0,
+      paper: 'A3',
+      orientation: 'landscape',
+      margin_mm: { top: 10, right: 8, bottom: 10, left: 8 },
+      page_number: '第 {page} / {pages} 页',
+      center_horizontally: true,
+    }
+    expect(out.sheets.map((s) => s.page)).toEqual([want, want])
+  })
+
+  it('传 undefined / null 原样返回', () => {
+    const src = tpl()
+    expect(withPageSetup(src, undefined)).toBe(src)
+    expect(withPageSetup(src, null)).toBe(src)
+  })
+
+  it('一项都没配时原样返回、**不写 page**', () => {
+    // 写一个空的 page 会让服务端把这张 sheet 当成「配了页面设置」，
+    // 于是多 sheet 时凭空多出一条「纸张不一致」告警（而作者什么都没设）。
+    const src = tpl()
+    expect(withPageSetup(src, {})).toBe(src)
+    expect(src.sheets[0]!.page).toBeUndefined()
+    // 只配了分页（页面设置一个没填）同样不该写
+    expect(withPageSetup(src, { rows_per_page: 8, repeat_header_rows: 1 })).toBe(src)
+  })
+
+  it('只写页面设置：传进来的分页值**不带走**', () => {
+    // 「只配纸张、不开分页」的路径。若把 rows_per_page: 8 带过来，
+    // 一张 A3 报表会被强行切成每页 8 行 —— 作者只是想换张纸。
+    const p = withPageSetup(tpl(), { paper: 'A3', rows_per_page: 8, repeat_header_rows: 2 })
+      .sheets[0]!.page
+    expect(p?.paper).toBe('A3')
+    expect(p?.rows_per_page).toBe(0)
+    expect(p?.repeat_header_rows).toBe(0)
+  })
+
+  it('center_horizontally 为 false 时不写这个字段（= 不表态）', () => {
+    const p = withPageSetup(tpl(), { paper: 'A4', center_horizontally: false }).sheets[0]!.page
+    expect(p).toEqual({ rows_per_page: 0, repeat_header_rows: 0, repeat_footer_rows: 0, paper: 'A4' })
+    expect('center_horizontally' in (p ?? {})).toBe(false)
+  })
+
+  it('与 withPage 的分工：同一份 page，一个保持 0、一个抬成 1', () => {
+    // **契约**用例。两个函数都写 `sheet.page`，但存盘语义不同：
+    // `withPageSetup` 进 rawTemplate（页面设置是模板内容），
+    // `withPage` 只在真开分页时套（服务端 apply_options 再套一次）。
+    // 哪天有人把两者合并，这条会红。
+    const page: PageConfig = { paper: 'A3', rows_per_page: 0 }
+    expect(withPageSetup(tpl(), page).sheets[0]!.page?.rows_per_page).toBe(0)
+    expect(withPage(tpl(), page).sheets[0]!.page?.rows_per_page).toBe(1)
+  })
+
+  it('withPage 会把页面设置带过来（结构体字面量里不 spread 就会静默抹掉）', () => {
+    // 与服务端 `apply_options` 踩的是同一个坑，那边用 `with_pagination_of` 解决。
+    const p = withPage(tpl(), {
+      rows_per_page: 5,
+      paper: 'A3',
+      orientation: 'landscape',
+      page_number: '{page}',
+    }).sheets[0]!.page
+    expect(p?.paper).toBe('A3')
+    expect(p?.orientation).toBe('landscape')
+    expect(p?.page_number).toBe('{page}')
+  })
+
+  it('只动 page，rows 和格子原样不动', () => {
+    const src = tpl()
+    const out = withPageSetup(src, { paper: 'Legal' })
+    expect(out.sheets[0]!.rows).toBe(src.sheets[0]!.rows)
+    expect(out.sheets[0]!.name).toBe('A')
+    expect(out.sheets[1]!.rows).toBe(src.sheets[1]!.rows)
+  })
+})
+
+/**
+ * 设计器侧的页面设置预检（只提示不拦，服务端才是判据）。
+ *
+ * 这一组的关键不是「认得出错」，而是**口径与服务端逐字一致** ——
+ * 预检误报（服务端能编、设计器拦下）比不报更烦人。所以下面每条的
+ * 「该放行」用例都是照着 Rust `model.rs::resolve_setup` 的行为抄的。
+ */
+describe('pageSetupProblem —— 与 Rust resolve_setup 同口径', () => {
+  it('没配 / 空对象一律没问题', () => {
+    expect(pageSetupProblem(null)).toBeNull()
+    expect(pageSetupProblem(undefined)).toBeNull()
+    expect(pageSetupProblem({})).toBeNull()
+    expect(pageSetupProblem({ rows_per_page: 8 })).toBeNull()
+  })
+
+  it('正常的一套设置没问题', () => {
+    expect(
+      pageSetupProblem({
+        paper: 'A3',
+        orientation: 'landscape',
+        margin_mm: { top: 10, right: 8, bottom: 10, left: 8 },
+        page_number: '第 {page} / {pages} 页',
+        center_horizontally: true,
+      }),
+    ).toBeNull()
+  })
+
+  it('纸张名大小写不敏感、前后空白不算数 —— 与服务端 eq_ignore_ascii_case 一致', () => {
+    // **跨端契约**。服务端 `paper_mm` 是 `eq_ignore_ascii_case(name.trim())`，
+    // 所以 `"a4"` 编得出来。这里若按大小写敏感判，就会出现
+    // 「服务端能编、设计器拦下」—— 正是这套预检唯一不该犯的错（踩过一次）。
+    for (const p of ['A4', 'a4', ' a4 ', 'a3', 'LEGAL', 'letter']) {
+      expect(pageSetupProblem({ paper: p }), `「${p}」应当放行`).toBeNull()
+    }
+  })
+
+  it('认不出的纸张要点名并列出清单', () => {
+    const msg = pageSetupProblem({ paper: 'A2' })
+    expect(msg).toContain('A2')
+    expect(msg).toContain('A3') // 清单要在里面，用户才知道能填什么
+  })
+
+  it('方向 trim 但**不忽略大小写** —— 服务端就是这样，别在这儿放宽', () => {
+    // 服务端 match 的是字面量 `"portrait"` / `"landscape"`，`"Landscape"` 会被拒。
+    // 这条看着「不友好」，但它守的是两边一致：放宽了就是误报的反面 ——
+    // 设计器放行、服务端 400。
+    expect(pageSetupProblem({ orientation: 'landscape' })).toBeNull()
+    expect(pageSetupProblem({ orientation: ' landscape ' })).toBeNull()
+    expect(pageSetupProblem({ orientation: 'portrait' })).toBeNull()
+    expect(pageSetupProblem({ orientation: '' })).toBeNull() // 空 = 没写 = 纵向
+    expect(pageSetupProblem({ orientation: 'Landscape' })).toContain('Landscape')
+    expect(pageSetupProblem({ orientation: 'sideways' })).toContain('sideways')
+  })
+
+  it('页边距必须是不小于 0 的有限数', () => {
+    expect(pageSetupProblem({ margin_mm: { top: 0, right: 0, bottom: 0, left: 0 } })).toBeNull()
+    for (const bad of [-1, NaN, Infinity]) {
+      const msg = pageSetupProblem({ margin_mm: { top: bad, right: 8, bottom: 10, left: 8 } })
+      expect(msg, `top=${bad} 应当被拦`).toContain('top')
+    }
+    expect(pageSetupProblem({ margin_mm: { top: 10, right: 8, bottom: 10, left: -0.1 } })).toContain('left')
+  })
+
+  it('页码占位符只认 {page} / {pages}', () => {
+    expect(pageSetupProblem({ page_number: '第 {page} / {pages} 页' })).toBeNull()
+    expect(pageSetupProblem({ page_number: '第 {pge} 页' })).toContain('pge')
+    expect(pageSetupProblem({ page_number: '第 {page 页' })).toContain('没有闭合')
+  })
+
+  it('空白页码不校验 —— 与服务端「Some("") 也照样通过」同结果', () => {
+    expect(pageSetupProblem({ page_number: '' })).toBeNull()
+    expect(pageSetupProblem({ page_number: '   ' })).toBeNull()
+  })
+
+  it('Excel 页脚 255 字符上限（超了 set_footer 会**静默丢弃**）', () => {
+    // 与 Rust `validate_page_number_tpl` 逐字同口径：
+    // `escaped_len = 字符数 + 字面量 & 的个数`，`escaped_len + 2 > 255` 才算超。
+    // 边界必须钉住，否则「差一个字符」这类改动没人发现。
+    expect(pageSetupProblem({ page_number: 'x'.repeat(253) })).toBeNull()
+    expect(pageSetupProblem({ page_number: 'x'.repeat(254) })).toContain('255')
+    // 字面量 `&` 在 Excel 里要写成 `&&`，所以**按两个字符**算
+    expect(pageSetupProblem({ page_number: '&'.repeat(126) })).toBeNull()
+    expect(pageSetupProblem({ page_number: '&'.repeat(127) })).toContain('255')
+  })
+
+  it('纸张清单就是 Rust PAPERS 的名字列（6 项）', () => {
+    // 与 `scripts/mirror-check.py` 那道对账同一条事实，这里再钉一次是为了
+    // **在本文件里就能看出**清单变过 —— 免得有人只跑了 vitest 就以为没事。
+    expect([...PAPER_NAMES]).toEqual(['A3', 'A4', 'A5', 'B5', 'Letter', 'Legal'])
   })
 })
 

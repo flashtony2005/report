@@ -338,10 +338,17 @@ pub fn apply_options(tpl: ReportTemplate, opts: &ReportOptions) -> ReportTemplat
             rows_per_page: rows_per_page.max(1) as usize,
             repeat_header_rows: opts.repeat_header_rows.unwrap_or(0).max(0) as usize,
             repeat_footer_rows: opts.repeat_footer_rows.unwrap_or(0).max(0) as usize,
+            // 页面设置（纸张 / 方向 / 页边距 / 页码）**不在 options 里** ——
+            // 它是模板自己的属性，由下面的 `with_pagination_of` 从原 sheet 继承。
+            ..Default::default()
         });
     if let Some(p) = &page {
         for s in sheets.iter_mut() {
-            s.page = Some(p.clone());
+            // **合并而不是替换**：options 只决定分页那三项。
+            // 整份替换会让模板里存的纸张 / 页码**静默消失**（存盘文件里还在，
+            // 但跑出来没有，界面上看不出来）。
+            let old = s.page.take().unwrap_or_default();
+            s.page = Some(old.with_pagination_of(p));
         }
     }
 
@@ -601,6 +608,53 @@ mod tests {
         let p = out.sheets[0].page.as_ref().unwrap();
         assert_eq!(p.rows_per_page, 20);
         assert_eq!(p.repeat_header_rows, 1);
+    }
+
+    /// **`apply_options` 只能改分页三项，不能把模板里的页面设置抹掉。**
+    ///
+    /// 这是实现页面设置时踩到的真坑：这里原来是 `s.page = Some(p.clone())`（整份替换），
+    /// 于是「存盘文件里 `paper: "A3"` 还在、跑出来却是默认纸」—— 静默丢数据。
+    /// 之所以难发现：设计器读的是**存盘文件**（纸张还在），跑的是 `apply_options` 之后的模板，
+    /// 两边不一致而屏幕上完全看不出来。
+    ///
+    /// 单测 `with_pagination_of_keeps_the_page_setup` 只守住了那个方法本身；
+    /// 这条守的是**调用点**真的用了它。
+    #[test]
+    fn 选项不会抹掉模板的页面设置() {
+        use crate::report::model::{PageConfig, PageMargins, SheetTpl};
+        let tpl = ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "s".into(),
+                rows: vec![],
+                page: Some(PageConfig {
+                    rows_per_page: 5,
+                    repeat_header_rows: 1,
+                    repeat_footer_rows: 0,
+                    paper: Some("A3".into()),
+                    orientation: Some("landscape".into()),
+                    margin_mm: Some(PageMargins { top: 3.0, right: 4.0, bottom: 5.0, left: 6.0 }),
+                    page_number: Some("第 {page} 页".into()),
+                    center_horizontally: Some(true),
+                }),
+                loop_field: None,
+            }],
+            datasets: Default::default(),
+        };
+        // 执行期的 options **只带分页三项**（页面设置不在 ReportOptions 里）
+        let opts = ReportOptions {
+            rows_per_page: Some(20),
+            repeat_header_rows: Some(2),
+            ..Default::default()
+        };
+        let p = apply_options(tpl, &opts).sheets[0].page.clone().unwrap();
+        assert_eq!(p.rows_per_page, 20, "分页该按 options 覆盖");
+        assert_eq!(p.repeat_header_rows, 2);
+        // 页面设置**原样保留**
+        assert_eq!(p.paper.as_deref(), Some("A3"), "纸张被 options 抹掉了");
+        assert_eq!(p.orientation.as_deref(), Some("landscape"));
+        assert_eq!(p.margin_mm.unwrap().left, 6.0);
+        assert_eq!(p.page_number.as_deref(), Some("第 {page} 页"));
+        assert_eq!(p.center_horizontally, Some(true));
     }
 
     /// 每个用例一个独立临时目录。

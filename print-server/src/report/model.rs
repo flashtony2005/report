@@ -730,18 +730,164 @@ pub struct RowTpl {
     pub cells: Vec<CellTpl>,
 }
 
-/// 分页配置（页面级：按数据行数切页，表头/表尾每页重复）
+/// 页边距（四边，单位 mm）
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PageMargins {
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub left: f64,
+}
+
+/// 不写 `margin_mm` 时**算页码落点**用的页边距 —— 取 Excel 的默认值（上下 0.75"、左右 0.7"）。
 ///
-/// 只解决「打印时按固定行数分页」这一层，不引入润乾那套完整的 9 类带区模型。
+/// ⚠️ 它**不是「默认会印上去的页边距」**，只是一份布局假设：
+/// 作者没写 `margin_mm` 时，HTML 不吐 `margin`、xlsx 不调 `set_margins`，
+/// 两边都留给各自的默认（浏览器默认 / Excel 默认，本来就不一样，但**谁都没冒充作者做了选择**）。
+/// 只有一处真的用到这个常量：页码要落在可印区底部，得知道上下边距占掉多少。
+pub const DEFAULT_MARGINS: PageMargins = PageMargins {
+    top: 19.05,
+    right: 17.78,
+    bottom: 19.05,
+    left: 17.78,
+};
+
+/// 1 英寸 = 25.4 mm。xlsx 的 `set_margins` 只收英寸，HTML 侧全用 mm，
+/// 换算是**功能的一部分**（差 25 倍，而且不报错）。
+pub const MM_PER_INCH: f64 = 25.4;
+
+/// 支持的纸张：`(名字, 宽 mm, 高 mm, Excel 纸张码)`，**一律按纵向记**。
+///
+/// 这是纸张尺寸的**唯一一份**表：HTML 的 `@page` 读前三项，xlsx 读第四项
+/// （`set_paper_size` 收的是 Excel 的数字码，不是名字）。
+/// 名字**大小写不敏感**（`a4` / `A4` 都认），但**不认「A4 横向」这种带修饰的写法** ——
+/// 方向是单独的字段，猜错是静默的。
+///
+/// **为什么 B5 是 182×257 而不是 ISO 的 176×250**：B5 有两个互不相同的标准
+/// —— ISO B5 = 176×250、JIS B5 = 182×257，而 Excel 的纸张码 13（界面上就写「B5」）
+/// 是 **JIS** 那个。若按 ISO 的尺寸去配码 34（Excel 里叫「Envelope B5」），
+/// 就会出现「HTML 按 176×250 排版、Excel 按 182×257 出纸」的静默不一致。
+/// 所以取 JIS，与 Excel 同口径；ISO B5 本项目**不支持**（要用得先起个不冲突的名字）。
+pub const PAPERS: &[(&str, f64, f64, u8)] = &[
+    ("A3", 297.0, 420.0, 8),
+    ("A4", 210.0, 297.0, 9),
+    ("A5", 148.0, 210.0, 11),
+    ("B5", 182.0, 257.0, 13),
+    ("Letter", 215.9, 279.4, 1),
+    ("Legal", 215.9, 355.6, 5),
+];
+
+/// 纸张名 → `(宽, 高)`，一律纵向。认不出返回 `None`（调用方负责报错点名）。
+pub fn paper_mm(name: &str) -> Option<(f64, f64)> {
+    PAPERS
+        .iter()
+        .find(|(n, _, _, _)| n.eq_ignore_ascii_case(name.trim()))
+        .map(|(_, w, h, _)| (*w, *h))
+}
+
+/// 纸张名 → Excel 纸张码（`Worksheet::set_paper_size` 收的那个数字）。
+///
+/// 返回 `None` 只在「表里漏了码」时发生，正常路径上 `resolve_setup` 已经先验过名字，
+/// 所以 `to_xlsx` 里那处 `None` 是**内部一致性**问题、不是用户输入问题。
+pub fn paper_excel_id(name: &str) -> Option<u8> {
+    PAPERS
+        .iter()
+        .find(|(n, _, _, _)| n.eq_ignore_ascii_case(name.trim()))
+        .map(|(_, _, _, id)| *id)
+}
+
+/// 所有纸张名，用于错误文案（「认不出就报错」时得告诉作者有哪些）
+pub fn paper_names() -> String {
+    PAPERS.iter().map(|(n, _, _, _)| *n).collect::<Vec<_>>().join(" / ")
+}
+
+/// 分页配置 + 页面设置（页面级）
+///
+/// 两件事放一个结构体里，因为它们**只在同一个场合出现**（打印这张 sheet），
+/// 而且拆成 `page` / `paper` 两个字段名会非常容易混。
+///
+/// - **分页**（`rows_per_page` / `repeat_*`）：只解决「按固定行数切页」这一层，
+///   不引入润乾那套完整的 9 类带区模型。
+/// - **页面设置**（`paper` / `orientation` / `margin_mm` / `page_number` /
+///   `center_horizontally`）：**不影响网格内容**，只影响「印到纸上长什么样」。
+///   `is_effective()` 只看分页那三个字段 —— 配了纸张但没配分页时，
+///   分页逻辑照旧不启动（页面设置由 `resolve_setup()` 单独算）。
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct PageConfig {
+    // —— 分页 ——
     /// 每页容纳的**数据**行数（不含重复的表头/表尾）
     pub rows_per_page: usize,
     /// 每页顶部重复的模板行数（表头）
     pub repeat_header_rows: usize,
     /// 每页底部重复的模板行数（表尾 / 签字栏等）
     pub repeat_footer_rows: usize,
+
+    // —— 页面设置 ——
+    /// 纸张名（`A4` / `A3` / `A5` / `B5` / `Letter` / `Legal`，大小写不敏感）。
+    /// 认不出来**报错**，不回落成默认纸张 —— 猜错纸张是静默的，打出来才发现。
+    pub paper: Option<String>,
+    /// `portrait`（纵向，默认）或 `landscape`（横向）
+    pub orientation: Option<String>,
+    /// 四边页边距；不写则用 `DEFAULT_MARGINS`（Excel 的默认值）
+    pub margin_mm: Option<PageMargins>,
+    /// 页码模板，如 `第 {page} / {pages} 页`。只认 `{page}` / `{pages}` 两个占位符，
+    /// 认不出来**报错**。不写 = 不印页码。
+    ///
+    /// ⚠️ HTML 侧只在**报表自带分页**时印得出（那时服务端才知道一共几页）；
+    /// xlsx 侧是 Excel 原生页脚，任何情况都能印。详见 `to_html` 的注释。
+    pub page_number: Option<String>,
+    /// 内容在纸面上水平居中（xlsx 的 `set_print_center_horizontally`；
+    /// HTML 侧靠 `@page` 的等宽左右边距近似，见 `to_html`）
+    pub center_horizontally: Option<bool>,
+}
+
+/// 解析并**校验过**的页面设置
+///
+/// 与 `ResolvedChart` / `ResolvedBarcode` 同一套做法：声明层全是 `Option`（作者可能只写一半），
+/// 渲染前先解析成一份「确定的」值，认不出来的在这里报错。
+/// 宽高**已按方向换过** —— 下游（HTML 的 `@page`、xlsx 的纸张码）都不用再想方向。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ResolvedPageSetup {
+    /// 纸张名，保留作者写的大小写（回显 / 错误文案用）
+    pub paper: Option<String>,
+    /// 纸张宽（mm），已按方向换算
+    pub width_mm: f64,
+    /// 纸张高（mm），已按方向换算
+    pub height_mm: f64,
+    pub landscape: bool,
+    /// **作者明写的**页边距。`None` = 没写 → 两个渲染端都不表态，各用各的默认。
+    ///
+    /// 刻意是 `Option` 而不是「没写就填 `DEFAULT_MARGINS`」：填了的话
+    /// 「作者只配了页码」这种模板会连带把纸边距钉成 Excel 的值，
+    /// 而作者从没这么要求过 —— 属于**替用户做决定**。
+    pub margin_mm: Option<PageMargins>,
+    pub page_number: Option<String>,
+    pub center_horizontally: bool,
+}
+
+impl ResolvedPageSetup {
+    /// 页码模板 → 具体文本。`page` / `pages` 都是 1 基。（HTML 侧用）
+    pub fn page_number_text(&self, page: usize, pages: usize) -> Option<String> {
+        self.page_number.as_ref().map(|tpl| {
+            tpl.replace("{page}", &page.to_string())
+                .replace("{pages}", &pages.to_string())
+        })
+    }
+
+    /// 页码模板 → Excel 页脚码。`{page}` → `&P`，`{pages}` → `&N`。（xlsx 侧用）
+    ///
+    /// **字面量 `&` 必须先翻倍成 `&&`**（Excel 的约定：`&&` 才印出一个 `&`）。
+    /// 顺序不能反 —— 先替换再转义的话，刚写进去的 `&P` 会被翻成 `&&P`，
+    /// 于是页脚印出字面量「&P」而不是页码，而且**一点报错都没有**。
+    pub fn page_number_excel_footer(&self) -> Option<String> {
+        self.page_number.as_ref().map(|tpl| {
+            tpl.replace('&', "&&")
+                .replace("{page}", "&P")
+                .replace("{pages}", "&N")
+        })
+    }
 }
 
 impl PageConfig {
@@ -749,6 +895,143 @@ impl PageConfig {
     pub fn is_effective(&self, total_rows: usize) -> bool {
         self.rows_per_page > 0 && total_rows > self.repeat_header_rows + self.repeat_footer_rows
     }
+
+    /// 有没有配**页面设置**（与「分页」无关）。
+    ///
+    /// 单独一个判据是因为 `is_effective()` 只回答「要不要分页」——
+    /// 只配了纸张、没配 `rows_per_page` 时，HTML 依然要吐 `@page`。
+    pub fn has_setup(&self) -> bool {
+        self.paper.is_some()
+            || self.orientation.is_some()
+            || self.margin_mm.is_some()
+            || self.page_number.is_some()
+            || self.center_horizontally.is_some()
+    }
+
+    /// 用 `other` 的三个**分页**字段覆盖自己，页面设置保持不动。
+    ///
+    /// 为什么单独开一个方法、而不是在调用点写结构体字面量：字面量会**静默漏掉**
+    /// 将来新增的字段（漏掉 = 「新字段被 options 抹掉」），而 `..self.clone()`
+    /// 让「没点名的一律继承自己」成为默认行为 —— 新字段天然走对。
+    ///
+    /// 真实场景：报表存盘时模板里带了 `paper: "A3"`，执行时 `ReportOptions` 只带了
+    /// 分页三项。整份替换会让纸张**静默消失**（存盘文件里还在，跑出来没有）。
+    pub fn with_pagination_of(&self, other: &PageConfig) -> PageConfig {
+        PageConfig {
+            rows_per_page: other.rows_per_page,
+            repeat_header_rows: other.repeat_header_rows,
+            repeat_footer_rows: other.repeat_footer_rows,
+            ..self.clone()
+        }
+    }
+
+    /// 解析 + 校验页面设置。没配任何一项时返回 `None`（调用方据此**不改变输出**）。
+    pub fn resolve_setup(&self, sheet: &str) -> Result<Option<ResolvedPageSetup>, String> {
+        if !self.has_setup() {
+            return Ok(None);
+        }
+        let where_ = format!("sheet「{sheet}」的 page");
+
+        let (mut w, mut h) = match self.paper.as_deref() {
+            Some(name) => paper_mm(name).ok_or_else(|| {
+                format!("{where_} 的 paper「{name}」认不出（支持 {}）", paper_names())
+            })?,
+            // 没写纸张但配了别的：用 A4 当基准（只为算方向与页边距合法性）
+            None => paper_mm("A4").expect("A4 在表里"),
+        };
+
+        let landscape = match self.orientation.as_deref().map(str::trim) {
+            None | Some("") | Some("portrait") => false,
+            Some("landscape") => true,
+            Some(other) => {
+                return Err(format!(
+                    "{where_} 的 orientation「{other}」认不出（只认 portrait / landscape）"
+                ))
+            }
+        };
+        if landscape {
+            std::mem::swap(&mut w, &mut h);
+        }
+
+        // 作者没写页边距就**什么都不校验** —— 没写就没有「配错了」这回事，
+        // 而且此时两端的默认值本来就不一样（浏览器 ≈10mm / Excel 19.05·17.78），
+        // 拿 Excel 的值去判合法性等于替作者选了一套边距。
+        let margin_mm = self.margin_mm;
+        if let Some(m) = margin_mm {
+            for (side, v) in [
+                ("top", m.top),
+                ("right", m.right),
+                ("bottom", m.bottom),
+                ("left", m.left),
+            ] {
+                if !v.is_finite() || v < 0.0 {
+                    return Err(format!(
+                        "{where_} 的 margin_mm.{side}「{v}」不合法（须是不小于 0 的数，单位 mm）"
+                    ));
+                }
+            }
+            // 页边距吃掉整张纸 → 印出来是一片空白，属于「配了但看不出」，当场报错
+            if m.left + m.right >= w {
+                return Err(format!(
+                    "{where_} 的左右页边距合计 {:.2}mm 已经不小于纸宽 {w:.2}mm，印出来会是空白",
+                    m.left + m.right
+                ));
+            }
+            if m.top + m.bottom >= h {
+                return Err(format!(
+                    "{where_} 的上下页边距合计 {:.2}mm 已经不小于纸高 {h:.2}mm，印出来会是空白",
+                    m.top + m.bottom
+                ));
+            }
+        }
+
+        if let Some(tpl) = self.page_number.as_deref() {
+            validate_page_number_tpl(tpl, &where_)?;
+        }
+
+        Ok(Some(ResolvedPageSetup {
+            paper: self.paper.as_deref().map(str::trim).map(str::to_string),
+            width_mm: w,
+            height_mm: h,
+            landscape,
+            margin_mm,
+            page_number: self.page_number.clone(),
+            center_horizontally: self.center_horizontally.unwrap_or(false),
+        }))
+    }
+}
+
+/// 页码模板只认 `{page}` / `{pages}`。
+///
+/// **认不出来的占位符报错、不原样留着**：留着的话印出来是 `第 {pge} / 3 页`，
+/// 看着像「模板写对了但没替换」，比报错难查得多。
+fn validate_page_number_tpl(tpl: &str, where_: &str) -> Result<(), String> {
+    let mut rest = tpl;
+    while let Some(open) = rest.find('{') {
+        let Some(close_rel) = rest[open..].find('}') else {
+            return Err(format!("{where_} 的 page_number「{tpl}」里有一个 `{{` 没有闭合"));
+        };
+        let close = open + close_rel;
+        let name = &rest[open + 1..close];
+        if name != "page" && name != "pages" {
+            return Err(format!(
+                "{where_} 的 page_number「{tpl}」里有认不出的占位符「{{{name}}}」（只认 {{page}} 与 {{pages}}）"
+            ));
+        }
+        rest = &rest[close + 1..];
+    }
+
+    // Excel 页脚上限按**字符**数（不是字节），且要算上 `&C` 这两个控制字符。
+    // 用「已转义、未替换占位符」的长度当上界：`{page}`(6) → `&P`(2) 只会变短，
+    // 而字面量 `&` → `&&` 只会变长，所以先转义再量是安全的保守估计。
+    let escaped_len = tpl.chars().count() + tpl.matches('&').count();
+    if escaped_len + 2 > 255 {
+        return Err(format!(
+            "{where_} 的 page_number 太长（{escaped_len} 字符）：Excel 页脚上限 255 字符，\
+             超了会被静默丢掉（导出成功但页脚不见）"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -1010,6 +1293,13 @@ pub struct GridCell {
 pub struct RenderedSheet {
     pub name: String,
     pub rows: Vec<Vec<GridCell>>,
+    /// 这张 sheet 的页面设置（纸张 / 方向 / 页边距 / 页码），**已解析校验过**。
+    ///
+    /// 挂在 `RenderedSheet` 上而不是让渲染器回头读模板：分页时 `pages` 是 `paginate()`
+    /// 切出来的**新** sheet，它们得跟着同一份设置走；渲染器（HTML / xlsx）只拿到
+    /// `&[RenderedSheet]`，回头读模板就得把模板再传一遍，容易漏掉某条调用路径。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_setup: Option<ResolvedPageSetup>,
 }
 
 pub(crate) fn col_name(idx: usize) -> String {
@@ -1213,5 +1503,227 @@ mod tests {
         let got = base.merged_over(&over);
         assert_eq!(got.bold, Some(false), "显式 false 要覆盖 true");
         assert_eq!(got.italic, Some(true), "没写的字段保持原样");
+    }
+
+    /* ------------------------------ 页面设置 ------------------------------ */
+
+    /// 纸张表是「HTML 尺寸」与「Excel 纸张码」的**唯一对账点**，所以整张表钉死。
+    ///
+    /// 尤其是 B5：ISO B5 = 176×250、JIS B5 = 182×257，而 Excel 的纸张码 13
+    ///（界面上就写「B5」）是 **JIS** 那个。有人「顺手改成 ISO 的尺寸」就会红 ——
+    /// 那不是笔误而是口径变更，必须同时决定 xlsx 侧要不要换码
+    ///（换 34 的话 Excel 打印对话框里会显示「Envelope B5」）。
+    #[test]
+    fn paper_table_is_pinned() {
+        let expect: Vec<(&str, f64, f64, u8)> = vec![
+            ("A3", 297.0, 420.0, 8),
+            ("A4", 210.0, 297.0, 9),
+            ("A5", 148.0, 210.0, 11),
+            ("B5", 182.0, 257.0, 13),
+            ("Letter", 215.9, 279.4, 1),
+            ("Legal", 215.9, 355.6, 5),
+        ];
+        assert_eq!(PAPERS.to_vec(), expect, "纸张表变了：HTML 尺寸与 Excel 纸张码要同时想清楚");
+    }
+
+    #[test]
+    fn paper_lookup_is_case_insensitive_and_trims() {
+        assert_eq!(paper_mm(" a4 "), Some((210.0, 297.0)));
+        assert_eq!(paper_excel_id("A4"), Some(9));
+        assert_eq!(paper_excel_id("a4"), Some(9));
+        assert_eq!(paper_excel_id("A6"), None);
+    }
+
+    /// 没配任何页面设置 → `None`。**这是「不改变输出」的开关**：
+    /// `render()` / `to_html` / `to_xlsx` 全靠它保持老行为（老模板逐字节不变）。
+    #[test]
+    fn resolve_setup_is_none_when_nothing_is_set() {
+        assert!(PageConfig::default().resolve_setup("s").unwrap().is_none());
+    }
+
+    /// 只配分页、不配页面设置 → 也是 `None`（分页与页面设置是两件事）
+    #[test]
+    fn pagination_alone_does_not_produce_a_page_setup() {
+        let cfg = PageConfig { rows_per_page: 10, repeat_header_rows: 2, ..Default::default() };
+        assert!(cfg.is_effective(100));
+        assert!(cfg.resolve_setup("s").unwrap().is_none());
+    }
+
+    /// **没写页边距时 `margin_mm` 必须是 `None`**，不能被填成 `DEFAULT_MARGINS`。
+    ///
+    /// 填了的话「作者只配了页码」会连带把纸边距钉成 Excel 的值 —— 作者从没要求过，
+    /// 而 HTML 与 xlsx 会**一起**变成那个值，看起来还挺一致，没人会发现
+    /// 这是替用户做的决定。
+    #[test]
+    fn resolve_setup_does_not_invent_margins() {
+        let cfg = PageConfig { page_number: Some("第 {page} 页".into()), ..Default::default() };
+        let got = cfg.resolve_setup("s").unwrap().unwrap();
+        assert_eq!(got.margin_mm, None, "没写就是没写，不许拿默认值冒充作者的选择");
+
+        let cfg2 = PageConfig {
+            margin_mm: Some(PageMargins { top: 1.0, right: 2.0, bottom: 3.0, left: 4.0 }),
+            ..Default::default()
+        };
+        let got2 = cfg2.resolve_setup("s").unwrap().unwrap();
+        assert_eq!(got2.margin_mm.unwrap().left, 4.0, "写了就要原样带出来");
+    }
+
+    #[test]
+    fn resolve_setup_swaps_dimensions_for_landscape() {
+        let cfg = PageConfig {
+            paper: Some("A4".into()),
+            orientation: Some("landscape".into()),
+            ..Default::default()
+        };
+        let got = cfg.resolve_setup("s").unwrap().unwrap();
+        assert!(got.landscape);
+        assert_eq!((got.width_mm, got.height_mm), (297.0, 210.0), "横向要换宽高");
+
+        let p = PageConfig { paper: Some("A4".into()), ..Default::default() };
+        let g = p.resolve_setup("s").unwrap().unwrap();
+        assert!(!g.landscape, "不写方向 = 纵向");
+        assert_eq!((g.width_mm, g.height_mm), (210.0, 297.0));
+    }
+
+    /// 纸张名写错**必须报错**，不许回落成默认纸张 —— 猜错纸张是静默的，打出来才发现。
+    #[test]
+    fn resolve_setup_rejects_unknown_paper() {
+        let cfg = PageConfig { paper: Some("A6".into()), ..Default::default() };
+        let e = cfg.resolve_setup("销售表").unwrap_err();
+        assert!(e.contains("A6"), "要点名写错的纸张：{e}");
+        assert!(e.contains("销售表"), "要点名是哪张 sheet：{e}");
+        assert!(e.contains("A4"), "要列出支持哪些：{e}");
+    }
+
+    #[test]
+    fn resolve_setup_rejects_unknown_orientation() {
+        let cfg = PageConfig { orientation: Some("sideways".into()), ..Default::default() };
+        let e = cfg.resolve_setup("s").unwrap_err();
+        assert!(e.contains("sideways"), "{e}");
+    }
+
+    /// 页边距吃掉整张纸 → 印出来一片空白，属于「配了但看不出」，当场报错
+    #[test]
+    fn resolve_setup_rejects_margins_that_eat_the_paper() {
+        let cfg = PageConfig {
+            paper: Some("A4".into()),
+            margin_mm: Some(PageMargins { left: 120.0, right: 120.0, ..Default::default() }),
+            ..Default::default()
+        };
+        let e = cfg.resolve_setup("s").unwrap_err();
+        assert!(e.contains("空白"), "{e}");
+
+        let neg = PageConfig {
+            margin_mm: Some(PageMargins { top: -1.0, ..Default::default() }),
+            ..Default::default()
+        };
+        assert!(neg.resolve_setup("s").is_err(), "负边距不合法");
+    }
+
+    /// 页码模板：认不出的占位符报错，**不原样留着**
+    ///（留着的话印出来是 `第 {pge} / 3 页`，看着像「替换没生效」，比报错难查得多）
+    #[test]
+    fn page_number_tpl_rejects_unknown_placeholder() {
+        let cfg = PageConfig { page_number: Some("第 {pge} 页".into()), ..Default::default() };
+        let e = cfg.resolve_setup("s").unwrap_err();
+        assert!(e.contains("pge"), "{e}");
+    }
+
+    #[test]
+    fn page_number_tpl_rejects_unclosed_brace() {
+        let cfg = PageConfig { page_number: Some("第 {page 页".into()), ..Default::default() };
+        assert!(cfg.resolve_setup("s").is_err());
+    }
+
+    /// 超长页码模板：`set_footer` 对 >255 字符是 **`eprintln!` 之后直接丢弃**，
+    /// 导出照常成功、页脚却没有 —— 必须在这里拦下来。
+    #[test]
+    fn page_number_tpl_rejects_over_excel_footer_limit() {
+        let long = "第 {page} 页".to_string() + &"啊".repeat(250);
+        let cfg = PageConfig { page_number: Some(long), ..Default::default() };
+        let e = cfg.resolve_setup("s").unwrap_err();
+        assert!(e.contains("255"), "要说明是 Excel 的长度上限：{e}");
+
+        // 边界：正好 255（253 + `&C` 两个控制字符）应当放行
+        let ok = PageConfig { page_number: Some("x".repeat(253)), ..Default::default() };
+        assert!(ok.resolve_setup("s").is_ok(), "253+2=255 是上限内");
+    }
+
+    /// `{page}` / `{pages}` → Excel 页脚码，**字面量 `&` 要先翻倍**。
+    ///
+    /// 顺序反了就会把刚写进去的 `&P` 再翻成 `&&P`，页脚印出字面量「&P」——
+    /// 没有报错、导出成功，只是页码变成了乱码。
+    #[test]
+    fn excel_footer_escapes_literal_ampersand_before_substituting() {
+        let cfg = PageConfig {
+            page_number: Some("A&B 第 {page}/{pages} 页".into()),
+            ..Default::default()
+        };
+        let got = cfg.resolve_setup("s").unwrap().unwrap();
+        assert_eq!(got.page_number_excel_footer().unwrap(), "A&&B 第 &P/&N 页");
+    }
+
+    #[test]
+    fn excel_footer_substitutes_both_placeholders() {
+        let cfg = PageConfig { page_number: Some("{page} / {pages}".into()), ..Default::default() };
+        let got = cfg.resolve_setup("s").unwrap().unwrap();
+        assert_eq!(got.page_number_excel_footer().unwrap(), "&P / &N");
+        // HTML 侧换的是真实数字（1 基）
+        assert_eq!(got.page_number_text(2, 7).unwrap(), "2 / 7");
+    }
+
+    /// **`options` 只该覆盖分页三项，不能把模板里的页面设置抹掉。**
+    ///
+    /// 这是实现时踩到的真坑：`apply_options` 原来整份替换 `PageConfig`，
+    /// 于是「存盘文件里 `paper: "A3"` 还在、跑出来却是默认纸」—— 静默丢数据。
+    #[test]
+    fn with_pagination_of_keeps_the_page_setup() {
+        let saved = PageConfig {
+            rows_per_page: 10,
+            repeat_header_rows: 2,
+            repeat_footer_rows: 1,
+            paper: Some("A3".into()),
+            orientation: Some("landscape".into()),
+            margin_mm: Some(PageMargins { top: 5.0, right: 5.0, bottom: 5.0, left: 5.0 }),
+            page_number: Some("第 {page} 页".into()),
+            center_horizontally: Some(true),
+        };
+        // 执行期只带了分页三项（页面设置**不在** `ReportOptions` 里）
+        let opts = PageConfig {
+            rows_per_page: 20,
+            repeat_header_rows: 3,
+            repeat_footer_rows: 0,
+            ..Default::default()
+        };
+        let merged = saved.with_pagination_of(&opts);
+
+        assert_eq!(merged.rows_per_page, 20, "分页三项要按 options 覆盖");
+        assert_eq!(merged.repeat_header_rows, 3);
+        assert_eq!(merged.repeat_footer_rows, 0);
+        // 页面设置**原样保留**
+        assert_eq!(merged.paper.as_deref(), Some("A3"), "纸张被 options 抹掉了");
+        assert_eq!(merged.orientation.as_deref(), Some("landscape"));
+        assert_eq!(merged.margin_mm.unwrap().left, 5.0);
+        assert_eq!(merged.page_number.as_deref(), Some("第 {page} 页"));
+        assert_eq!(merged.center_horizontally, Some(true));
+    }
+
+    /// 老模板（JSON 里没有这些新字段）必须照样解析得动 —— 全靠 `#[serde(default)]`
+    #[test]
+    fn old_template_json_without_page_setup_still_parses() {
+        let json = r#"{"rows_per_page":10,"repeat_header_rows":2,"repeat_footer_rows":1}"#;
+        let cfg: PageConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.rows_per_page, 10);
+        assert!(cfg.paper.is_none() && cfg.margin_mm.is_none() && cfg.page_number.is_none());
+        assert!(!cfg.has_setup(), "老模板不该被判成「配了页面设置」");
+    }
+
+    /// `has_setup` 只回答「有没有配页面设置」，与分页无关
+    #[test]
+    fn has_setup_ignores_pagination_fields() {
+        assert!(!PageConfig { rows_per_page: 10, ..Default::default() }.has_setup());
+        assert!(PageConfig { paper: Some("A4".into()), ..Default::default() }.has_setup());
+        assert!(PageConfig { page_number: Some("x".into()), ..Default::default() }.has_setup());
+        assert!(PageConfig { center_horizontally: Some(false), ..Default::default() }.has_setup());
     }
 }

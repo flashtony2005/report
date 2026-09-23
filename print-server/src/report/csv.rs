@@ -71,7 +71,7 @@ mod tests {
     }
 
     fn sheet(name: &str, rows: Vec<Vec<GridCell>>) -> RenderedSheet {
-        RenderedSheet { name: name.into(), rows }
+        RenderedSheet { name: name.into(), rows, page_setup: None }
     }
 
     fn text_of(sheets: &[RenderedSheet]) -> String {

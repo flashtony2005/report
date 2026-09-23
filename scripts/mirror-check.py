@@ -33,6 +33,8 @@ PAIRS = [
     ("model.rs", "SheetTpl", "SheetTpl"),
     ("model.rs", "ReportTemplate", "ReportTemplate"),
     ("model.rs", "PageConfig", "PageConfig"),
+    ("model.rs", "PageMargins", "PageMargins"),
+    ("model.rs", "ResolvedPageSetup", "ResolvedPageSetup"),
     ("model.rs", "GridCell", "GridCell"),
     ("model.rs", "CellImage", "CellImage"),
     ("model.rs", "CellChart", "CellChart"),
@@ -104,6 +106,24 @@ def ts_fields(path: Path, name: str) -> list[str]:
     return out
 
 
+def rust_paper_names(path: Path) -> list[str]:
+    """Rust `PAPERS` 表的名字列（`("A4", 210.0, 297.0, 9),` 的第一个元素）。"""
+    src = path.read_text(encoding="utf-8")
+    m = re.search(r"pub const PAPERS: &\[\(&str, f64, f64, u8\)\] = &\[(.*?)\];", src, re.S)
+    if not m:
+        return []
+    return re.findall(r'\(\s*"([^"]+)"\s*,', m.group(1))
+
+
+def ts_paper_names(path: Path) -> list[str]:
+    """TS `PAPER_NAMES` 的字符串项。"""
+    src = path.read_text(encoding="utf-8")
+    m = re.search(r"export const PAPER_NAMES[^=]*=\s*\[(.*?)\]", src, re.S)
+    if not m:
+        return []
+    return re.findall(r"'([^']+)'", m.group(1))
+
+
 def main() -> int:
     if not TS_FILE.exists():
         print(f"找不到 TS 镜像：{TS_FILE}", file=sys.stderr)
@@ -128,6 +148,16 @@ def main() -> int:
                 print(f"       TS 独有（多余）    : {only_ts}")
         else:
             print(f"OK   {rust_name:16s} {len(r)} 字段")
+
+    # 纸张名清单：两边各有一份（Rust 是唯一真相源，TS 那份喂下拉框），必须逐项一致。
+    # 漂了的话症状是「服务端能编的纸张，设计器下拉里没有」——界面上看不出来。
+    rp = rust_paper_names(RUST_DIR / "model.rs")
+    tp = ts_paper_names(TS_FILE)
+    if rp != tp:
+        bad += 1
+        print(f"DIFF 纸张名清单  rust={rp}  ts={tp}")
+    else:
+        print(f"OK   {'纸张名清单':16s} {len(rp)} 项 {rp}")
 
     print()
     print("结果：", "镜像一致" if bad == 0 else f"{bad} 个类型存在漂移")
