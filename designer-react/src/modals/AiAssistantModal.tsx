@@ -17,7 +17,6 @@ import {
   REVEAL_TICK_MS,
   computeRevealStep,
   diffSelectedControls,
-  droppedIds,
   droppedNotice,
   parseDatasourceFields,
   resolveMode,
@@ -253,19 +252,24 @@ export function AiAssistantModal(props: { show: boolean; onClose: () => void; on
    */
   function applySelected(controls: AnyControl[], dropped: DroppedLike[]): void {
     const s = useDesignerStore.getState()
-    const diff = diffSelectedControls(controls, lockedSelectedIds.current, droppedIds(dropped))
+    const diff = diffSelectedControls(controls, lockedSelectedIds.current, dropped)
     for (const ctrl of diff.inPlace) s.updateControl(ctrl.id, ctrl)
     for (const ctrl of diff.added) {
       s.addControlOfType(ctrl.type, { leftMm: ctrl.left, topMm: ctrl.top }, ctrl)
     }
     for (const id of diff.removedIds) s.removeControl(id)
+    const notes: string[] = []
     if (diff.preservedIds.length) {
-      // 有东西没处理干净：用 warning 而不是 success，并且说清「保持原样、没动它们」
-      antdMessage.warning(
-        `已应用到选中控件（${diff.summary}）；其中 ${diff.preservedIds.length} 个控件 AI 处理不了（类型：${[
-          ...new Set(dropped.map((d) => d.type)),
-        ].join(' / ')}），已保持原样未改动。`,
-      )
+      const types = [...new Set(dropped.map((d) => d.type))].join(' / ')
+      notes.push(`${diff.preservedIds.length} 个控件 AI 处理不了（类型：${types}），已保持原样未改动`)
+    }
+    if (diff.unattributedDrops > 0) {
+      // 认不出是哪一个 → 本次一件都不删（宁可不删，不可静默删）
+      notes.push(`另有 ${diff.unattributedDrops} 个控件认不出是哪个，本次未执行任何删除`)
+    }
+    if (notes.length) {
+      // 有东西没处理干净：用 warning 而不是 success
+      antdMessage.warning(`已应用到选中控件（${diff.summary}）；${notes.join('；')}。`)
     } else {
       antdMessage.success(`已应用到选中控件（${diff.summary}），可在编辑器中继续微调`)
     }

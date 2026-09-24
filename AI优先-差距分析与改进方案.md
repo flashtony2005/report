@@ -316,11 +316,11 @@ grep -rl 'mcp\|modelcontextprotocol' --exclude-dir=node_modules .   # → 无命
 | --- | --- | --- |
 | 1 | `openprint/src/ai/normalize.ts` | 新增 `DroppedItem` / `NormalizeResult`；`normalizeControl(raw, dropped)` 的 `dropped` **必填**；`normalizeTemplate` 返回 `{value, dropped}`；整节类型拼错也上报 |
 | 2 | `openprint/src/ai/generate.ts` | `GenerateResult.dropped` **必填**；选区路径透出；整模板路径把丢弃当「输出不完整」回喂重试，仍不完整则明确失败 |
-| 3 | `openprint/src/design/ai/shared/ai-assistant-logic.ts` | `diffSelectedControls` 第 3 参 `droppedIds` **必填**；`removedIds` 排除丢弃的 id；新增 `preservedIds` + `droppedIds()` / `droppedNotice()` 共享文案 |
+| 3 | `openprint/src/design/ai/shared/ai-assistant-logic.ts` | `diffSelectedControls` 第 3 参 `dropped` **必填**；`removedIds` 排除丢弃的 id；新增 `preservedIds` + `unattributedDrops` + `droppedNotice()` 共享文案。**另堵一个洞**：丢弃项若**没带 id**（认不出是哪个），则**一律不删** —— 代价不对称，少删看得见、多删看不见 |
 | 4 | `designer-react/src/modals/AiAssistantModal.tsx` | 卡片显示「AI 处理不了」；`applySelected` 保留原样并用 **warning**（不是 success）说明 |
 | 5 | `openprint/src/design/ai/AiAssistantPanel.vue` | 同上（**Vue 侧是同一个 bug 的第二处**，一并修） |
 
-验证：`scripts/fault-inject-ai-dropped.py` **5/5 抓到**，还原后逐字节一致，两个跑器基线全绿。
+验证：`scripts/fault-inject-ai-dropped.py` **6/6 抓到**，还原后逐字节一致，两个跑器基线全绿。
 
 ### 本文未做的事（诚实声明）
 

@@ -919,11 +919,17 @@ cd $W && node node_modules/vitest/vitest.mjs run     # → text/zone 过，chart
 | --- | --- | --- |
 | 1 | `ai/normalize.ts` | `DroppedItem` / `NormalizeResult`；`normalizeControl(raw, dropped)` 的 `dropped` **必填**；`normalizeTemplate` → `{value, dropped}`；整节类型拼错也上报 |
 | 2 | `ai/generate.ts` | `GenerateResult.dropped` **必填**；选区路径透出；整模板路径把丢弃并入 `lastIssues` → 走已有的回喂重试；重试后仍不完整则 `ok:false` |
-| 3 | `design/ai/shared/ai-assistant-logic.ts` | `diffSelectedControls(controls, lockedIds, droppedIds)` 第 3 参**必填**；`removedIds` 排除丢弃的 id；新增 `preservedIds`、`droppedIds()`、`droppedNotice()` |
+| 3 | `design/ai/shared/ai-assistant-logic.ts` | `diffSelectedControls(controls, lockedIds, dropped)` 第 3 参**必填**（传整个 `DroppedLike[]`，不是 id 数组）；`removedIds` 排除丢弃的 id；新增 `preservedIds`、`unattributedDrops`、`droppedNotice()` |
 | 4 | `designer-react/.../AiAssistantModal.tsx` | 卡片显示「AI 处理不了」；`applySelected` 保留原样 + **warning**（非 success） |
 | 5 | `openprint/src/design/ai/AiAssistantPanel.vue` | 同上 —— **Vue 侧是同一个 bug 的第二处**，别只修 React |
 
-- 闸：`scripts/fault-inject-ai-dropped.py` → **5/5 抓到**，还原后逐字节一致，两个跑器基线全绿。
+**第 3 层里还有一个不显眼的洞，一并堵了**：丢掉的东西若**没带 id**（模型没给），
+连「是哪一个」都不知道 —— 那时原控件的 id 仍会落进 `removedIds` 被删。
+所以 `diffSelectedControls` 加了 `unattributedDrops`：**只要有一件丢弃认不出是哪个，本次一律不删**。
+判据是**代价不对称**：少删一个控件是**看得见**的（控件还在，想删再删一次），
+多删一个是**看不见**的（静默丢数据）。**保守优先于「猜对」。**
+
+- 闸：`scripts/fault-inject-ai-dropped.py` → **6/6 抓到**，还原后逐字节一致，两个跑器基线全绿。
 - **设计要点**：把「丢弃」做成**必填**参数/字段，而不是可选的回调或日志 ——
   这样「忘记处理」在**类型层面**就写不出来（`GenerateResult` 少 `dropped` 直接 TS 报错）。
   这是本项目「让静默失败变响」的通用手法：**先让忽略变得写不出来，再谈文档提醒。**

@@ -12,7 +12,6 @@ import {
   REVEAL_TICK_MS,
   computeRevealStep,
   diffSelectedControls,
-  droppedIds,
   droppedNotice,
   parseDatasourceFields,
   resolveMode,
@@ -234,7 +233,7 @@ function applyTemplate(tpl: TemplateData<AnyControl>): void {
  * 还弹绿色成功（这就是本函数之前的行为）。
  */
 function applySelected(controls: AnyControl[], dropped: DroppedLike[]): void {
-  const diff = diffSelectedControls(controls, lockedSelectedIds, droppedIds(dropped))
+  const diff = diffSelectedControls(controls, lockedSelectedIds, dropped)
   for (const ctrl of diff.inPlace) {
     // 原位替换：保留 id/type，合并其余字段
     store.updateControl(ctrl.id, ctrl)
@@ -247,12 +246,18 @@ function applySelected(controls: AnyControl[], dropped: DroppedLike[]): void {
   for (const id of diff.removedIds) {
     store.removeControl(id)
   }
+  const notes: string[] = []
   if (diff.preservedIds.length) {
-    // 有东西没处理干净：用 warning 而不是 success，并且说清「保持原样、没动它们」
     const types = [...new Set(dropped.map((d) => d.type))].join(' / ')
-    message.warning(
-      `已应用到选中控件（${diff.summary}）；其中 ${diff.preservedIds.length} 个控件 AI 处理不了（类型：${types}），已保持原样未改动。`,
-    )
+    notes.push(`${diff.preservedIds.length} 个控件 AI 处理不了（类型：${types}），已保持原样未改动`)
+  }
+  if (diff.unattributedDrops > 0) {
+    // 认不出是哪一个 → 本次一件都不删（宁可不删，不可静默删）
+    notes.push(`另有 ${diff.unattributedDrops} 个控件认不出是哪个，本次未执行任何删除`)
+  }
+  if (notes.length) {
+    // 有东西没处理干净：用 warning 而不是 success
+    message.warning(`已应用到选中控件（${diff.summary}）；${notes.join('；')}。`)
   } else {
     message.success(`已应用到选中控件（${diff.summary}），可在编辑器中继续微调`)
   }

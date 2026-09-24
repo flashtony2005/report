@@ -45,6 +45,8 @@ export interface SelectedDiff {
   removedIds: string[]
   /** 归一化丢掉的 id：**不算删除**，调用方应保持原样不动 */
   preservedIds: string[]
+  /** 丢掉、但**认不出是哪个**（模型没给 id）的条数。>0 时本函数**不执行任何删除** */
+  unattributedDrops: number
   /** 「改 n / 加 n / 删 n / 保 n」，全 0 时为「无变化」 */
   summary: string
 }
@@ -53,22 +55,27 @@ export interface SelectedDiff {
  * C 模式（选中部分改写）结果 diff：
  * 返回的控件 id 在锁定选区 → 原位替换；不在 → 新增；锁定选区里消失的 → 删除。
  *
- * ⚠️ **`droppedIds` 不是可选的装饰。** 一个选中控件「没出现在返回值里」有两种原因：
+ * ⚠️ **`dropped` 不是可选的装饰。** 一个选中控件「没出现在返回值里」有两种原因：
  *   1. 模型故意不返回 → 用户要删它；
  *   2. 归一化看不懂它、丢掉了 → 我们该保它。
- * 这两种在 `controls` 里长得**一模一样**。少了 `droppedIds`，第 2 种会被当成第 1 种
+ * 这两种在 `controls` 里长得**一模一样**。少了 `dropped`，第 2 种会被当成第 1 种
  * → `removeControl` **真删掉用户的控件**，界面还报成功。
  * 所以这个参数**必填**：让「忘记区分」在类型层面就写不出来。
+ *
+ * 还有一层：丢掉的东西若**没带 id**，连「是哪一个」都不知道 → 此时**一律不删**
+ * （见 `unattributedDrops`）。两种错法的代价不对称：
+ * 少删一个控件是**看得见**的（控件还在，想删再删一次），
+ * 多删一个是**看不见**的（静默丢数据）。保守优先于「猜对」。
  */
 export function diffSelectedControls(
   controls: AnyControl[],
   lockedIds: string[],
-  /** 归一化丢掉、因而没出现在 `controls` 里的 id（见 `DroppedItem.id`） */
-  droppedIds: string[],
+  /** 归一化丢掉的东西（见 `DroppedLike` / `DroppedItem`） */
+  dropped: DroppedLike[],
 ): SelectedDiff {
   const targetIds = new Set(lockedIds)
   const returnedIds = new Set(controls.map((c) => c.id))
-  const droppedSet = new Set(droppedIds)
+  const droppedSet = new Set(droppedIds(dropped))
   const inPlace: AnyControl[] = []
   const added: AnyControl[] = []
   for (const ctrl of controls) {
@@ -76,8 +83,13 @@ export function diffSelectedControls(
     else added.push(ctrl)
   }
   const preservedIds = lockedIds.filter((id) => droppedSet.has(id))
-  // 只有「既没返回、也不在丢弃名单里」的才算用户要删
-  const removedIds = lockedIds.filter((id) => !returnedIds.has(id) && !droppedSet.has(id))
+  const unattributedDrops = dropped.filter((d) => !d.id).length
+  // 只有「既没返回、也不在丢弃名单里」的才算用户要删；
+  // 但只要有一件丢弃认不出是哪个，就整体不删。
+  const removedIds =
+    unattributedDrops > 0
+      ? []
+      : lockedIds.filter((id) => !returnedIds.has(id) && !droppedSet.has(id))
   const parts = [
     inPlace.length ? `改 ${inPlace.length}` : '',
     added.length ? `加 ${added.length}` : '',
@@ -86,7 +98,14 @@ export function diffSelectedControls(
   ]
     .filter(Boolean)
     .join(' / ')
-  return { inPlace, added, removedIds, preservedIds, summary: parts || '无变化' }
+  return {
+    inPlace,
+    added,
+    removedIds,
+    preservedIds,
+    unattributedDrops,
+    summary: parts || '无变化',
+  }
 }
 
 /* ------------------------------ 丢弃上报 ------------------------------ */

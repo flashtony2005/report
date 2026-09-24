@@ -96,10 +96,18 @@ INJECTIONS: list[tuple[str, Path, str, str, str, str]] = [
     (
         "第 4 层 diff：removedIds 不再排除被丢弃的 id（← 本 bug 的破坏面）",
         LOGIC,
-        "  const removedIds = lockedIds.filter((id) => !returnedIds.has(id) && !droppedSet.has(id))",
-        "  const removedIds = lockedIds.filter((id) => !returnedIds.has(id))",
+        "      : lockedIds.filter((id) => !returnedIds.has(id) && !droppedSet.has(id))",
+        "      : lockedIds.filter((id) => !returnedIds.has(id))",
         "openprint",
         "归一化丢掉的 id 不算删除",
+    ),
+    (
+        "第 4b 层 diff：丢掉但认不出 id 时不再保守（会猜着删）",
+        LOGIC,
+        "    unattributedDrops > 0\n      ? []",
+        "    false\n      ? []",
+        "openprint",
+        "一律不删 —— 保守优先于猜",
     ),
     (
         "第 5 层 React UI：applySelected 不把 dropped 传进 diff（用户可见的删控件）",

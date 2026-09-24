@@ -59,6 +59,9 @@ describe('parseDatasourceFields（字段串解析）', () => {
 })
 
 describe('diffSelectedControls（选区改写 diff）', () => {
+  const drop = (id?: string): DroppedLike =>
+    ({ kind: 'control', type: 'chart', ...(id ? { id } : {}), reason: '类型不在白名单' }) as DroppedLike
+
   it('原位改 / 新增 / 删除 三类齐全，摘要正确', () => {
     const d = diffSelectedControls([ctrl('a'), ctrl('a2'), ctrl('new')], ['a', 'a2', 'gone'], [])
     expect(d.inPlace.map((c) => c.id)).toEqual(['a', 'a2'])
@@ -78,7 +81,7 @@ describe('diffSelectedControls（选区改写 diff）', () => {
   // ⚠️ 回归：归一化丢掉的控件曾经被当成「用户要删」→ removeControl 真删掉用户的控件
   it('归一化丢掉的 id 不算删除：进 preservedIds，不进 removedIds', () => {
     // 模型返回了 a（原位改），没返回 c —— 但 c 是「我们看不懂丢掉的」
-    const d = diffSelectedControls([ctrl('a')], ['a', 'c'], ['c'])
+    const d = diffSelectedControls([ctrl('a')], ['a', 'c'], [drop('c')])
     expect(d.inPlace.map((c) => c.id)).toEqual(['a'])
     expect(d.removedIds).toEqual([])
     expect(d.preservedIds).toEqual(['c'])
@@ -87,14 +90,23 @@ describe('diffSelectedControls（选区改写 diff）', () => {
 
   it('真被模型删掉的仍然要删（丢弃名单不能变成免死金牌）', () => {
     const d = diffSelectedControls([ctrl('a')], ['a', 'gone'], [])
+    expect(d.unattributedDrops).toBe(0)
     expect(d.removedIds).toEqual(['gone'])
     expect(d.preservedIds).toEqual([])
   })
 
   it('丢弃名单里的 id 不在选区时，不污染 preservedIds', () => {
-    const d = diffSelectedControls([ctrl('a')], ['a'], ['not-selected'])
+    const d = diffSelectedControls([ctrl('a')], ['a'], [drop('not-selected')])
     expect(d.preservedIds).toEqual([])
     expect(d.removedIds).toEqual([])
+  })
+
+  // ⚠️ 回归：丢掉但没带 id 时，连「是哪一个」都不知道 → 不能猜着删
+  it('丢弃但认不出 id（模型没给）：一律不删 —— 保守优先于猜', () => {
+    const d = diffSelectedControls([ctrl('a')], ['a', 'gone'], [drop()])
+    expect(d.unattributedDrops).toBe(1)
+    expect(d.removedIds).toEqual([]) // 宁可少删（看得见），不多删（看不见）
+    expect(d.preservedIds).toEqual([])
   })
 })
 
