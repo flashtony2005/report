@@ -65,7 +65,7 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 
 ## AI 层（**已有**，别当缺口）
 
-`openprint/src/ai/`（716 行）+ `AiAssistantModal.tsx`：提示词/few-shot/流式/**校验→回喂错误→重试**/归一化，三模式。**只覆盖自由画布**；`ReportDef` 完全没接。key 在 `localStorage`，纯前端直连。**`ai.spec.ts` 不在任何闸里**。详见 `AI优先-差距分析与改进方案.md` / §二十。
+`openprint/src/ai/`（716 行）+ `AiAssistantModal.tsx` + Vue 侧 `AiAssistantPanel.vue`（同一 bug 两处）：提示词/few-shot/流式/**校验→回喂错误→重试**/归一化，三模式。**只覆盖自由画布**；`ReportDef` 完全没接。key 在 `localStorage`。**丢弃必须上报**（`dropped` 必填）。详见 `AI优先-差距分析与改进方案.md` / §二十。
 
 ## 已完成（别再当缺口重复做）
 
@@ -74,7 +74,7 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 - **格子样式 + 条件格式**：`CellModel.style` → `GridCell.style` → xlsx `with_style()` + HTML `<td style>`。**刻意不给边框**（Univer 不渲染）。颜色只认 `#RRGGBB`，认不出**两端点都报 400**。条件格式（第一条命中生效）**无新渲染代码**。细节 §十四/§十五。
 - **HTML 预览画样式（#74）**：`to_html` 原不读 `GridCell.style`，现渲成 `<td style>`；无样式时输出逐字节不变。细节 §十五。
 - **MySQL / MariaDB / SQL Server / Oracle 明确报错**：`unsupported_engine_name()`。注意 `ServerConfig::load()` **不调 `validate()`**（只有保存/试连调），手改配置写 mysql 会报误导性的「sqlite 文件不存在」。
-- **格子图片**：`CellTpl.image` / `CellModel.image`（**两槽都认**）→ `GridCell.image` → xlsx 真嵌入 + HTML `<img>`。只收 data URI（模板可分享 → 收路径 = 任意文件读取原语）。探针+反证 6 条。
+- **格子图片**：`CellTpl.image` / `CellModel.image`（两槽都认）→ xlsx 真嵌入 + HTML `<img>`。只收 data URI（收路径＝任意文件读取原语）。细节 §六。
 - **图表格**：`CellTpl.chart` / `CellModel.chart`（两槽都认）→ HTML 内联 SVG + xlsx **原生图表**，声明**模板坐标**。三条硬约定：**一个声明只画一份** · **空值是空档不是 0** · 图表是**导出那一刻的快照**。细节 §十。
 - **条码 / 二维码**：`CellTpl.barcode` / `CellModel.barcode`（两槽都认）→ `GridCell.barcode` → HTML 内联 SVG + xlsx **1 位灰度位图**（自研 PNG 编码器）。QR（**字节模式 + ECC M + v1~10**）+ Code128 全表。**展开行 N 行出 N 个**（同图片，**反图表**）。优先级 `图片 > 图表 > 条码` 收成**一个判据** `GridCell::graphic()`。设计器面板已接。细节 §十一。
 - **ODBC 引擎**：`db_odbc.rs`，可选 feature。**票据指令** `/print` 的 `esc`/`tsc`/`zpl` 已实现。

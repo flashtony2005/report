@@ -41,37 +41,83 @@ export interface SelectedDiff {
   inPlace: AnyControl[]
   /** 新增控件（AI 新造的 id） */
   added: AnyControl[]
-  /** 被 AI 删掉的原选中控件 id */
+  /** 被 AI 删掉的原选中控件 id（模型**故意**没返回的） */
   removedIds: string[]
-  /** 「改 n / 加 n / 删 n」，全 0 时为「无变化」 */
+  /** 归一化丢掉的 id：**不算删除**，调用方应保持原样不动 */
+  preservedIds: string[]
+  /** 「改 n / 加 n / 删 n / 保 n」，全 0 时为「无变化」 */
   summary: string
 }
 
 /**
  * C 模式（选中部分改写）结果 diff：
  * 返回的控件 id 在锁定选区 → 原位替换；不在 → 新增；锁定选区里消失的 → 删除。
+ *
+ * ⚠️ **`droppedIds` 不是可选的装饰。** 一个选中控件「没出现在返回值里」有两种原因：
+ *   1. 模型故意不返回 → 用户要删它；
+ *   2. 归一化看不懂它、丢掉了 → 我们该保它。
+ * 这两种在 `controls` 里长得**一模一样**。少了 `droppedIds`，第 2 种会被当成第 1 种
+ * → `removeControl` **真删掉用户的控件**，界面还报成功。
+ * 所以这个参数**必填**：让「忘记区分」在类型层面就写不出来。
  */
 export function diffSelectedControls(
   controls: AnyControl[],
   lockedIds: string[],
+  /** 归一化丢掉、因而没出现在 `controls` 里的 id（见 `DroppedItem.id`） */
+  droppedIds: string[],
 ): SelectedDiff {
   const targetIds = new Set(lockedIds)
   const returnedIds = new Set(controls.map((c) => c.id))
+  const droppedSet = new Set(droppedIds)
   const inPlace: AnyControl[] = []
   const added: AnyControl[] = []
   for (const ctrl of controls) {
     if (targetIds.has(ctrl.id)) inPlace.push(ctrl)
     else added.push(ctrl)
   }
-  const removedIds = lockedIds.filter((id) => !returnedIds.has(id))
+  const preservedIds = lockedIds.filter((id) => droppedSet.has(id))
+  // 只有「既没返回、也不在丢弃名单里」的才算用户要删
+  const removedIds = lockedIds.filter((id) => !returnedIds.has(id) && !droppedSet.has(id))
   const parts = [
     inPlace.length ? `改 ${inPlace.length}` : '',
     added.length ? `加 ${added.length}` : '',
     removedIds.length ? `删 ${removedIds.length}` : '',
+    preservedIds.length ? `保 ${preservedIds.length}` : '',
   ]
     .filter(Boolean)
     .join(' / ')
-  return { inPlace, added, removedIds, summary: parts || '无变化' }
+  return { inPlace, added, removedIds, preservedIds, summary: parts || '无变化' }
+}
+
+/* ------------------------------ 丢弃上报 ------------------------------ */
+
+/**
+ * 归一化丢掉的东西的最小形状。
+ * 故意**不** import `@/ai/normalize` 的 `DroppedItem`：本文件要零依赖（Vue/React 两端共用）。
+ * 结构与它保持一致即可。
+ */
+export interface DroppedLike {
+  kind: 'control' | 'section'
+  type: string
+  id?: string
+  reason: string
+}
+
+/** 丢掉的东西里能对应到具体控件的 id（拿它去 `diffSelectedControls` 的第 3 参） */
+export function droppedIds(dropped: DroppedLike[]): string[] {
+  return dropped
+    .map((d) => d.id)
+    .filter((id): id is string => typeof id === 'string' && id !== '')
+}
+
+/**
+ * 「有 N 个控件 AI 处理不了」的统一文案。
+ * 两端共用一份，免得各写一份慢慢走样（这正是本项目踩过的漂移坑）。
+ */
+export function droppedNotice(dropped: DroppedLike[]): string {
+  if (!dropped.length) return ''
+  const types = [...new Set(dropped.map((d) => d.type))].join(' / ')
+  return `有 ${dropped.length} 个控件 AI 处理不了（类型：${types}），已跳过。`
 }
 
 /* ------------------------------ 模式 ------------------------------ */

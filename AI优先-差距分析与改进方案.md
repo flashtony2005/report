@@ -12,7 +12,7 @@
 
 - **可验证**：探针 / 故障注入 / 可判定不变量 / 「闸必须能红」——这套纪律恰好是 AI-first 最需要的地基，大多数项目到不了这一步。
 - **不可编写**：AI 只挂在**自由画布**那一层；项目的差异化内核（非线性报表 `ReportDef` / `CellTpl` / 主格 / 表达式）对 AI **完全不可见**。
-- **而且**：画布协议的**三种描述已经漂移**（13 / 9 / 8 个控件类型），漂移**已经造成一个静默删控件的 bug**（本文 §3.1，已复现）。
+- **而且**：画布协议的**三种描述已经漂移**（13 / 9 / 8 个控件类型），漂移**已经造成一个静默删控件的 bug**（本文 §3.1，已复现；**同日已修**，见文末「修复记录」）。
 
 > 所以真正的差距不是「有没有 AI」。是**AI 被接在了产品的最外层，而项目最值钱的那一层对 AI 不透明**；并且**在收敛到「一份机器可读的真相」之前，每一分 AI 投入都在持续缴漂移税**。
 
@@ -180,11 +180,25 @@ pub warnings: Option<Vec<String>>,
 
 **后果：外部 agent（Claude / Cursor / WorkBuddy / 任意 MCP 客户端）无法驱动这个引擎。** AI 只是产品内部的一个按钮，产品对外不是一个工具。
 
-### 3.7 【P2】AI 的测试不在任何闸里
+### 3.7 【P2】AI 的测试不在 `scripts/` 那几条闸里
 
 `scripts/ts-test.sh` 只拷 `openprint/src/report/*.ts`（脚本注释里自己写了「拷的是整个目录，白名单就是上次漏跑新 spec 的原因」），**不覆盖 `openprint/src/ai/`**；`grep -rn 'src/ai|ai.spec' scripts/` → **0 命中**。
 
-即 `openprint/src/ai/ai.spec.ts` 的 7 条用例**没有任何脚本会跑**。§3.1 的 bug 能长期存活，这是直接原因之一。
+> ⚠️ **本节初版写错了，此处更正。** 初版据此断言「`ai.spec.ts` 的用例没有任何脚本会跑」。
+> 实测**不成立**：`designer-react/vite.config.ts` 的 `test.include` 里有 `../openprint/src/**/*.spec.ts`，
+> 所以文档里那条「完整回归」**会**跑到它：
+>
+> ```bash
+> cd designer-react && node node_modules/vitest/vitest.mjs run openprint/src/ai
+> # → ✓ ../openprint/src/ai/ai.spec.ts (15 tests)   ← 确实在跑
+> ```
+>
+> 教训：**「没在 `scripts/` 里」≠「没人跑」**。判定「某测试有没有被跑到」，要去读**跑器的 include**，
+> 不是 grep 脚本目录。我当时少查了一层。
+
+**所以 §3.1 的 bug 能长期存活的真正原因不是「测试没跑」，而是「没有一条断言在守那个不变量」**：
+8 条用例全绿，却没有任何一条问过「白名单外的类型有没有被上报」。
+**测试跑了 ≠ 测到了。** 这比「闸是红的」更难发现 —— 因为它是绿的。
 
 ### 3.8 【P2】坐标「铁律」+ 启发式纠偏 = 在给表征问题打补丁
 
@@ -219,9 +233,9 @@ if (minLeft > 1 && Math.abs(minLeft - ml) <= EPS && minTop > 1 && Math.abs(minTo
 | 动作 | 具体做法 | 为什么先做 |
 | --- | --- | --- |
 | **0.1 三份协议声明收敛成一份** | 以 `template.schema.json` 为唯一真相，`VALID_TYPES` 由它派生（或反过来生成 schema）；补上提示词里缺的 5 类 | 直接消灭 §3.1 的静默删控件 |
-| **0.2 加一条「一致性闸」** | 一条单测：断言 `schema.enum ≡ ControlType ≡ VALID_TYPES`。**这条闸必须能被证明会红**（故意删一个类型 → 必须失败） | 把「未来的漂移」从静默变成红灯 |
-| **0.3 归一化丢弃必须出声** | `normalizeControl` 丢控件时返回原因；`generateTemplate` 把「丢了 N 个控件（类型 X）」放进 `error`/警告，并**阻止** diff 把它当成「用户要删」 | 未识别的类型不能再等于「删掉」 |
-| **0.4 AI 的测试进闸** | `ts-test.sh` 覆盖 `openprint/src/ai/`（同 `src/report` 的办法：整目录拷 + 通配 include） | §3.7：不在闸里的测试等于没有 |
+| **0.2 加一条「一致性闸」（⚠️ 原方案有错，已更正）** | 原文写「断言 `schema.enum ≡ ControlType ≡ VALID_TYPES`」——**这条闸会永远红**，因为 `VALID_TYPES` 是**刻意**窄的（AI 只碰它理解载荷的类型），三者本就不该相等。正确的不变量是**单向**的：① `VALID_TYPES ⊆ ControlType`（已有：`ControlType[]` 标注就是编译期闸）；② 提示词**宣传**的类型 ⊆ `VALID_TYPES`（不能宣传会被丢掉的东西）；③ `ControlType` 里凡不在 `VALID_TYPES` 的，**每一个都必须被上报** ← 这条已由 0.3 的测试覆盖 | 把「未来的漂移」从静默变成红灯 |
+| **0.3 归一化丢弃必须出声** ✅ **已做**（2026-09-24） | `normalizeControl` 丢弃时写进 `dropped`（带 kind/type/id/原因）；`normalizeTemplate` 返回 `{value, dropped}`；`generateTemplate` 透出 `dropped`（选区）/ 当校验问题回喂重试（整模板）；diff 把 `dropped` 排除出 `removedIds`；两个 UI 显示警告并**保持原样**。5 条故障注入证明每层都能红 | 未识别的类型不能再等于「删掉」 |
+| **0.4 给 AI 层补「守不变量」的断言** | AI 的 spec 其实已被 `designer-react` 的 `npm test` 跑到（见 §3.7 更正），缺的不是跑器而是**断言**：要加一条「凡不在白名单里的类型都必须出现在 `dropped` 里」 | §3.7：**测试跑了 ≠ 测到了** |
 
 ### 阶段 1：把内核暴露成「可生成 + 可校验」
 
@@ -284,15 +298,33 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:18888/api/reports/sales-by-region
 
 # 三份声明漂移 + 静默丢控件：见 §3.1 的复现脚本
 
-# AI 测试不在闸里
+# AI 的 spec 不在 scripts/ 那几条闸里
 grep -rn 'src/ai\|ai.spec' scripts/    # → 无命中
+# 但它**确实被跑到**：designer-react 的 include 里有 ../openprint/src/**/*.spec.ts
+cd designer-react && node node_modules/vitest/vitest.mjs run openprint/src/ai
+# → ✓ ../openprint/src/ai/ai.spec.ts (15 tests)
 
 # 没有 MCP
 grep -rl 'mcp\|modelcontextprotocol' --exclude-dir=node_modules .   # → 无命中
 ```
 
+### 修复记录（2026-09-24 追加）
+
+**§3.1 的 bug 已修，采用「让丢弃出声」（不拓宽白名单）。** 改动分 5 层，每层都有一条故障注入证明会红：
+
+| 层 | 文件 | 改动 |
+| --- | --- | --- |
+| 1 | `openprint/src/ai/normalize.ts` | 新增 `DroppedItem` / `NormalizeResult`；`normalizeControl(raw, dropped)` 的 `dropped` **必填**；`normalizeTemplate` 返回 `{value, dropped}`；整节类型拼错也上报 |
+| 2 | `openprint/src/ai/generate.ts` | `GenerateResult.dropped` **必填**；选区路径透出；整模板路径把丢弃当「输出不完整」回喂重试，仍不完整则明确失败 |
+| 3 | `openprint/src/design/ai/shared/ai-assistant-logic.ts` | `diffSelectedControls` 第 3 参 `droppedIds` **必填**；`removedIds` 排除丢弃的 id；新增 `preservedIds` + `droppedIds()` / `droppedNotice()` 共享文案 |
+| 4 | `designer-react/src/modals/AiAssistantModal.tsx` | 卡片显示「AI 处理不了」；`applySelected` 保留原样并用 **warning**（不是 success）说明 |
+| 5 | `openprint/src/design/ai/AiAssistantPanel.vue` | 同上（**Vue 侧是同一个 bug 的第二处**，一并修） |
+
+验证：`scripts/fault-inject-ai-dropped.py` **5/5 抓到**，还原后逐字节一致，两个跑器基线全绿。
+
 ### 本文未做的事（诚实声明）
 
-- **没有修 §3.1 的 bug**。修法有两种（拓宽白名单 / 让丢弃出声），我倾向后者——**拓宽白名单会让模型有机会产出它并不理解载荷的图表控件**，而「出声」在任何情况下都是对的。这是取舍，应交由你定。
-- **没有实测 `chart` / `labelgrid` 等控件在渲染器里是否真的完整可用**（只验证了 `ControlType` 与 schema 承认它们、而 AI 层不承认）。若它们其实半成品，那 §3.1 的「正确修法」还要再变。
+- **没实测 `chart` / `labelgrid` 等控件在渲染器里是否真的完整可用**（只验证了 `ControlType` 与 schema 承认它们、而 AI 层不承认）。若它们其实半成品，那「不拓宽白名单」这个决定就更对；反之若它们完好，未来可考虑放宽（届时改 `VALID_TYPES` + 提示词 + 上面那条测试里的显式清单）。
+- **`VALID_TYPES` 刻意保持 9 项**（未拓宽）。所以选中含图表控件的选区时，AI 仍处理不了它 —— 但现在**会明确告诉你，并且不动它**，而不是删掉还说成功。
 - 阶段 1/2/3 的工作量**未做评估**，本文只给方向与依赖顺序。
+- §3.7 的初版结论**写错过一次**（「AI 测试没有任何脚本会跑」），已在该节更正 —— 判定「测试有没有被跑到」要读**跑器的 include**，不是 grep 脚本目录。

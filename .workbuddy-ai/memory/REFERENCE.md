@@ -892,10 +892,45 @@ cd $W && node node_modules/vitest/vitest.mjs run     # → text/zone 过，chart
 > **通用教训：一份协议有 N 处并行声明 = N 处会漂移，且漂移是静默的。**
 > 解法不是「记得同步」，是**写一条断言它们互相一致的闸**（并且证明这条闸能红）。
 
-### 3. AI 的测试**不在任何闸里**
+### 3. AI 的测试不在 `scripts/` 那几条闸里（**但确实被跑到** —— 本节初版写错了，已更正）
 
 `scripts/ts-test.sh` 只拷 `openprint/src/report/*.ts`（脚本注释自己写了「白名单就是上次漏跑新 spec 的原因」）；`grep -rn 'src/ai|ai.spec' scripts/` → **0 命中**。
-→ `openprint/src/ai/ai.spec.ts` 的 7 条**没有任何脚本会跑**。§2 的 bug 能长期存活，这是直接原因。
+
+> ⚠️ **初版据此写了「`ai.spec.ts` 没有任何脚本会跑」—— 错的。** 实测：
+>
+> ```bash
+> cd designer-react && node node_modules/vitest/vitest.mjs run openprint/src/ai
+> # → ✓ ../openprint/src/ai/ai.spec.ts (15 tests)   ← 确实在跑
+> ```
+>
+> 因为 `designer-react/vite.config.ts` 的 `test.include` 里有 `../openprint/src/**/*.spec.ts`。
+> **判定「某测试有没有被跑到」要读跑器的 include，不是 grep 脚本目录。**
+> （顺带：`designer-react/package.json` 有 `test` / `test:app` / `test:engine` 三个脚本，
+> `test:engine` 用 `vitest.engine.config.ts` 只跑引擎层。）
+
+**§2 的 bug 能长期存活的真正原因不是「测试没跑」，而是「没有一条断言守那个不变量」** ——
+8 条用例全绿，却没有任何一条问过「白名单外的类型有没有被上报」。**测试跑了 ≠ 测到了。**
+
+### 3b. ✅ 已修（2026-09-24）：丢弃必须上报，5 层各有一条注入
+
+用户选「让丢弃出声」而**不**拓宽白名单（理由：拓宽会让模型有机会产出它并不理解载荷的图表控件）。
+
+| 层 | 文件 | 关键改动 |
+| --- | --- | --- |
+| 1 | `ai/normalize.ts` | `DroppedItem` / `NormalizeResult`；`normalizeControl(raw, dropped)` 的 `dropped` **必填**；`normalizeTemplate` → `{value, dropped}`；整节类型拼错也上报 |
+| 2 | `ai/generate.ts` | `GenerateResult.dropped` **必填**；选区路径透出；整模板路径把丢弃并入 `lastIssues` → 走已有的回喂重试；重试后仍不完整则 `ok:false` |
+| 3 | `design/ai/shared/ai-assistant-logic.ts` | `diffSelectedControls(controls, lockedIds, droppedIds)` 第 3 参**必填**；`removedIds` 排除丢弃的 id；新增 `preservedIds`、`droppedIds()`、`droppedNotice()` |
+| 4 | `designer-react/.../AiAssistantModal.tsx` | 卡片显示「AI 处理不了」；`applySelected` 保留原样 + **warning**（非 success） |
+| 5 | `openprint/src/design/ai/AiAssistantPanel.vue` | 同上 —— **Vue 侧是同一个 bug 的第二处**，别只修 React |
+
+- 闸：`scripts/fault-inject-ai-dropped.py` → **5/5 抓到**，还原后逐字节一致，两个跑器基线全绿。
+- **设计要点**：把「丢弃」做成**必填**参数/字段，而不是可选的回调或日志 ——
+  这样「忘记处理」在**类型层面**就写不出来（`GenerateResult` 少 `dropped` 直接 TS 报错）。
+  这是本项目「让静默失败变响」的通用手法：**先让忽略变得写不出来，再谈文档提醒。**
+- **测试写法**：白名单内/外两条用例都由 `VALID_TYPES` **推导**（不硬编码），
+  所以将来有意放宽白名单时测试自动适配；另有一条显式清单用例把这个**刻意取舍**钉成文档。
+- 已知取舍：`VALID_TYPES` 仍是 9 项，所以选区里有图表控件时 AI 仍处理不了它 ——
+  但现在**明确告知且不动它**，而不是删掉还说成功。
 
 ### 4. 错误响应：**两套方言**，且没有错误码
 

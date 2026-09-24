@@ -85,6 +85,7 @@ beforeEach(async () => {
   const { isAiConfigured } = await import('@/config/ai-settings')
   vi.mocked(isAiConfigured).mockReturnValue(true)
   vi.mocked(antdMessage.success).mockClear()
+  vi.mocked(antdMessage.warning).mockClear()
 })
 
 afterEach(async () => {
@@ -213,5 +214,57 @@ describe('AiAssistantModal', () => {
       expect.stringContaining('改 1 / 加 1 / 删 1'),
     )
     expect(onClose).toHaveBeenCalled()
+  })
+
+  // ⚠️ 回归（2026-09-24）：AI 归一化对白名单外的类型 `return null` → 被 filter 丢掉 →
+  // diff 把「没返回」当成「用户要删」→ removeControl **真删掉用户画布上的控件**，
+  // 还弹绿色成功。修复后：丢弃必须显示，且一律保持原样、绝不删除。
+  it('AI 处理不了的控件：保持原样不删，且用 warning 说明（不能报成功）', async () => {
+    const chart = {
+      id: 'c1',
+      type: 'chart',
+      left: 10,
+      top: 40,
+      width: 40,
+      height: 30,
+    } as unknown as AnyControl
+    useDesignerStore.setState({
+      controls: [ctrl('a1'), chart],
+      selectedIds: ['a1', 'c1'],
+    })
+    // generateTemplate 的真实行为：c1 进不了 controls（AI 层不认 chart），但会进 dropped
+    generateMock.mockResolvedValue({
+      ok: true,
+      controls: [{ ...ctrl('a1'), width: 44 } as unknown as AnyControl],
+      dropped: [{ kind: 'control', type: 'chart', id: 'c1', reason: '类型不在白名单' }],
+    })
+    await mount()
+    await act(async () => {
+      ;[...body().querySelectorAll<HTMLButtonElement>('.ai-mode-btn')]
+        .find((b) => b.textContent!.includes('选中部分'))!
+        .click()
+      await new Promise((r) => setTimeout(r, 20))
+    })
+    const input = body().querySelector('[data-testid="ai-input"]') as HTMLTextAreaElement
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+      setter.call(input, '统一配色')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 20))
+      findButton('发送')!.click()
+      await new Promise((r) => setTimeout(r, 120))
+    })
+    // 卡片上必须显示「处理不了」—— 不能悄悄不显示
+    expect(body().querySelector('[data-testid="ai-dropped"]')?.textContent).toContain('处理不了')
+    await act(async () => {
+      findButton('替换选中控件')!.click()
+      await new Promise((r) => setTimeout(r, 40))
+    })
+    const ids = useDesignerStore.getState().controls.map((c) => c.id)
+    // 关键断言：图表还在（修复前这里会被删掉）
+    expect(ids).toContain('c1')
+    expect(ids).toContain('a1')
+    expect(antdMessage.warning).toHaveBeenCalledWith(expect.stringContaining('保持原样'))
+    expect(antdMessage.success).not.toHaveBeenCalled()
   })
 })

@@ -8,9 +8,12 @@ import {
   REVEAL_TICK_MS,
   computeRevealStep,
   diffSelectedControls,
+  droppedIds,
+  droppedNotice,
   parseDatasourceFields,
   resolveMode,
   templateMeta,
+  type DroppedLike,
 } from './ai-assistant-logic'
 
 const ctrl = (id: string): AnyControl => ({
@@ -57,18 +60,60 @@ describe('parseDatasourceFields（字段串解析）', () => {
 
 describe('diffSelectedControls（选区改写 diff）', () => {
   it('原位改 / 新增 / 删除 三类齐全，摘要正确', () => {
-    const d = diffSelectedControls([ctrl('a'), ctrl('a2'), ctrl('new')], ['a', 'a2', 'gone'])
+    const d = diffSelectedControls([ctrl('a'), ctrl('a2'), ctrl('new')], ['a', 'a2', 'gone'], [])
     expect(d.inPlace.map((c) => c.id)).toEqual(['a', 'a2'])
     expect(d.added.map((c) => c.id)).toEqual(['new'])
     expect(d.removedIds).toEqual(['gone'])
+    expect(d.preservedIds).toEqual([])
     expect(d.summary).toBe('改 2 / 加 1 / 删 1')
   })
 
   it('无变化', () => {
-    const d = diffSelectedControls([], ['x'])
+    const d = diffSelectedControls([], ['x'], [])
     expect(d.summary).toBe('删 1')
-    const d2 = diffSelectedControls([], [])
+    const d2 = diffSelectedControls([], [], [])
     expect(d2.summary).toBe('无变化')
+  })
+
+  // ⚠️ 回归：归一化丢掉的控件曾经被当成「用户要删」→ removeControl 真删掉用户的控件
+  it('归一化丢掉的 id 不算删除：进 preservedIds，不进 removedIds', () => {
+    // 模型返回了 a（原位改），没返回 c —— 但 c 是「我们看不懂丢掉的」
+    const d = diffSelectedControls([ctrl('a')], ['a', 'c'], ['c'])
+    expect(d.inPlace.map((c) => c.id)).toEqual(['a'])
+    expect(d.removedIds).toEqual([])
+    expect(d.preservedIds).toEqual(['c'])
+    expect(d.summary).toBe('改 1 / 保 1')
+  })
+
+  it('真被模型删掉的仍然要删（丢弃名单不能变成免死金牌）', () => {
+    const d = diffSelectedControls([ctrl('a')], ['a', 'gone'], [])
+    expect(d.removedIds).toEqual(['gone'])
+    expect(d.preservedIds).toEqual([])
+  })
+
+  it('丢弃名单里的 id 不在选区时，不污染 preservedIds', () => {
+    const d = diffSelectedControls([ctrl('a')], ['a'], ['not-selected'])
+    expect(d.preservedIds).toEqual([])
+    expect(d.removedIds).toEqual([])
+  })
+})
+
+describe('droppedIds / droppedNotice（丢弃上报的共享文案，两端同源）', () => {
+  const d = (o: Partial<DroppedLike>): DroppedLike =>
+    ({ kind: 'control', type: 'chart', ...o }) as DroppedLike
+
+  it('droppedIds 只取真的有 id 的', () => {
+    expect(droppedIds([d({ id: 'c1' }), d({ id: 'c2' }), d({})])).toEqual(['c1', 'c2'])
+  })
+
+  it('droppedNotice 去重类型并报数量', () => {
+    expect(droppedNotice([d({ id: 'c1' }), d({ id: 'c2' }), d({ type: 'math' })])).toBe(
+      '有 3 个控件 AI 处理不了（类型：chart / math），已跳过。',
+    )
+  })
+
+  it('空数组返回空串（不显示任何东西）', () => {
+    expect(droppedNotice([])).toBe('')
   })
 })
 

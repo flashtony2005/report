@@ -7,7 +7,7 @@ import type { TemplateData } from '@/types/template'
 import { validateTemplate } from '@/core/spec/validator'
 import { streamChat, AiRequestError } from './client'
 import { buildSystemPrompt, buildUserPrompt, getFewShot } from './schema'
-import { normalizeControl, normalizeTemplate } from './normalize'
+import { normalizeControl, normalizeTemplate, type DroppedItem } from './normalize'
 import type { AiSettings } from '@/config/ai-settings'
 
 export interface GenerateRequest {
@@ -28,6 +28,14 @@ export interface GenerateResult {
   data?: TemplateData<AnyControl>
   /** 选区改写模式：返回的新控件集合（用于替换原选中控件） */
   controls?: AnyControl[]
+  /**
+   * 归一化阶段被丢掉的东西（**必填**，无丢弃时是 `[]`）。
+   *
+   * ⚠️ 调用方**必须**处理它：`controls` 里少掉的那些 id，可能是模型故意删的，
+   * 也可能是我们看不懂丢的。**只有 `dropped` 能区分这两者** ——
+   * 拿它去挡 `removedIds`，否则会把「我们看不懂」当成「用户要删」，真删掉用户的控件。
+   */
+  dropped: DroppedItem[]
   error?: string
   /** 模型原始输出（用于调试 / 展示） */
   raw?: string
@@ -99,22 +107,33 @@ export async function generateTemplate(req: GenerateRequest): Promise<GenerateRe
         signal: req.signal,
       })
     } catch (e) {
-      return { ok: false, error: fmtError(e), raw }
+      return { ok: false, dropped: [], error: fmtError(e), raw }
     }
     const json = extractJson(raw)
     const arr = Array.isArray(json) ? json : []
+    const dropped: DroppedItem[] = []
     const controls = arr
-      .map((c) => (typeof c === 'object' && c ? normalizeControl(c as Record<string, unknown>) : null))
+      .map((c) =>
+        typeof c === 'object' && c
+          ? normalizeControl(c as Record<string, unknown>, dropped)
+          : null,
+      )
       .filter((c): c is AnyControl => c !== null)
     if (!controls.length) {
-      return { ok: false, error: '模型未返回有效的控件 JSON（应为控件数组）。', raw }
+      // 「全被丢掉」和「模型没给」是两回事，处置完全不同 → 文案必须分开
+      const why = dropped.length
+        ? `模型返回的 ${dropped.length} 个控件都处理不了：${dropped.map((d) => d.reason).join('；')}`
+        : '模型未返回有效的控件 JSON（应为控件数组）。'
+      return { ok: false, dropped, error: why, raw }
     }
-    return { ok: true, controls, raw }
+    return { ok: true, controls, dropped, raw }
   }
 
   // —— 完整模板模式 ——
   let raw = ''
   const MAX_ATTEMPTS = 2
+  let lastIssues: string[] = []
+  let lastDropped: DroppedItem[] = []
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       raw = await streamChat({
@@ -126,40 +145,43 @@ export async function generateTemplate(req: GenerateRequest): Promise<GenerateRe
         signal: req.signal,
       })
     } catch (e) {
-      return { ok: false, error: fmtError(e), raw }
+      return { ok: false, dropped: [], error: fmtError(e), raw }
     }
 
     const json = extractJson(raw)
     if (!json) {
-      return { ok: false, error: '模型未返回有效的模板 JSON。', raw }
+      return { ok: false, dropped: [], error: '模型未返回有效的模板 JSON。', raw }
     }
 
     const normalized = normalizeTemplate(json)
-    const result = validateTemplate(normalized)
-    if (result.valid) {
-      return { ok: true, data: normalized, raw }
+    const result = validateTemplate(normalized.value)
+    lastDropped = normalized.dropped
+    // **丢弃也算「这次输出不完整」**，和校验错误一起回喂，让模型有机会改。
+    // 不回喂的话，模型用了我们不支持的类型 → 那部分凭空消失，且没有任何人知道。
+    lastIssues = [
+      ...result.issues.map((i) => `${i.path || '/'}：${i.message}`),
+      ...normalized.dropped.map((d) => d.reason),
+    ]
+    if (result.valid && lastIssues.length === 0) {
+      return { ok: true, data: normalized.value, dropped: [], raw }
     }
 
-    // 重试：把校验错误反馈给模型
+    // 重试：把校验错误 + 丢弃原因反馈给模型
     if (attempt < MAX_ATTEMPTS - 1) {
-      const issues = result.issues
-        .map((i) => `${i.path || '/'}：${i.message}`)
-        .join('；')
       messages.push({ role: 'assistant', content: raw })
       messages.push({
         role: 'user',
-        content: `你的输出未通过模板协议校验，请修正后只输出正确 JSON。错误：${issues}`,
+        content: `你的输出未通过模板协议校验，请修正后只输出正确 JSON。错误：${lastIssues.join('；')}`,
       })
       raw = ''
       continue
     }
-    return {
-      ok: false,
-      error: `模板校验失败：${result.issues
-        .map((i) => `${i.path || '/'}: ${i.message}`)
-        .join('；')}`,
-      raw,
-    }
   }
-  return { ok: false, error: '生成失败（超出重试次数）。', raw }
+  // 重试后仍不完整 → 明确失败（而不是交付一份悄悄少了东西的模板）
+  return {
+    ok: false,
+    dropped: lastDropped,
+    error: `模板校验失败：${lastIssues.join('；')}`,
+    raw,
+  }
 }

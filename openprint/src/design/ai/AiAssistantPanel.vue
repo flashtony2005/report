@@ -12,9 +12,12 @@ import {
   REVEAL_TICK_MS,
   computeRevealStep,
   diffSelectedControls,
+  droppedIds,
+  droppedNotice,
   parseDatasourceFields,
   resolveMode,
   templateMeta,
+  type DroppedLike,
 } from '@/design/ai/shared/ai-assistant-logic'
 import type { TemplateData } from '@/types/template'
 import type { AnyControl } from '@/types/control'
@@ -37,6 +40,8 @@ interface ChatMsg {
   template?: TemplateData<AnyControl>
   /** 选区改写模式：AI 返回的替换控件集合 */
   controls?: AnyControl[]
+  /** 归一化阶段被丢掉的东西（我们看不懂，不是用户要删）—— 必须显示，且不能当成删除 */
+  dropped?: DroppedLike[]
   error?: string
   streaming?: boolean
 }
@@ -155,6 +160,7 @@ async function run(prompt: string): Promise<void> {
     assistant.template = res.data
   } else if (res.ok && res.controls) {
     assistant.controls = res.controls
+    assistant.dropped = res.dropped
     lockedSelectedIds = mode.value === 'selected' ? [...store.selectedIds] : []
   } else {
     assistant.error = res.error || '生成失败，请重试。'
@@ -220,9 +226,15 @@ function applyTemplate(tpl: TemplateData<AnyControl>): void {
   emit('update:show', false)
 }
 
-/** C：把 AI 返回的控件集合替换掉原选中控件（原位改 id 的，新增的加进来，消失的删掉） */
-function applySelected(controls: AnyControl[]): void {
-  const diff = diffSelectedControls(controls, lockedSelectedIds)
+/**
+ * C：把 AI 返回的控件集合替换掉原选中控件（原位改 id 的，新增的加进来，消失的删掉）。
+ *
+ * ⚠️ `dropped` 必须传进来：里面记着「我们看不懂所以丢掉的控件」。
+ * 不传的话它们会被当成「用户要删」→ `removeControl` **真删掉用户的控件**，
+ * 还弹绿色成功（这就是本函数之前的行为）。
+ */
+function applySelected(controls: AnyControl[], dropped: DroppedLike[]): void {
+  const diff = diffSelectedControls(controls, lockedSelectedIds, droppedIds(dropped))
   for (const ctrl of diff.inPlace) {
     // 原位替换：保留 id/type，合并其余字段
     store.updateControl(ctrl.id, ctrl)
@@ -231,11 +243,19 @@ function applySelected(controls: AnyControl[]): void {
     // 新增控件：携带原几何 addControlOfType 会保留 left/top/width/height
     store.addControlOfType(ctrl.type, { leftMm: ctrl.left, topMm: ctrl.top }, ctrl)
   }
-  // 选中集合里被 AI 删掉的控件：移除
+  // 只有「模型故意没返回」的才移除；被丢掉的保持原样（在 diff.preservedIds 里）
   for (const id of diff.removedIds) {
     store.removeControl(id)
   }
-  message.success(`已应用到选中控件（${diff.summary}），可在编辑器中继续微调`)
+  if (diff.preservedIds.length) {
+    // 有东西没处理干净：用 warning 而不是 success，并且说清「保持原样、没动它们」
+    const types = [...new Set(dropped.map((d) => d.type))].join(' / ')
+    message.warning(
+      `已应用到选中控件（${diff.summary}）；其中 ${diff.preservedIds.length} 个控件 AI 处理不了（类型：${types}），已保持原样未改动。`,
+    )
+  } else {
+    message.success(`已应用到选中控件（${diff.summary}），可在编辑器中继续微调`)
+  }
   emit('update:show', false)
 }
 
@@ -345,9 +365,14 @@ watch(
                   <span class="ai-tpl-meta">{{ m.controls.length }} 个控件</span>
                 </div>
                 <div class="ai-tpl-actions">
-                  <NButton size="small" type="primary" @click="applySelected(m.controls!)">替换选中控件</NButton>
+                  <NButton size="small" type="primary" @click="applySelected(m.controls!, m.dropped ?? [])">替换选中控件</NButton>
                   <NButton size="small" tertiary @click="retryLast">重新生成</NButton>
                 </div>
+              </div>
+
+              <div v-if="m.dropped?.length" class="ai-error">
+                <div class="i-carbon-warning-alt text-14px" />
+                <span>{{ droppedNotice(m.dropped) }}</span>
               </div>
 
               <div v-if="m.error" class="ai-error">
