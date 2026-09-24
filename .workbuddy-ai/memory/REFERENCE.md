@@ -988,3 +988,101 @@ POST /api/reports/sales-by-region/run → 400 「数据集「ds1」取数失败�
 **本项目已经是「AI 可验证」的，但不是「AI 可编写」的。** 可验证＝探针/故障注入/可判定不变量（这是 AI-first 的地基，多数项目没有）；不可编写＝AI 只挂在画布层，内核（`ReportDef`）对 AI 不透明，且三份协议声明已漂移。
 完整差距分析与分阶段改进路线：`AI优先-差距分析与改进方案.md`。
 
+
+## 二十一、架构体检（2026-09-24）
+
+全文：`架构体检-不足与改进方案.md`（仓库根）。**只体检、没改代码。**
+
+### 头条：**验证设施一流，「让验证设施跑起来」是缺的**
+
+13 个 `fault-inject-*.py` + 13 个 `verify-*.py` + `mirror-check.py` = **27 个 .py**，
+**没有任何 shell 脚本调用过任何一个**（`grep -rnE 'python3? .*\.py|mirror' scripts/*.sh scripts/*.mjs scripts/*.cjs` → 无输出）；
+**无 CI**（无 `.github`）；**无 `check-all`**。
+
+→ 新形态，已进 `silent-failure-hunt` 的族谱：**「没有跑器的闸」比「红的闸」更坏** ——
+红闸会喊；没跑器的闸是**绿的**，谁看一眼都得到「契约一致」的信心，而那份信心是空头。
+
+### `mirror-check.py`：只对「形状」，不对「语义」
+
+覆盖 24 组 struct/interface 字段 + 纸张名清单（`mirror-check.py:29-54, 152-160`）。实测 24/24 OK + 纸张名 6 项。
+
+**不覆盖**的规则体/常量（注释里都写着「改一处要改两处」）：
+
+| 事实 | Rust | TS | 闸 |
+| --- | --- | --- | --- |
+| 字节上限 213/48 | `barcode.rs:52,59` | `grid-report.ts:197-202` | **无** |
+| 码制别名表 | `barcode.rs:190-192` | `grid-report.ts:214-215` | **无** |
+| 图表类型白名单 | `chart.rs` `KINDS` | `grid-report.ts:301` | **无** |
+| 条件运算符 8 个 | `model.rs:171` | `grid-report.ts:417-426` | 半（`model.rs:1422` 只钉 Rust 数字） |
+| 表头行数判据 | `model.rs:1071` | `grid-report.ts:1543` | 半（6 条 Rust 单测） |
+| 纸张名 | `model.rs:772-779` | `grid-report.ts:677` | **有**（mirror-check） |
+| 页脚 255 上限 | `validate_page_number_tpl` | `grid-report.ts:745-750` | **无** |
+| `#RRGGBB` 校验 | `html_style_attr` | `grid-report.ts` | **无** |
+
+```bash
+grep -rnE 'assert_eq!\((PAPERS|KINDS|SYMBOLOGIES)\.len\(\)' print-server/src/report  # No matches ← 三张表连钉子都没有
+```
+
+→ **在 TS 侧加纸张名/图表类型、或改字节上限 → 一条闸都不会红，静默分叉。**
+⚠️ **现在没漂**（读了 5 个 `*Problem` 函数体，与 Rust 逐条对齐 —— 连 code128 码集判据顺序、纸张名大小写不敏感、方向只 trim 都对齐）。
+缺的是**防将来漂**的闸，不是「已经坏了」。
+
+### 其余不足（详见报告）
+
+- **引擎层的闸长在被消费方配置里**：`openprint/package.json` **无 `test` 脚本**；70 个 openprint spec 靠
+  `designer-react/vite.config.ts` 的 `include` 才跑。4 个被 exclude 的 spec **永久不跑**（Vue 层，已弃用），
+  其中 `designer-contract.spec.ts` 是 golden 录制器 → **`designer-v1.json`（49 012 B）自 `8ced46b` 后再未变过，已不可再生**；
+  而 `designer-react/src/stores/designer-contract.spec.ts:27` 的失败提示仍指向一条**走不通的路**（openprint 装不出 node_modules）。
+- **无 workspace / 构建边界**：无根 `Cargo.toml`/`package.json`/`pnpm-workspace.yaml`；designer-react 靠 vite alias
+  **直引 openprint 源码**；`ts-test.sh:38-43` **硬编码仓库外**的借用 node_modules 路径 → 单测依赖本机文件系统布局。
+- **报表存盘非原子**：`store.rs:301 std::fs::write`，而**同一仓库** `config.rs:385` 已在用「tmp + `fs::rename`」。
+  影响**有界**（`store.rs:234-262` 对坏文件容错 → 只坏一份且可见），但 `load` 不可恢复；
+  且 `updated_at` 在写盘**之前**赋好（`store.rs:295`）→ 崩了以后**从列表看不出这次保存失败**。
+- **`mod.rs` 7753 = 2200 生产 + 5553 测试（72%）** → 纠正「god module」的含糊指控：主因是**测试与生产同文件**。
+  生产里另有 `1545-2201`（~657 行）演示夹具（6 个 `pub` 生成器 + 3 个私有构造器），编译进二进制，
+  对应 `main.rs:204-218` 的 **9 条路由**。
+- `admin.rs:29 include_str!("admin.html")` → 改管理界面要重编译，且对全部 TS 闸不可见。
+
+### 量「生产 vs 测试」的命令（注意必须 `grep -E`）
+
+```bash
+cd print-server/src/report
+for f in mod.rs engine.rs model.rs store.rs xlsx.rs barcode.rs chart.rs docx.rs; do
+  total=$(wc -l < $f)
+  tstart=$(grep -nE '^(mod tests|#\[cfg\(test\)\])' $f | head -1 | cut -d: -f1)
+  printf "%-12s total=%-6s prod=%-6s tests=%s\n" "$f" "$total" "$((tstart-1))" "$((total-tstart+1))"
+done
+```
+
+| 文件 | 总 | 生产 | 测试 | 测试占比 |
+| --- | --- | --- | --- | --- |
+| `mod.rs` | 7753 | 2200 | 5553 | 72% |
+| `engine.rs` | 5094 | 3702 | 1392 | 27% |
+| `barcode.rs` | 1644 | 244 | 1400 | **85%** |
+| `xlsx.rs` | 1453 | 791 | 662 | 46% |
+| `model.rs` | 1729 | 1322 | 407 | 24% |
+| `store.rs` | 679 | 429 | 250 | 37% |
+| `chart.rs` | 448 | 226 | 222 | 50% |
+| `docx.rs` | 572 | 349 | 223 | 39% |
+
+⚠️ `grep '^mod tests\|^#\[cfg(test)\]'`（BRE + `\|`）**静默不匹配** → 会得出「这些文件都没有测试模块」的**错误结论**，
+而 `wc -l` 照印总数，看着毫无异常。**第 N 次踩 BSD grep 的 `\|`。必须 `grep -E`。**
+
+### 体量基线
+
+Rust `print-server/src` 29 323 行 · `openprint/src` 53 137（含 `.vue`）· `designer-react/src` 27 128。
+spec：openprint 70 个 · designer-react 42 个。
+
+### 确认**不是**问题的（别重查）
+
+`mirror-check.py` 自身不漂 · **TS 侧没有重实现展开**（`grid-report.ts` 零 import，只有显示辅助）·
+存盘坏了不连累列表 · 跨框架契约没失效（只是 golden 不可再生）· 纸张名有闸 · 表头行数有 Rust 钉子 ·
+`openprint` 的 spec **确实被跑到**（经 designer-react 的 include）。
+
+### 建议（成本四档，详见报告 §4）
+
+1. 加 `scripts/check-all.sh` 串起已有闸（`mirror-check.py` **排第一**，秒级零依赖）＋有 CI 更好。半天。
+2. 把 `mirror-check.py` 从形状扩到语义（补 `PAPERS`/`KINDS`/`SYMBOLOGIES` 的 Rust 侧 `.len()` 钉子）。
+   **方向必须单向蕴含** —— 「三方相等」那种写法会永久红（本项目已犯过一次，见 §二十.3）。1 天。
+3. 给 `openprint` 加 `test` 脚本；给 4 个永久不跑的 spec 明确归宿（删或标废弃）；修正那条走不通的提示语。1 天。
+4. 原子写报表（抄 `config.rs:385`）· 夹具搬出 `mod.rs` · 测试模块拆出 · 加根 workspace。
