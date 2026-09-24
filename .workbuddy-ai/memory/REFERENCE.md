@@ -836,3 +836,114 @@ docx 里的图片 / 图表 / 条码 · `.docx` 导入。
 （4 字的 `分组汇总` 不受影响，所以只在 2 字按钮上暴露。）
 **按文字找元素一律先去空白再比。**
 
+---
+
+## 二十、AI 层现状与「AI-first」差距（2026-09-24 摸清）
+
+### 1. AI 层**已经存在**（716 行），不是从 0 开始
+
+| 文件 | 干什么 |
+| --- | --- |
+| `openprint/src/ai/schema.ts` | 提示词 `PROTOCOL_SUMMARY` + 2 组 few-shot（含坐标换算演算）；`buildUserPrompt` 支持三种上下文 |
+| `openprint/src/ai/client.ts` | OpenAI 兼容 `/chat/completions` SSE 流式；**兜了「端点忽略 `stream:true`」**；`AiRequestError` 带 status |
+| `openprint/src/ai/generate.ts` | 编排：`extractJson`（3 级回退）→ 归一化 → `validateTemplate` → **把结构化 issues 回喂模型重试 1 次** |
+| `openprint/src/ai/normalize.ts` | 补 id / 坐标纠偏 / 类型白名单 |
+| `openprint/src/config/ai-settings.ts` | baseURL / apiKey / model / enabled，存 `localStorage['openprint:ai:config']`（**明文**，注释自陈「仅本地单用户」） |
+| `designer-react/src/modals/AiAssistantModal.tsx` | UI；三模式 新建 / 改当前 / **只改选中**；选区走 diff 应用 |
+| `openprint/src/design/ai/shared/ai-assistant-logic.ts` | `diffSelectedControls`（`removedIds = lockedIds - returnedIds`）/ `resolveMode` |
+
+**关键限制：只覆盖「自由画布」`TemplateData`。** `grep -rn 'ReportDef\|CellTpl\|expand_type\|row_parent' openprint/src/ai/` → **0 命中**。非线性报表（本项目的差异化内核）**没有任何 AI 通路**。
+
+### 2. ⚠️ 同一份「控件类型」有**三份声明**，且已漂移（已复现）
+
+| 声明处 | 数量 | 缺 |
+| --- | --- | --- |
+| `core/spec/template.schema.json`（`definitions.component.type`） | 13 | —（**权威**，与 `types/control.ts:10-23` 的 `ControlType` 一致） |
+| `ai/normalize.ts:8-18` `VALID_TYPES` | 9 | `chart` `math` `signature` `labelgrid` |
+| `ai/schema.ts:14` 提示词散文 | 8 | `zone` `chart` `math` `signature` `labelgrid` |
+
+**后果（静默删用户的东西，已跑测试复现 4 failed / 2 passed）：**
+
+`normalizeControl` 对不在白名单里的 type **返回 `null`** → 被 `.filter` 丢掉 → `diffSelectedControls` 第 66 行把它算进 `removedIds` → `AiAssistantModal.tsx:250` `s.removeControl(id)` **删掉** → 第 251 行还弹**绿色成功**「已应用到选中控件（改 0 / 加 0 / 删 1）」。
+
+即：**选中画布上的图表控件让 AI 改配色 → 控件消失，界面说成功。**
+
+复现脚本（`normalize.ts` 只有 `import type`，运行期零依赖，可单文件隔离跑）：
+
+```bash
+W=/tmp/ai-proof && rm -rf $W && mkdir -p $W
+ln -sfn /Users/lushaohui/project/report/openprint/node_modules $W/node_modules
+cp /Users/lushaohui/project/report/openprint/src/ai/normalize.ts $W/
+cat > $W/proof.spec.ts <<'EOF'
+import { describe, it, expect } from 'vitest'
+import { normalizeTemplate } from './normalize'
+const mk = (type: string) => ({ document: { page: { width: 100, height: 150 },
+  sections: [{ type: 'body', components: [{ type, left: 0, top: 0, width: 40, height: 20 }] }] } })
+for (const t of ['text', 'zone', 'chart', 'math', 'signature', 'labelgrid']) {
+  it(`保留 ${t}`, () => {
+    const body = normalizeTemplate(mk(t)).document.sections.find(s => s.type === 'body')!
+    expect(body.components!.map(c => c.type)).toEqual([t])
+  })
+}
+EOF
+cd $W && node node_modules/vitest/vitest.mjs run     # → text/zone 过，chart/math/signature/labelgrid 返回 []
+```
+
+> **通用教训：一份协议有 N 处并行声明 = N 处会漂移，且漂移是静默的。**
+> 解法不是「记得同步」，是**写一条断言它们互相一致的闸**（并且证明这条闸能红）。
+
+### 3. AI 的测试**不在任何闸里**
+
+`scripts/ts-test.sh` 只拷 `openprint/src/report/*.ts`（脚本注释自己写了「白名单就是上次漏跑新 spec 的原因」）；`grep -rn 'src/ai|ai.spec' scripts/` → **0 命中**。
+→ `openprint/src/ai/ai.spec.ts` 的 7 条**没有任何脚本会跑**。§2 的 bug 能长期存活，这是直接原因。
+
+### 4. 错误响应：**两套方言**，且没有错误码
+
+```
+POST /api/report/render            → 400 text/plain 「模板中没有 sheet」
+GET  /api/reports/../../etc/passwd → 404 text/plain 「报表 id 不合法（只允许字母数字、-、_，最长 80）: …」
+PUT  /api/reports/save（缺 format） → 422 text/plain 「Failed to deserialize the JSON body into the target type:
+                                                 missing field `format` at line 1 column 51」
+```
+
+业务错误 = 中文散文（`print-server/src/report/mod.rs` 内 20+ 处 `(StatusCode::X, e)`，`e: String`）；axum `Json` 提取器错误 = **英文 serde 散文 + 422**。**时间格式也不统一**：`/api/reports` 的 `updatedAt` 是 UTC（`…Z`），`/health` 的 `time` 是本地（`+08:00`）。
+
+### 5. 「内层 / 外层」两种形状，端点名只差一点
+
+- `GET /api/report/sample-template` → **内层 `template`**：`{sheets, datasets}`（7 926 B）
+- `GET /api/reports/:id` / `PUT /api/reports/save` → **外层 `ReportDef`**，实测 10 键：
+  `format` `version` `id` `name` `description` `updatedAt` `template` `sources` `params` `options`
+
+**`ReportDef` 没有 JSON Schema**（唯一的 schema 描述的是自由画布）。`CellModel` 22 字段 / `CellTpl` 11 字段，形状只存在于 Rust 结构体里。
+
+### 6. 仓库里的样例报表**开箱不可跑**
+
+`print-server/reports/sales-by-region.json` 的 `sources[0]` 是 `{engine:"sqlite", database:"/tmp/report-demo.db", table:"sales", where:"region = ?", params:["华东"]}`，而该 db 不在仓库里：
+
+```
+POST /api/reports/sales-by-region/run → 400 「数据集「ds1」取数失败：sqlite 文件不存在: /tmp/report-demo.db」
+```
+
+### 7. 已有但「默认关 / 是散文」的自检通道（AI-first 的现成地基）
+
+- `RenderResponse.warnings: Option<Vec<String>>`（`mod.rs:103-106`）——注释自己写着「会静默产出错误数据的可疑情况…调用方应当展示给用户」。**是散文，且 `Option`。**
+- `dump=true` 返回展开轨迹（`seq | pos | 文本 <- 层次坐标 | 行父 | 列父`）——**agent 最好的自检通道，默认关。**
+- `/health` 暴露 `reportsDir` / `odbc`（feature 开关）——**很好的设计，但靠调用方主动去问。**
+
+### 8. `normalize.ts` 的坐标纠偏是启发式（会双向错）
+
+`normalize.ts:87-104`：`minLeft≈margin.left && minTop≈margin.top` 就整体平移。
+- **假阴性**：模型只错一个轴 → 不触发 → 整页偏移；
+- **假阳性**：合法设计若最左控件恰在 `x=margin.left`、最上恰在 `y=margin.top` → 被无端平移。
+
+提示词里要写加粗的「**坐标铁律**」（`ai/schema.ts:31`）本身就是「模型反复做错」的症状。
+
+### 9. 没有工具面
+
+`grep -rl 'mcp|modelcontextprotocol'`（排除 `node_modules`）→ **0 命中**。`main.rs:183-224` 共 **33** 条 `.route(`，全是给人/前端用的 REST。AI 层是**纯前端**、**不经 `print-server`** → 外部 agent 无法驱动本引擎。
+
+### 10. 结论口径（对外怎么说）
+
+**本项目已经是「AI 可验证」的，但不是「AI 可编写」的。** 可验证＝探针/故障注入/可判定不变量（这是 AI-first 的地基，多数项目没有）；不可编写＝AI 只挂在画布层，内核（`ReportDef`）对 AI 不透明，且三份协议声明已漂移。
+完整差距分析与分阶段改进路线：`AI优先-差距分析与改进方案.md`。
+

@@ -63,21 +63,25 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 （**自动转 `vue-tsc --build`**；openprint 的 tsconfig 是解决方案式，`tsc -p` **假绿**）。
 **长期红着的闸 = 没有闸**（曾红 116 条）。修法与坑见 §十七。
 
+## AI 层（**已有**，别当缺口）
+
+`openprint/src/ai/`（716 行）+ `AiAssistantModal.tsx`：提示词/few-shot/流式/**校验→回喂错误→重试**/归一化，三模式。**只覆盖自由画布**；`ReportDef` 完全没接。key 在 `localStorage`，纯前端直连。**`ai.spec.ts` 不在任何闸里**。详见 `AI优先-差距分析与改进方案.md` / §二十。
+
 ## 已完成（别再当缺口重复做）
 
 - **CSV 导出**：`POST /api/report/csv` + `GET /api/report/sample.csv`。RFC 4180 + UTF-8 BOM + CRLF。写 `text` 不写 `formula`。**CSV 注入（`=cmd|`）刻意不改写**（加 `'` 会改掉 `+86` 手机号）。
 - **分页不切合并格**：`merge_blocked_boundaries()`。**关键洞察：主格展开出来就是合并格** → 「不在合并格中间切页」==「组内不跨页」。代价：页大小不再严格等于 `rows_per_page`（宁超不切）。
 - **格子样式 + 条件格式**：`CellModel.style` → `GridCell.style` → xlsx `with_style()` + HTML `<td style>`。**刻意不给边框**（Univer 不渲染）。颜色只认 `#RRGGBB`，认不出**两端点都报 400**。条件格式（第一条命中生效）**无新渲染代码**。细节 §十四/§十五。
-- **HTML 预览画样式（#74）**：`to_html` 原来**不读** `GridCell.style` → 样式/条件格式预览里全看不到。现由 `html_style_attr()` 渲成 `<td style>`，`to_html` **返回 `Result`**（校验文案与 xlsx 逐字一致）。无样式时输出**逐字节不变**；坏样式在 xlsx 端点 **500 → 400**。细节 §十五。
+- **HTML 预览画样式（#74）**：`to_html` 原不读 `GridCell.style`，现渲成 `<td style>`；无样式时输出逐字节不变。细节 §十五。
 - **MySQL / MariaDB / SQL Server / Oracle 明确报错**：`unsupported_engine_name()`。注意 `ServerConfig::load()` **不调 `validate()`**（只有保存/试连调），手改配置写 mysql 会报误导性的「sqlite 文件不存在」。
 - **格子图片**：`CellTpl.image` / `CellModel.image`（**两槽都认**）→ `GridCell.image` → xlsx 真嵌入 + HTML `<img>`。只收 data URI（模板可分享 → 收路径 = 任意文件读取原语）。探针+反证 6 条。
-- **图表格**：`CellTpl.chart` / `CellModel.chart`（两槽都认）→ `GridCell.chart` → HTML 内联 SVG + xlsx **原生图表**。声明**模板坐标**。三条硬约定：**一个声明只画一份**（图片/条码相反）· **空值是空档不是 0** · xlsx 数写**表格下方隐藏列** → 图表是**导出那一刻的快照**。细节 §十。
+- **图表格**：`CellTpl.chart` / `CellModel.chart`（两槽都认）→ HTML 内联 SVG + xlsx **原生图表**，声明**模板坐标**。三条硬约定：**一个声明只画一份** · **空值是空档不是 0** · 图表是**导出那一刻的快照**。细节 §十。
 - **条码 / 二维码**：`CellTpl.barcode` / `CellModel.barcode`（两槽都认）→ `GridCell.barcode` → HTML 内联 SVG + xlsx **1 位灰度位图**（自研 PNG 编码器）。QR（**字节模式 + ECC M + v1~10**）+ Code128 全表。**展开行 N 行出 N 个**（同图片，**反图表**）。优先级 `图片 > 图表 > 条码` 收成**一个判据** `GridCell::graphic()`。设计器面板已接。细节 §十一。
 - **ODBC 引擎**：`db_odbc.rs`，可选 feature。**票据指令** `/print` 的 `esc`/`tsc`/`zpl` 已实现。
 - **报表参数**：`ReportDef.params` + `RunRequest.values`（按名绑）；与老 `RunRequest.params`（数据集名 → 位置数组）是两条通道。未知/必填缺失/引用解析不出值**一律报错**；**未知参数检查必须先于必填检查**（否则 typo 被报成「region 必填」）。
-- **报表页面设置**（纸张/方向/边距/页码/居中）：`PageConfig` 后 5 个 `Option` 字段 → HTML `@page`（**只吐作者明写的项**）+ xlsx 每 sheet 的 `pageSetup`/`pageMargins`/`oddFooter`。**页码只能服务端烤进 HTML**（PDF 走 Chrome CLI）。**B5 = JIS 182×257**（Excel 码 13）。**背景 / 水印没做**。细节 §十六。
+- **报表页面设置**（纸张/方向/边距/页码/居中）：`PageConfig` 后 5 个 `Option` → HTML `@page`（只吐作者明写的项）+ xlsx `pageSetup`/`pageMargins`/`oddFooter`。页码只能服务端烤进 HTML。**B5 = JIS 182×257**（Excel 码 13）。**背景 / 水印没做**。细节 §十六。
 - **Word 导出（B6）**：`POST /api/report/docx` → `docx.rs` + `zip.rs`（**只写 method 0**；CRC-32 与 PNG 共用）。**本机没 Word/WPS** → 「Word 能打开」**验不了**，只能用**四条可判定不变量**替代；**失败是全有全无**。细节 §十八。
-- **数据文件 / 接口数据集（C 类）**：`RenderRequest.datasets` 服务端早通着。前端 `dataset-import.ts`（CSV/TSV/JSON + 数值「往返一致」推断）+ `dataset-fetch.ts`（URL **前端直连**＝不造 SSRF）+ `parseWorkbookFile`（xlsx 用 **`raw: true` + `cellDates`**；`raw: false` 把货币格读成 `"¥1,234.50"` → **合计都错**）。设计器已接「数据库 / 文件·接口」切换。细节 §十九。
+- **数据文件 / 接口数据集（C 类）**：`RenderRequest.datasets` 早通着。前端 `dataset-import.ts` + `dataset-fetch.ts`（URL **前端直连**＝不造 SSRF）+ `parseWorkbookFile`（xlsx 必须 **`raw: true` + `cellDates`**；`raw: false` 把货币格读成字符串 → **合计都错**）。细节 §十九。
 
 ## 局限 / 已知取舍
 
