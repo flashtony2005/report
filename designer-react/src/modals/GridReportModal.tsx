@@ -105,6 +105,8 @@ import {
   type MergeRect,
   type PageConfig,
   type RenderResponse,
+  type RenderIssue,
+  type IssueLevel,
   type RenderedSheet,
   type ReportDef,
   type ReportOptions,
@@ -1575,6 +1577,23 @@ export function CellModelEditor({
   )
 }
 
+/**
+ * 诊断级别 → 界面文案。**只有这一处**，别在 JSX 里再散落一遍中文 ——
+ * 散落后改文案就会漏掉一处，而漏掉的那处**不会报错**。
+ */
+const ISSUE_LEVEL_LABEL: Record<IssueLevel, string> = {
+  error: '结果不可信',
+  warning: '告警',
+  info: '提示',
+}
+
+/** 级别 → `Typography.Text` 的 `type`。`error` 用 `danger`（红），一眼能分辨。 */
+const ISSUE_TEXT_TYPE: Record<IssueLevel, 'danger' | 'warning' | 'secondary'> = {
+  error: 'danger',
+  warning: 'warning',
+  info: 'secondary',
+}
+
 export default function GridReportModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const univerRef = useRef<{ dispose: () => void } | null>(null)
@@ -1779,6 +1798,26 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const [dump, setDump] = useState(false)
   const [dumpText, setDumpText] = useState('')
   const [warnings, setWarnings] = useState<string[]>([])
+  /**
+   * 服务端的分级诊断（`RenderResponse.issues`）。与 `warnings` **并存**：
+   * `warnings` 是它的向后兼容视图（`level >= warning` 的 message，含 `[sheet] ` 前缀），
+   * `issues` 多给了 `level` 与稳定 `code`。
+   *
+   * **界面用 `issues` 而不是 `warnings`**，理由有两条，缺一条这个通道就白做：
+   * 1. `error` 级是「**这张表的结果不可信**」（落位冲突整格数据被丢、非收敛、
+   *    跨数据集列主格）—— 必须**拦住导出**，不能让作者当成品发出去；
+   * 2. `info` 级按定义**不进 `warnings`**（收敛了但花了 ≥3 轮这类提示），
+   *    只读 `warnings` 的界面**根本看不到它**。
+   */
+  const [issues, setIssues] = useState<RenderIssue[]>([])
+  /**
+   * 「被拦住导出」的提示。
+   *
+   * 单独一个 state 而不是复用 `error`：`error` 那个 Alert 的标题写死了
+   * 「渲染失败，下面为服务端生成的 HTML 兜底」—— 导出被拦下时那句话是**错的**
+   * （渲染是成功的，只是结果不可信）。
+   */
+  const [blockNotice, setBlockNotice] = useState('')
   /**
    * 报表参数：非 null 表示「正在等用户填查询条件」。
    * 报表声明了参数时，执行前先把表单弹出来 —— 不然用户按了执行却不知道
@@ -2248,6 +2287,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         if (!res.ok) throw new Error(text || `执行失败 ${res.status}`)
         const data = JSON.parse(text) as RenderResponse
         setWarnings(data.warnings ?? [])
+        setIssues(data.issues ?? [])
+        setBlockNotice('')
         setDumpText(data.dump ?? '')
         lastRenderRef.current = { data, headerRows: rows }
         const pageList = data.pages ?? []
@@ -2372,6 +2413,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       }
       // 告警与展开中间结果：只有 dump=true 时服务端才回 dump 字段
       setWarnings(data.warnings ?? [])
+      setIssues(data.issues ?? [])
+      setBlockNotice('')
       setDumpText(data.dump ?? '')
       return { data, headerRows: built.kind === 'sample' ? 2 : built.headerRows }
     } catch (e) {
@@ -2382,8 +2425,25 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     }
   }, [buildRequest])
 
+  /**
+   * `error` 级诊断 = **结果不可信** → 拦住导出（评审那句「让错误结果不能被当成成功结果」）。
+   * 用 `useMemo` 而不是直接 filter：它进了 `doExport` 的依赖数组，
+   * 每次渲染都新建数组会让那个 `useCallback` 完全失去意义。
+   */
+  const blockingIssues = useMemo(() => issues.filter((i) => i.level === 'error'), [issues])
+
   /** 导出 xlsx：与渲染同一份请求体，服务端直接返回文件流 */
   const doExport = useCallback(async () => {
+    // 按钮本身也 `disabled`，这里是**第二道**闸 ——
+    // 防止将来多一个调用点（菜单 / 快捷键 / 批量导出）绕过按钮的禁用态。
+    if (blockingIssues.length > 0) {
+      setBlockNotice(
+        `结果不可信，已拦住导出（${blockingIssues.length} 处）：` +
+          blockingIssues.map((i) => `${i.pos ? `[${i.pos}] ` : ''}${i.message}`).join('；'),
+      )
+      return
+    }
+    setBlockNotice('')
     try {
       const built = buildRequest()
       if (built.kind === 'error') throw new Error(built.message)
@@ -2418,7 +2478,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [buildRequest])
+  }, [buildRequest, blockingIssues])
 
   /**
    * 渲染 + 重建 Univer。
@@ -2591,9 +2651,26 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           <Button size="small" onClick={() => void doRender()} data-testid="grid-report-refresh">
             重新渲染
           </Button>
-          <Button size="small" onClick={() => void doExport()} data-testid="grid-report-export">
-            导出 xlsx
-          </Button>
+          {/* 结果不可信时禁用。Tooltip 必须套一层 `<span>` —— 禁用的 antd Button
+              不触发鼠标事件，直接包 Tooltip 的话提示根本弹不出来。 */}
+          <Tooltip
+            title={
+              blockingIssues.length > 0
+                ? `结果不可信（${blockingIssues.length} 处 error 级诊断），先修掉上面标红的问题`
+                : ''
+            }
+          >
+            <span>
+              <Button
+                size="small"
+                disabled={blockingIssues.length > 0}
+                onClick={() => void doExport()}
+                data-testid="grid-report-export"
+              >
+                导出 xlsx
+              </Button>
+            </span>
+          </Tooltip>
           <Button size="small" onClick={onClose} data-testid="grid-report-close">
             关闭
           </Button>
@@ -3438,7 +3515,49 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         />
       )}
 
-      {warnings.length > 0 && (
+      {blockNotice && (
+        <Alert
+          type="error"
+          showIcon
+          title="已拦住导出：这张表的结果不可信"
+          description={blockNotice}
+          style={{ marginBottom: 12 }}
+          data-testid="grid-report-export-blocked"
+        />
+      )}
+
+      {issues.length > 0 && (
+        <Alert
+          type={blockingIssues.length > 0 ? 'error' : 'warning'}
+          showIcon
+          title={
+            blockingIssues.length > 0
+              ? `模板有 ${blockingIssues.length} 处问题会让结果不可信 —— 已拦住导出`
+              : '模板诊断（表照常出，但下面这些要看一下）'
+          }
+          description={
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {issues.map((it, i) => (
+                <li key={i}>
+                  <Typography.Text type={ISSUE_TEXT_TYPE[it.level]} strong={it.level === 'error'}>
+                    [{ISSUE_LEVEL_LABEL[it.level]}]
+                  </Typography.Text>{' '}
+                  {it.pos && <Typography.Text code>{it.pos}</Typography.Text>} {it.message}
+                </li>
+              ))}
+            </ul>
+          }
+          style={{ marginBottom: 12 }}
+          data-testid="grid-report-issues"
+        />
+      )}
+
+      {/*
+        兼容回退：服务端是**独立进程**（用户自己起的 `print-server`），
+        所以「新界面 + 旧服务端」是真会出现的组合 —— 那种响应里只有 `warnings`。
+        此时按老样子平铺展示，而不是**什么都不显示**（那才是静默失败）。
+      */}
+      {issues.length === 0 && warnings.length > 0 && (
         <Alert
           type="warning"
           showIcon

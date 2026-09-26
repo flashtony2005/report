@@ -1446,7 +1446,7 @@ TS 镜像 `grid-report.ts` 必须同步（`mirror-check.py` 盯着 `RenderRespon
 | 2 | 无变化 → **收敛，共 3 轮** |
 
 `dump_text` 改成按级分节（`!! 结果不可信` / `!! 告警` / `!! 诊断`）——
-`Info` 目前**唯一**的消费方。
+`Info` 有**两个**消费方：这个 dump，以及设计器界面（见下）。
 
 ### 三处故障注入（都实测红）
 
@@ -1456,8 +1456,55 @@ TS 镜像 `grid-report.ts` 必须同步（`mirror-check.py` 盯着 `RenderRespon
 | `warnings` 派生去掉 `[sheet] ` 前缀 | **3 条红**，含**两条既有测试** |
 | `is_warning_or_worse` 恒真 | **2 条红**（Info 漏进 warnings） |
 
-### 已知边界
+### ✅ 已接进设计器界面（2026-09-26）
 
-设计器 UI **只读 `warnings`**（`GridReportModal` 的 `setWarnings(data.warnings)`）
-→ `Info` 界面上看不见，要看它得 `dump=true`。把 `issues` 接进界面是**下一步**。
+`GridReportModal` 三条渲染路径都 `setIssues(data.issues ?? [])`，按级渲染：
+
+| 级别 | 文案 | 表现 |
+| --- | --- | --- |
+| `error` | 结果不可信 | 红 Alert + **禁用导出按钮** + `blockNotice` |
+| `warning` | 告警 | 黄 Alert，不拦 |
+| `info` | 提示 | 灰 Alert，不拦 |
+
+- 级别 → 文案**只有一处**（模块级 `ISSUE_LEVEL_LABEL` / `ISSUE_TEXT_TYPE` 两个表）。
+- `warnings` 回退分支保留（条件 `issues.length === 0 && warnings.length > 0`）——
+  服务端是**独立进程**，「新界面 + 旧服务端」是真会出现的组合。
+- **导出两道闸，条件同一个**（`blockingIssues.length > 0`）：按钮 `disabled` + `doExport` 开头守卫。
+  ⚠️ **守卫当前从界面走不到** —— `doExport` 唯一调用点就是那个按钮，而按钮同条件禁用。
+  它是留给「将来多一个调用点」的保险。**它有没有牙齿只能靠注入证明**。
+- 用例：`designer-react/src/modals/grid-report-issues.spec.tsx`（4 条）。
+  ⚠️ **断言顺序是有意的**：先断言**契约**（没发出 xlsx）再断言**机制**（按钮 `disabled`）。
+  反过来会**短路** —— 实测注入「只拆 `disabled`」时红在 `disabled` 那行、后面断言根本没跑，
+  于是「守卫拦不拦得住」永远验不到。
+- 注入：`scripts/fault-inject-issues-ui.py` → **5/5 抓到**，还原逐字节一致。
+  其中「按钮禁用 + 守卫一起拆」必须红在「结果不可信却把 xlsx 发出去了」上（证明守卫在干活）。
+
+### ⚠️ designer-react 全量套件：**默认并行下有 16 条假红**（不是本次改动造成）
+
+`npm run test:app`（43 文件 / 375 用例）实测：
+
+| 跑法 | 结果 | 耗时 |
+| --- | --- | --- |
+| 默认（文件级并行） | **16 失败 / 359 通过** | 238s |
+| `--no-file-parallelism`（串行） | **0 失败 / 375 通过** | 346s |
+| 那 4 个失败文件**各自单跑** | **4/4 全绿** | 各 14~21s |
+
+失败文件：`richtext` / `p42-panels` / `flow-label` / `TopToolbar`。
+失败形态：`Test timed out` / `expected '' to contain '标签网格'` ——
+「渲染还没跑完就被判死」。那些用例里有真实 `setTimeout`（`flow-label` 有 `setTimeout(900)`）。
+→ 判定为**抢 CPU 造成的假红**，与 2026-09-23 那条「这套 UI 用例别和 cargo 并发跑」同源。
+→ **`--no-file-parallelism` 是正确性要求，不是性能选项。别把这种红当回归去「修」。**
+
+**所以 `check-all.sh` 不能加全量 `test:app`**（346s 太贵），
+但**「改了弹窗没有任何闸」这件事已经堵上了**：新增 `scripts/ts-test-designer.sh`，
+作为 `check-all.sh` **第 7 道闸**（带 `grid-report-` 过滤 = 11 文件 / 136 用例 / ~160s；
+无参数 = 全量 43 文件）。`ts-test.sh` 覆盖不到 modal —— 它只跑
+`openprint/src/report/*.ts`（node 环境、无 DOM），modal 要 jsdom + antd + React。
+
+**已知覆盖缺口（明写）**：第 7 道只覆盖 `grid-report-*`，
+`designer-react` 另外那 32 个 spec（canvas / panels / toolbar / stores…）仍不在聚合跑器里。
+
+### 已知边界（仍然成立）
+
 HTTP 层错误（§13.2）**仍然没有错误码** —— 分级只覆盖渲染结果内部的诊断。
+`issues.code` 只用于展示与定位，界面**没有**按 code 分支。

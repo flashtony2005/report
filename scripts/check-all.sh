@@ -34,10 +34,14 @@
 #
 # ## 不含什么
 #
-# 13 个 `fault-inject-*.py` 与 13 个 `verify-*.py` **不在这里**：前者要改源码、
+# 15 个 `fault-inject-*.py` 与 13 个 `verify-*.py` **不在这里**：前者要改源码、
 # 后者要起真服务（127.0.0.1:18888）。它们按需单独跑，改哪个特性跑哪一个。
 #   ls scripts/fault-inject-*.py   # 注入：证明某条闸真的有牙齿
 #   ls scripts/verify-*.py         # 探针：对活服务做端到端验证
+#
+# （这两个数字以前写的是 13 / 13。`verify` 确实是 13，`fault-inject` **早就已经是 14**
+#  —— 加了新脚本没同步这个注释，于是数字漂了一格。2026-09-26 加了
+#  `fault-inject-issues-ui.py` 之后一并核成 15。）
 #
 # 退出码：0 / 1 / 2，语义见上。
 set -uo pipefail
@@ -54,11 +58,19 @@ for a in "$@"; do
 会跑的闸（按执行顺序）：
   1. python3 scripts/mirror-check.py           Rust↔TS 契约逐字段对账（亚秒级）
   2. bash    scripts/ts-check.sh               逐文件类型检查（--noResolve，快）
-  3. bash    scripts/ts-test.sh                前端单测（借外部 vitest）
+  3. bash    scripts/ts-test.sh                前端纯函数单测（借外部 vitest，node 环境）
   4. bash    scripts/ts-project-check.sh               整项目类型检查 · designer-react
   5. bash    scripts/ts-project-check.sh openprint     整项目类型检查 · openprint（vue-tsc --build）
   6. cargo   test --bin print-server           Rust 单测
+  7. bash    scripts/ts-test-designer.sh grid-report-  设计器 UI 单测（jsdom，串行，~160s）
 --fast 只跑 1、2。
+
+第 7 道**带过滤参数**（`grid-report-`，11 文件 / 136 用例），不是整套 designer-react：
+整套要 **~346s**（且必须 `--no-file-parallelism`，见 ts-test-designer.sh 顶部）。
+日常改的报表弹窗全在 `grid-report-*` 里，先用这个把「改了弹窗没人管」堵上；
+要全量就自己跑 `bash scripts/ts-test-designer.sh`（无参数 = 全部）。
+⚠️ 这是**已知的覆盖缺口**：`designer-react` 另外那 32 个 spec 文件（canvas / panels /
+toolbar / stores…）仍然不在本脚本里 —— 不是「没必要」，是那 346s 太贵。
 EOT
       exit 0
       ;;
@@ -110,32 +122,39 @@ printf '\033[1mcheck-all\033[0m（%s）\n' "$ROOT"
 # 唯一能发现 Rust↔TS 字段/清单漂移的闸。排第一是因为它亚秒级且零依赖 ——
 # 它红了多半意味着后面几个小时的检查都白跑。
 if need python3 "mirror-check.py"; then
-  run "1/6 mirror-check（Rust↔TS 契约）" python3 scripts/mirror-check.py
+  run "1/7 mirror-check（Rust↔TS 契约）" python3 scripts/mirror-check.py
 fi
 
 # ---------------------------------------------------- 2. 逐文件类型检查（快）
 
-run "2/6 ts-check（逐文件类型）" bash scripts/ts-check.sh
+run "2/7 ts-check（逐文件类型）" bash scripts/ts-check.sh
 
 if [ "$FAST" = 1 ]; then
-  printf '\n（--fast：跳过 3~6）\n'
+  printf '\n（--fast：跳过 3~7）\n'
 else
 
-# ---------------------------------------------------- 3. 前端单测
+# ---------------------------------------------------- 3. 前端纯函数单测
 
-run "3/6 ts-test（前端单测）" bash scripts/ts-test.sh
+run "3/7 ts-test（前端纯函数单测）" bash scripts/ts-test.sh
 
 # ---------------------------------------------------- 4/5. 整项目类型检查（慢）
 
-run "4/6 ts-project-check（designer-react）" bash scripts/ts-project-check.sh
-run "5/6 ts-project-check（openprint）"      bash scripts/ts-project-check.sh openprint
+run "4/7 ts-project-check（designer-react）" bash scripts/ts-project-check.sh
+run "5/7 ts-project-check（openprint）"      bash scripts/ts-project-check.sh openprint
 
 # ---------------------------------------------------- 6. Rust 单测
 
 if need cargo "cargo test"; then
-  run "6/6 cargo test（print-server）" \
+  run "6/7 cargo test（print-server）" \
     cargo test --manifest-path print-server/Cargo.toml --bin print-server
 fi
+
+# ---------------------------------------------------- 7. 设计器 UI 单测（最贵，排在最后）
+
+# 排在最后是因为它 **~160s**，比前面几道加起来还贵（「便宜的排前面」那条规则的直接后果）。
+# 只跑 `grid-report-`：整套 designer-react 要 ~346s，见 ts-test-designer.sh 顶部。
+run "7/7 ts-test-designer（报表弹窗 spec）" \
+  bash scripts/ts-test-designer.sh grid-report-
 
 fi
 
@@ -146,7 +165,7 @@ printf '通过 %d · 失败 %d · 没跑成 %d\n' "$passed" "$failed" "$skipped"
 [ "${#FAILED_NAMES[@]}"  -gt 0 ] && printf '失败：%s\n'   "${FAILED_NAMES[*]}"
 [ "${#SKIPPED_NAMES[@]}" -gt 0 ] && printf '没跑成：%s\n' "${SKIPPED_NAMES[*]}"
 
-printf '\n（不含 13 个 fault-inject / 13 个 verify —— 要改源码 / 起服务，按需单独跑：`ls scripts/fault-inject-*.py`）\n'
+printf '\n（不含 15 个 fault-inject / 13 个 verify —— 要改源码 / 起服务，按需单独跑：`ls scripts/fault-inject-*.py`）\n'
 
 case $worst in
   0) printf '\033[32m全绿\033[0m\n' ;;
