@@ -765,8 +765,49 @@ export interface RenderResponse {
   /**
    * 会静默产出错误数据的可疑情况（父格查不到、表达式解析失败等）。
    * 不中断渲染，但调用方应当展示给用户。
+   *
+   * **向后兼容视图**：内容是 `issues` 里 `level >= 'warning'` 那些的 `message`，
+   * 与老版本逐字一致（`'error'` 也在里面 —— 升级级别不会让消息消失）。
+   * 需要分级（比如「结果不可信，拦住导出」）就用 `issues`。
    */
   warnings?: string[] | null
+  /**
+   * 结构化诊断，带级别与稳定 `code` —— 与 `warnings` **并存**（增量，不是替换）。
+   *
+   * 与 `warnings` 的两点差别：
+   * 1. `level` 分三级，能区分「提示」与「结果不可信」；
+   * 2. 带 `code`（据此分类，**不要**用 `message.includes(..)` 判断严重程度 ——
+   *    文案一改那种判据就静默失效），并带 `sheet` / `pos` 便于定位。
+   *
+   * 注意 `'info'` 级**只在这里**出现，不进 `warnings`。
+   */
+  issues?: RenderIssue[] | null
+}
+
+/**
+ * 诊断级别。`error` = **这张表的结果不可信**，调用方应当拦住导出。
+ * 顺序即严重程度（Rust 侧 `IssueLevel` 的 `Ord` 与之一致）。
+ */
+export type IssueLevel = 'info' | 'warning' | 'error'
+
+/**
+ * 诊断 code 词表。与 Rust 侧 `print-server/src/report/issue.rs` 的
+ * `CODE_*` 常量一一对应（那边有钉子测试 `codes_table_is_pinned_and_names_the_ts_mirror`）。
+ *
+ * `generic` 是还没细分的旧告警站点用的兜底值 —— 它会长期存在，别当成错误。
+ */
+export type IssueCode = 'layout_collision' | 'nonconvergent' | 'fixpoint_rounds' | 'generic'
+
+/** 一条诊断。字段与 Rust 侧 `Issue` 逐字段对应（mirror-check.py 盯着 `RenderResponse`） */
+export interface RenderIssue {
+  level: IssueLevel
+  /** 稳定标识：前端据此分类 / 定位 / 决定弹什么。不要拿 `message` 当判据。 */
+  code: IssueCode | string
+  /** 出问题的 sheet 名（多 sheet、或 loop_field 展开成多张表时用得上） */
+  sheet?: string | null
+  /** 出问题的格子**模板坐标**（如 "B3"）；整表级的问题不带 */
+  pos?: string | null
+  message: string
 }
 
 export type ExpandDir = 'r' | 'c'

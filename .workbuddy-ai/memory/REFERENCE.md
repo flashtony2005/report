@@ -1319,3 +1319,82 @@ decls.retain(|(_, _, pos, _, _)| seen.insert(pos.clone()));   // engine.rs:1356-
 `expr::parse` 在 `ensure_value` 里**每实例每轮都重解析**（`engine.rs:2059`），
 **无 AST 缓存**（grep `ast_cache` / `HashMap<String, Expr>` → 无）。
 10000 行 × 4 轮 = 解析 4 万次。加 AST 缓存几行代码，**不必等模板编译层**。
+
+---
+
+## 二十四、分级诊断通道 `Issue`（2026-09-26 落地）
+
+`print-server/src/report/issue.rs`。用户批准的顺序 `② → ① → 结构化错误 → ③④` 的第三步。
+
+```rust
+enum IssueLevel { Info, Warning, Error }   // Ord 有意：level >= Warning 就进 warnings
+struct Issue { level, code: String, sheet: Option<String>, pos: Option<String>, message }
+struct IssueSink<'a>(&'a mut Vec<Issue>);  // 字段级借用包装（见下）
+```
+
+### 核心结构决定：`warnings` 是 `issues` 的**派生视图**
+
+老代码把 `[sheet] ` 前缀**拼进消息字符串**（`format!("[{}] {}", sheet, w)`）。
+`issues` 若另存一份消息 = 「同一份事实声明两遍」→ 必然漂移。
+
+**改法**：消息不带前缀，归属放 `sheet` 字段，末尾统一派生 `warnings`：
+
+```rust
+let warnings: Vec<String> = issues.iter()
+    .filter(|i| i.is_warning_or_worse())
+    .map(|i| match &i.sheet { Some(s) => format!("[{s}] {}", i.message), None => i.message.clone() })
+    .collect();
+```
+
+于是「某条告警只进 `warnings`、不进 `issues`」**在结构上不可能发生**。
+连带的必要改动：`loop_groups` / `check_paper_consistency` 的签名从
+`&mut Vec<String>` → `&mut Vec<Issue>`，否则那几条会**只进 warnings**（又一个静默缺口）。
+
+`RenderResponse`：`warnings` **保留**（前端零改动）+ 增量 `issues`。
+TS 镜像 `grid-report.ts` 必须同步（`mirror-check.py` 盯着 `RenderResponse`，不加就红）。
+
+### ⚠️ 借用陷阱：`Engine::warn(&mut self)` 在循环里编不过
+
+`expand_sheet` 里 `for (i, inst) in self.insts.iter().enumerate()` 循环体要记诊断。
+`self.warnings.push(..)` 只借**一个字段** → 一直合法；换成 `self.warn(..)`（借整个 `*self`）
+→ **6 处 E0502**。
+
+解法：`IssueSink(&mut self.issues)`，循环里用**临时值**形式
+（借用只活在那一条语句里）。**这个包装的存在理由是借用粒度，不是抽象。**
+
+### 级别分配
+
+| code | 级别 | 触发 |
+| --- | --- | --- |
+| `layout_collision` | Error | 落位冲突（缺陷 ①） |
+| `nonconvergent` | Error | 4 轮内没稳定（缺陷 ②） |
+| `fixpoint_rounds` | Info | 收敛了但花了 ≥3 轮 |
+| `generic` | Warning | 还没细分的旧站点（长期存在，别当错误） |
+
+**`Info` 刻意要有真生产者**（本项目不接受死枚举）。找到的那个是「3 轮才稳定」。
+
+**构造 3 轮收敛模板的坑**：自我引用的条件（如 `COUNTA(B1) <= 1`）**只会震荡**，
+必须用**单调链条**才收敛。可用的链：
+
+| 轮 | 发生什么 |
+| --- | --- |
+| 0 | A1 的 `row_test = $B1 >= 20` 删掉华东(10)；本轮 `C1 = COUNTA(B1)` 还是 3 |
+| 1 | `C1` 重算成 2 → D1 的 `row_test = $C1 >= 3` 由真变假 → 删掉 D1 整组 |
+| 2 | 无变化 → **收敛，共 3 轮** |
+
+`dump_text` 改成按级分节（`!! 结果不可信` / `!! 告警` / `!! 诊断`）——
+`Info` 目前**唯一**的消费方。
+
+### 三处故障注入（都实测红）
+
+| 注入 | 结果 |
+| --- | --- |
+| `fail_at` 里 `Error` → `Warning` | **3 条红**（含 E2E），「必须是 Error 级，实际：Warning」 |
+| `warnings` 派生去掉 `[sheet] ` 前缀 | **3 条红**，含**两条既有测试** |
+| `is_warning_or_worse` 恒真 | **2 条红**（Info 漏进 warnings） |
+
+### 已知边界
+
+设计器 UI **只读 `warnings`**（`GridReportModal` 的 `setWarnings(data.warnings)`）
+→ `Info` 界面上看不见，要看它得 `dump=true`。把 `issues` 接进界面是**下一步**。
+HTTP 层错误（§13.2）**仍然没有错误码** —— 分级只覆盖渲染结果内部的诊断。

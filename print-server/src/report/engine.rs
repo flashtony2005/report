@@ -8,6 +8,7 @@
 
 use crate::report::chart;
 use crate::report::expr::{self, BinOp, CmpOp, Coord, Expr, Prop};
+use crate::report::issue::{self, Issue, IssueLevel, IssueSink};
 use crate::report::model::*;
 use serde_json::Value as JsonValue;
 use std::cell::{Ref, RefCell};
@@ -761,11 +762,15 @@ pub struct Engine {
     roots: Vec<usize>,
     /// 布局递归当前深度（见 MAX_LAYOUT_DEPTH）
     layout_depth: usize,
-    /// 可疑但不必中断渲染的情况（父格查不到、表达式解析失败等）
+    /// 可疑但不必中断渲染的情况（父格查不到、表达式解析失败等）—— **分级**存放。
     ///
     /// 这些问题的共同点是**静默产出错误数据**：既不报错也不崩溃，只是结果悄悄变少或变空，
     /// 靠读输出很难发现。收集起来交给调用方，别让它们烂在渲染过程里。
-    warnings: Vec<String>,
+    ///
+    /// **为什么不是 `Vec<String>`**：那样分不出「提示」与「结果不可信」，
+    /// 前端只能全弹或全不弹。分级见 `issue.rs` 顶部。
+    /// 对外视图：`warnings()`（`level >= Warning`，向后兼容）+ `issues()`（全量，带 code）。
+    issues: Vec<Issue>,
     /// 展示文本覆盖（与 insts 一一对应）：`formatExpr` / `dict` 的产出。
     /// None 表示没配，按既有 `display()` 口径出文本。
     fmt_text: Vec<Option<String>>,
@@ -843,7 +848,7 @@ pub struct Engine {
     var_misses: RefCell<BTreeSet<String>>,
     /// 求值期发现、**渲染结束后转成告警**的「写法不受支持」消息（去重）。
     ///
-    /// 为什么要它：`eval_call` 是 `&self`，没法直接 `self.warnings.push`。
+    /// 为什么要它：`eval_call` 是 `&self`，没法直接 `self.warn(..)`。
     /// 而某些「组合写法」目前确实没实现（如 `ACCSUM` 接过滤表达式），
     /// 老代码是 `_ => Val::Null` —— 结果是**一格空白**，作者只会以为「没数据」。
     /// 静默变空是本项目一直在抓的那类失败，所以这里记一笔、末尾转告警。
@@ -870,7 +875,7 @@ impl Engine {
             by_pos: BTreeMap::new(),
             roots: Vec::new(),
             layout_depth: 0,
-            warnings: Vec::new(),
+            issues: Vec::new(),
             fmt_text: Vec::new(),
             pos_index: RefCell::new(HashMap::new()),
             deps_done: RefCell::new(HashSet::new()),
@@ -885,9 +890,54 @@ impl Engine {
         }
     }
 
-    /// 渲染过程中收集到的告警
-    pub fn warnings(&self) -> &[String] {
-        &self.warnings
+    /// 渲染过程中收集到的告警（`level >= Warning`），**向后兼容视图**。
+    ///
+    /// 与老版本的差别只有返回类型（`&[String]` → `Vec<String>`）：
+    /// 内容逐字不变，而且 `Error` **也在这里** —— 升级级别不会让任何消息消失。
+    ///
+    /// 二进制内部不用它（`render()` 自己从 `issues` 派生 `RenderResponse.warnings`，
+    /// 保证两者不可能漂移），但它是引擎的对外只读视图：
+    /// 测试断言告警文案、嵌入方（CLI / 别的服务）「只要字符串」时都用它。
+    #[allow(dead_code)]
+    pub fn warnings(&self) -> Vec<String> {
+        self.issues
+            .iter()
+            .filter(|i| i.is_warning_or_worse())
+            .map(|i| i.message.clone())
+            .collect()
+    }
+
+    /// 全部诊断（含 `Info`），带级别与稳定 `code` —— 给需要分级的调用方。
+    pub fn issues(&self) -> &[Issue] {
+        &self.issues
+    }
+
+    // ───────── 记诊断的四个入口 ─────────
+    //
+    // 加这四个 helper 的**真正目的**是让「绕过分级通道」不可能：
+    // 字段换成 `Vec<Issue>` 之后，`self.warnings.push(..)` 这种写法直接编译不过。
+    //
+    // 逻辑都在 `IssueSink` 里（`issue.rs`），这里只做转发 ——
+    // 循环体里必须用 `IssueSink(&mut self.issues)` 的临时值形式，理由见那边的注释。
+
+    /// 通用告警（还没细分的旧站点）。结果不受影响，只是某处降级了。
+    fn warn(&mut self, message: impl Into<String>) {
+        IssueSink(&mut self.issues).warn(message);
+    }
+
+    /// 带 `code` 与 `pos` 的告警
+    fn warn_at(&mut self, code: &str, pos: impl Into<String>, message: impl Into<String>) {
+        IssueSink(&mut self.issues).warn_at(code, pos, message);
+    }
+
+    /// **结果不可信**：作者不能把这张表当成品。带 `pos`（能定位到格就带上）。
+    fn fail_at(&mut self, code: &str, pos: Option<String>, message: impl Into<String>) {
+        IssueSink(&mut self.issues).fail_at(code, pos, message);
+    }
+
+    /// 纯诊断（不进 `warnings`）
+    fn info(&mut self, code: &str, message: impl Into<String>) {
+        IssueSink(&mut self.issues).info(code, message);
     }
 
     /// 这个格子读哪份数据：`model.ds` 写了且存在就用它，否则兜底到 primary。
@@ -920,7 +970,7 @@ impl Engine {
     ) -> Vec<usize> {
         let Some(key) = model.join_on.clone() else {
             let pds = self.insts[parent_idx].ds.clone();
-            self.warnings.push(format!(
+            self.warn(format!(
                 "{pos} 绑的是 {child_ds}，但它的父格在 {pds}（跨数据集）。\
                  跨数据集必须写 join_on 指定关联字段（取子数据集里与父行同值的行），\
                  否则本格取不到值"
@@ -936,7 +986,7 @@ impl Engine {
             .and_then(|row| row.get(&key))
             .cloned();
         let Some(pv) = pv else {
-            self.warnings.push(format!(
+            self.warn(format!(
                 "{pos} 的 join_on 字段「{key}」在父数据集 {pds_name} 的当前行里取不到值"
             ));
             return Vec::new();
@@ -958,7 +1008,7 @@ impl Engine {
         self.insts.clear();
         self.by_pos.clear();
         self.roots.clear();
-        self.warnings.clear();
+        self.issues.clear();
         self.layout_depth = 0;
         self.pos_index.borrow_mut().clear();
         self.deps_done.borrow_mut().clear();
@@ -986,7 +1036,9 @@ impl Engine {
         // 1. 一条坏规则只该告警**一次**，不是每行一次；
         // 2. 编译结果按 `(tpl_row, tpl_col)` 索引，阶段 4 填格时按实例的模板坐标查表。
         let (conds, cond_warns) = compile_sheet_conditionals(sheet);
-        self.warnings.extend(cond_warns);
+        for w in cond_warns {
+            self.warn(w);
+        }
 
         // ---- 阶段 1：按模板顺序（行升序、列升序）展开，父格必然先于子格 ----
         for (r, row) in sheet.rows.iter().enumerate() {
@@ -1035,7 +1087,7 @@ impl Engine {
                         // 自己声明自己当主格：和「父格不存在」同样处理。
                         // 不能走上面那条 —— 那会让整张表悄悄渲染成空的。
                         None | Some(_) => {
-                            self.warnings.push(format!(
+                            self.warn(format!(
                                 "{pos} 声明的 row_parent \"{p}\" 不存在——父格必须先于子格创建，已退回挂根（该格不会跟随主格展开）"
                             ));
                             vec![None]
@@ -1051,7 +1103,7 @@ impl Engine {
                         // 同上：列主格展开成 0 条时子格不出，但自引用仍退回挂根
                         Some(_) if *p != pos => Vec::new(),
                         None | Some(_) => {
-                            self.warnings.push(format!(
+                            self.warn(format!(
                                 "{pos} 声明的 col_parent \"{p}\" 不存在——父格必须先于子格创建，已退回挂根"
                             ));
                             vec![None]
@@ -1204,7 +1256,7 @@ impl Engine {
             // export_formula：翻得出来就带公式（xlsx 里可继续算），翻不出来回落写值
             let formula = if inst.export_formula { self.excel_formula(i) } else { None };
             if inst.export_formula && formula.is_none() {
-                self.warnings.push(format!(
+                IssueSink(&mut self.issues).warn(format!(
                     "{} 声明了 export_formula，但 value_expr 无法翻译成 Excel 公式，已回落写值",
                     inst.pos
                 ));
@@ -1224,7 +1276,7 @@ impl Engine {
                 match parse_image_data_uri(&src) {
                     Ok(_) => image = Some(src),
                     Err(e) => {
-                        self.warnings.push(format!("{} 的图片没出：{e}", inst.pos));
+                        IssueSink(&mut self.issues).warn(format!("{} 的图片没出：{e}", inst.pos));
                         text = format!("[图片: {e}]");
                     }
                 }
@@ -1250,7 +1302,7 @@ impl Engine {
                     // 带图表的组合交给 `resolve_charts`（它能看到三种声明），
                     // 不加这个条件同一件事会报两遍。
                     if image.is_some() && inst.chart.is_none() {
-                        self.warnings.push(format!(
+                        IssueSink(&mut self.issues).warn(format!(
                             "{} 同时声明了图片和条码，导出时只出「图片」，条码不会出现",
                             inst.pos
                         ));
@@ -1270,7 +1322,8 @@ impl Engine {
                             barcode = Some(resolved);
                         }
                         Err(e) => {
-                            self.warnings.push(format!("{} 的条码没出：{e}", inst.pos));
+                            IssueSink(&mut self.issues)
+                                .warn(format!("{} 的条码没出：{e}", inst.pos));
                             text = format!("[条码: {e}]");
                         }
                     }
@@ -1329,34 +1382,45 @@ impl Engine {
         // 真正有用的告警淹掉；超出部分只报**总数**，不隐瞒冲突这件事本身。
         const MAX_COLLISION_REPORTS: usize = 20;
         for (r, c, prev, cur) in collisions.iter().take(MAX_COLLISION_REPORTS) {
-            self.warnings.push(format!(
-                "布局冲突：{} 与 {} 都落在第 {} 行第 {} 列，{} 已被丢弃（保留先创建的 {}）。\
+            // **Error 级**：这不是「某处降级了」，而是「这张表的结果是坏的」——
+            // 有格子的数据根本没进输出，且输出**看起来像一张正常的表**。
+            // 调用方（设计器 / 导出入口）应当据此拦住导出，而不是让作者当成品发出去。
+            self.fail_at(
+                issue::CODE_LAYOUT_COLLISION,
+                Some(cur.clone()),
+                format!(
+                    "布局冲突：{} 与 {} 都落在第 {} 行第 {} 列，{} 已被丢弃（保留先创建的 {}）。\
                  同一模板行里的多个列展开格会各自从自己的模板列起算，列区间互相重叠 —— \
                  请让其中一个成为另一个的列主格（col_parent），或把它们放到不同的模板行。",
-                prev,
-                cur,
-                r + 1,
-                c + 1,
-                cur,
-                prev
-            ));
+                    prev,
+                    cur,
+                    r + 1,
+                    c + 1,
+                    cur,
+                    prev
+                ),
+            );
         }
         if collisions.len() > MAX_COLLISION_REPORTS {
-            self.warnings.push(format!(
-                "另有 {} 处布局冲突未逐条列出（同类问题，上一条已说明原因）",
-                collisions.len() - MAX_COLLISION_REPORTS
-            ));
+            self.fail_at(
+                issue::CODE_LAYOUT_COLLISION,
+                None,
+                format!(
+                    "另有 {} 处布局冲突未逐条列出（同类问题，上一条已说明原因）",
+                    collisions.len() - MAX_COLLISION_REPORTS
+                ),
+            );
         }
 
         // 引用了从没赋过值的变量 → 告警。静默当 Null 用会让人以为「算出来就是空的」
         for name in self.var_misses.borrow().iter() {
-            self.warnings.push(format!(
+            IssueSink(&mut self.issues).warn(format!(
                 "表达式引用了变量「{name}」，但它从没被 assign 赋值过（按空值处理）"
             ));
         }
         // 不受支持的组合写法 → 告警。老行为是静默返回空值，出表就是一格空白
         for msg in self.unsupported.borrow().iter() {
-            self.warnings.push(msg.clone());
+            IssueSink(&mut self.issues).warn(msg.clone());
         }
 
         let mut out: Vec<Vec<GridCell>> = grid
@@ -1440,7 +1504,7 @@ impl Engine {
             // 同时声明了多种非文本格子：渲染时只出优先级最高的那一个，
             // 其余**静默**不出现 —— 作者看不出是「配错了」还是「被盖住了」，说一声
             if kinds.len() > 1 {
-                self.warnings.push(format!(
+                self.warn(format!(
                     "{pos} 同时声明了{}，导出时只出「{}」，其余不会出现",
                     kinds.join(" / "),
                     kinds[0]
@@ -1453,7 +1517,7 @@ impl Engine {
                     }
                 }
                 Err(e) => {
-                    self.warnings.push(format!("{pos} 的图表没出：{e}"));
+                    self.warn(format!("{pos} 的图表没出：{e}"));
                     if let Some(cell) = grid.get_mut(r).and_then(|row| row.get_mut(c)) {
                         cell.text = format!("[图表: {e}]");
                     }
@@ -1523,7 +1587,7 @@ impl Engine {
                 Some(src) => match parse_expand_list(src) {
                     Ok(list) => group_by_list(ds, view, model.field.as_deref(), &list),
                     Err(msg) => {
-                        self.warnings.push(format!("{pos} 的 expand_expr 无效：{msg}"));
+                        self.warn(format!("{pos} 的 expand_expr 无效：{msg}"));
                         Vec::new()
                     }
                 },
@@ -1651,7 +1715,7 @@ impl Engine {
             Err(err) => {
                 if warn {
                     let pos = self.insts[i].pos.clone();
-                    self.warnings.push(format!("{pos} 的 {kind} 无法解析（{err}），已保留该格"));
+                    self.warn(format!("{pos} 的 {kind} 无法解析（{err}），已保留该格"));
                 }
                 true
             }
@@ -1794,6 +1858,8 @@ impl Engine {
     fn evaluate_to_fixpoint(&mut self, n: usize) {
         const MAX_ROUNDS: usize = 4;
         let mut converged = false;
+        // 实际用了几轮（用于下面的 Info 诊断）
+        let mut rounds_used = 0usize;
         for round in 0..MAX_ROUNDS {
             self.clear_round_caches();
             for i in 0..n {
@@ -1801,6 +1867,7 @@ impl Engine {
             }
             // 只在第一轮报解析失败，避免同一条告警重复 N 次
             let changed = self.compute_tests(n, round == 0);
+            rounds_used = round + 1;
             if !changed {
                 converged = true;
                 break;
@@ -1832,14 +1899,34 @@ impl Engine {
             for i in 0..n {
                 self.ensure_value(i);
             }
-            self.warnings.push(format!(
-                "row/col_test 在 {MAX_ROUNDS} 轮内没有稳定下来：测试条件与它依赖的聚合值互相影响\
+            self.fail_at(
+                issue::CODE_NONCONVERGENT,
+                None,
+                format!(
+                    "row/col_test 在 {MAX_ROUNDS} 轮内没有稳定下来：测试条件与它依赖的聚合值互相影响\
                  （删行改变了聚合值，聚合值又决定删哪些行）。已按最终可见集合重算全部数值，\
                  所以**显示的数值与显示的行是一致的**；但该条件在最终数据上仍不成立 ——\
                  这张表的结果**不稳定**，不要当作可发布的结果。\
                  常见修法是让测试条件只依赖**与自身无关**的量（如本行字段），\
                  或把过滤挪到数据源里。"
-            ));
+                ),
+            );
+        } else if rounds_used >= 3 {
+            // 收敛了，但花了好几轮 → 条件之间存在**真实的相互依赖**。
+            //
+            // 这不是错误（结果自洽），所以只给 `Info` —— 它按定义**不进 `warnings`**，
+            // 不会去打扰只想看结果的人；而排查模板的人（`dump=true`）会看到它。
+            // 这也是 `IssueLevel::Info` 目前唯一的用武之地：
+            // 本项目不接受「加了级别却没有生产者」的死枚举，所以要么给 Info 找个真用处，
+            // 要么就不加这一级。
+            self.info(
+                issue::CODE_FIXPOINT_ROUNDS,
+                format!(
+                    "row/col_test 花了 {rounds_used} 轮才稳定（不翻的话第 1 轮就收敛）：\
+                     测试条件与它依赖的聚合值互相影响。结果本身是自洽的，\
+                     但改这类模板时要留意「改一处、别处跟着变」。"
+                ),
+            );
         }
     }
 
@@ -2130,8 +2217,11 @@ impl Engine {
             if !self.insts[i].cycle_warned {
                 self.insts[i].cycle_warned = true;
                 let pos = self.insts[i].pos.clone();
-                self.warnings
-                    .push(format!("{pos} 的表达式存在循环引用（直接或间接引用了自己），该格按空值处理"));
+                self.warn_at(
+                    issue::CODE_GENERIC,
+                    pos.clone(),
+                    format!("{pos} 的表达式存在循环引用（直接或间接引用了自己），该格按空值处理"),
+                );
             }
             return;
         }
@@ -2147,8 +2237,11 @@ impl Engine {
             match expr::parse(&expr) {
                 Err(e) => {
                     let pos = self.insts[i].pos.clone();
-                    self.warnings
-                        .push(format!("{pos} 的 value_expr 无法解析（{e}），已保留展开值"));
+                    self.warn_at(
+                        issue::CODE_GENERIC,
+                        pos.clone(),
+                        format!("{pos} 的 value_expr 无法解析（{e}），已保留展开值"),
+                    );
                 }
                 Ok(ast) => {
                     // 先把依赖格求值到位，再算自己
@@ -2173,7 +2266,7 @@ impl Engine {
             match expr::parse(&e) {
                 Err(err) => {
                     let pos = self.insts[i].pos.clone();
-                    self.warnings.push(format!(
+                    self.warn(format!(
                         "{pos} 的 format_expr 无法解析（{err}），已回落 dict / 数字格式"
                     ));
                 }
@@ -2347,10 +2440,29 @@ impl Engine {
     /// 每行：`seq | pos | 文本 <- 层次坐标 | 行父 | 列父`
     pub fn dump_text(&self) -> String {
         let mut out = String::from("seq | pos | text <- 层次坐标 | 行父 | 列父\n");
-        if !self.warnings.is_empty() {
-            out.push_str(&format!("!! 告警 {} 条:\n", self.warnings.len()));
-            for w in &self.warnings {
-                out.push_str(&format!("!!   {w}\n"));
+        // 诊断按级分节打印。`dump=true` 是排查通道，所以**连 Info 一起打** ——
+        // 这也是 `Info` 级目前唯一的消费方（`warnings` 视图按定义不含它）。
+        // 分节而不是混着打：Error 意味着「这张表的结果不可信」，
+        // 埋在几十条提示里就白报了。
+        for (level, title) in [
+            (IssueLevel::Error, "!! 结果不可信"),
+            (IssueLevel::Warning, "!! 告警"),
+            (IssueLevel::Info, "!! 诊断"),
+        ] {
+            let group: Vec<&Issue> =
+                self.issues.iter().filter(|i| i.level == level).collect();
+            if group.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("{title} {} 条:\n", group.len()));
+            for i in group {
+                let at = match (&i.pos, &i.sheet) {
+                    (Some(p), Some(s)) => format!(" ({s} {p})"),
+                    (Some(p), None) => format!(" ({p})"),
+                    (None, Some(s)) => format!(" ({s})"),
+                    (None, None) => String::new(),
+                };
+                out.push_str(&format!("!!   [{}{at}] {}\n", i.code, i.message));
             }
         }
         let link = |p: Option<usize>| match p {
@@ -3226,7 +3338,7 @@ impl Engine {
                 //
                 // 但**失败必须可见**：老行为是直接返回 Null，出表就是**一格空白**，
                 // 作者只会以为「没数据」，而不会想到「这个写法不支持」。记一笔（去重），
-                // 由 `expand_sheet` 末尾统一转成 warnings。
+                // 由 `expand_sheet` 末尾统一转成 `Issue`（Warning 级）。
                 other => {
                     self.unsupported.borrow_mut().insert(match other {
                         Expr::Filter { .. } => "ACCSUM 不支持过滤表达式参数（如 \
@@ -5268,17 +5380,41 @@ mod layout_collision_probe {
         );
 
         // 不变式 2：冲突必须被**逐条报出**，且两个 pos 都要出现（不然作者无从下手）
-        let reported: Vec<&String> =
-            e.warnings().iter().filter(|w| w.contains("布局冲突")).collect();
+        let reported: Vec<&Issue> = e
+            .issues()
+            .iter()
+            .filter(|i| i.message.contains("布局冲突"))
+            .collect();
         assert_eq!(
             reported.len(),
             2,
-            "本模板恰好 2 处冲突，应逐条报出；实际告警：{:?}",
-            e.warnings()
+            "本模板恰好 2 处冲突，应逐条报出；实际：{:?}",
+            e.issues()
         );
-        for w in &reported {
-            assert!(w.contains("A1") && w.contains("B1"), "冲突告警必须点出两个 pos，实际：{w}");
+        for i in &reported {
+            assert!(i.message.contains("A1") && i.message.contains("B1"), "冲突告警必须点出两个 pos，实际：{}", i.message);
         }
+
+        // 不变式 2b：**级别必须是 Error** —— 这正是分级通道存在的意义。
+        // 只断言「报了」是不够的：报成 Warning 的话，调用方会把它当成「某处降级了」，
+        // 照旧把这张表导出去。这里钉住「结果不可信」这个语义。
+        assert!(
+            reported.iter().all(|i| i.level == IssueLevel::Error),
+            "落位冲突必须是 Error 级（结果不可信），实际：{:?}",
+            reported.iter().map(|i| i.level).collect::<Vec<_>>()
+        );
+        assert!(
+            reported.iter().all(|i| i.code == issue::CODE_LAYOUT_COLLISION),
+            "冲突的 code 必须是 layout_collision，实际：{:?}",
+            reported.iter().map(|i| i.code.as_str()).collect::<Vec<_>>()
+        );
+        // 且**必须同时出现在向后兼容视图里** —— 升级级别不能让消息从 warnings 里消失
+        let compat: Vec<String> = e.warnings();
+        assert_eq!(
+            compat.iter().filter(|w| w.contains("布局冲突")).count(),
+            2,
+            "Error 也必须在 warnings 里（向后兼容），实际：{compat:?}"
+        );
 
         // 不变式 3：丢弃的是**后创建**的那两个实例，先创建者完整保留
         let dropped: Vec<String> =
@@ -5371,16 +5507,145 @@ mod nonconvergence_tests {
         );
 
         // 断言 2：不稳定必须被**明说**，且不能说反
-        let unstable: Vec<&String> =
-            e.warnings().iter().filter(|w| w.contains("没有稳定下来")).collect();
-        assert_eq!(unstable.len(), 1, "非收敛必须恰好报一次，实际：{:?}", e.warnings());
+        let unstable: Vec<&Issue> = e
+            .issues()
+            .iter()
+            .filter(|i| i.message.contains("没有稳定下来"))
+            .collect();
+        assert_eq!(unstable.len(), 1, "非收敛必须恰好报一次，实际：{:?}", e.issues());
+        let compat: Vec<String> = e.warnings();
         assert!(
-            !e.warnings().iter().any(|w| w.contains("已按最后一轮结果出表")),
+            !compat.iter().any(|w| w.contains("已按最后一轮结果出表")),
             "老告警文案与事实相反（数值恰恰不是最后一轮的），不该再出现"
+        );
+
+        // 断言 2b：**级别必须是 Error** —— 非收敛时「显示的数值与显示的行一致」了，
+        // 但条件本身仍不成立，这张表**不能当成品**。报成 Warning 的话调用方会照旧导出。
+        assert_eq!(
+            unstable[0].level,
+            IssueLevel::Error,
+            "非收敛必须是 Error 级，实际：{:?}",
+            unstable[0].level
+        );
+        assert_eq!(unstable[0].code, issue::CODE_NONCONVERGENT);
+        // 且它也必须同时出现在向后兼容视图里
+        assert!(
+            compat.iter().any(|w| w.contains("没有稳定下来")),
+            "Error 也必须在 warnings 里（向后兼容），实际：{compat:?}"
         );
 
         // 断言 3：震荡模板最终确实留下了数据（不是整张表被删空）
         assert_eq!(grid.len(), 3, "3 个分组应全部可见");
+    }
+}
+
+/// 回归测试：**收敛了、但花了好几轮** → 一条 `Info` 诊断（不进 `warnings`）。
+///
+/// 这条测试的存在理由不只是「测 Info」——它是 `IssueLevel::Info` 这个级别的
+/// **生产者证明**。本项目不接受「加了级别却没有生产者」的死枚举：
+/// 要么给 Info 找个真用处，要么就别加这一级。
+///
+/// 刻意构造**单调链条**（不是自我引用，所以会收敛而不是震荡）：
+///
+/// | 轮 | 发生什么 |
+/// | --- | --- |
+/// | 0 | A1 的 `row_test = $B1 >= 20` 删掉「华东」（amt = 10）；本轮 `C1 = COUNTA(B1)` 还是 3 |
+/// | 1 | `C1` 重算成 2 → D1 的 `row_test = $C1 >= 3` 由真变假 → 删掉 D1 整组 |
+/// | 2 | `C1` 仍是 2 → 无变化 → **收敛**，共 3 轮 |
+///
+/// 为什么要它：3 轮才稳定说明「条件与聚合值互相影响」，改模板时容易踩到
+/// 「改一处、别处跟着变」。它不影响结果正确性，所以是 Info 而不是 Warning/Error。
+#[cfg(test)]
+mod slow_fixpoint_tests {
+    use super::*;
+
+    fn cell(
+        field: Option<&str>,
+        rp: Option<&str>,
+        expand: bool,
+        test: Option<&str>,
+        vex: Option<&str>,
+    ) -> CellTpl {
+        CellTpl {
+            image: None,
+            pos: None,
+            value: Some(JsonValue::from("x")),
+            model: Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: field.map(str::to_string),
+                expand_type: if expand { Some(ExpandType::R) } else { None },
+                row_parent: rp.map(str::to_string),
+                row_test_expr: test.map(str::to_string),
+                value_expr: vex.map(str::to_string),
+                ..Default::default()
+            }),
+            merge_across: 0,
+            merge_down: 0,
+            merge_to_end: false,
+            chart: None,
+            barcode: None,
+        }
+    }
+
+    fn sheet() -> SheetTpl {
+        SheetTpl {
+            name: "t".into(),
+            page: None,
+            loop_field: None,
+            rows: vec![
+                RowTpl {
+                    cells: vec![
+                        cell(Some("region"), None, true, Some("$B1 >= 20"), None),
+                        cell(Some("amt"), Some("A1"), false, None, None),
+                        cell(None, Some("A1"), false, None, Some("COUNTA(B1)")),
+                    ],
+                },
+                RowTpl { cells: vec![cell(Some("region"), None, true, Some("$C1 >= 3"), None)] },
+            ],
+        }
+    }
+
+    #[test]
+    fn converging_after_three_rounds_yields_an_info_issue() {
+        let mut ds: DataSet = Vec::new();
+        for (r, a) in [("华东", 10.0), ("华南", 20.0), ("华北", 30.0)] {
+            ds.push(BTreeMap::from([
+                ("region".to_string(), JsonValue::from(r)),
+                ("amt".to_string(), JsonValue::from(a)),
+            ]));
+        }
+        let mut e = Engine::new(ds);
+        let _grid = e.expand_sheet(&sheet());
+
+        // 前提：这张表**收敛**了（没有 Error）——否则下面测的就不是 Info 那条路
+        assert!(
+            !e.issues().iter().any(|i| i.level == IssueLevel::Error),
+            "这个模板是单调链条、应当收敛；实际有 Error：{:?}",
+            e.issues()
+        );
+
+        let rounds: Vec<&Issue> =
+            e.issues().iter().filter(|i| i.code == issue::CODE_FIXPOINT_ROUNDS).collect();
+        assert_eq!(
+            rounds.len(),
+            1,
+            "3 轮才稳定应留下恰好一条 fixpoint_rounds 诊断；实际：{:?}",
+            e.issues()
+        );
+        assert_eq!(rounds[0].level, IssueLevel::Info, "级别必须是 Info");
+        assert!(
+            rounds[0].message.contains("3 轮"),
+            "诊断里应说清用了几轮，实际：{}",
+            rounds[0].message
+        );
+
+        // 关键：Info **不进** `warnings`（向后兼容视图只收 `level >= Warning`）。
+        // 这就是分级通道的意义 —— 「不影响正确性」的信息不去打扰只想看结果的人。
+        let compat: Vec<String> = e.warnings();
+        assert!(
+            !compat.iter().any(|w| w.contains("轮才稳定")),
+            "Info 不该出现在 warnings 里，实际：{compat:?}"
+        );
     }
 }
 

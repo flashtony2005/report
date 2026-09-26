@@ -15,6 +15,7 @@ pub mod docx;
 pub mod engine;
 pub mod expr;
 pub mod import;
+pub mod issue;
 pub mod model;
 pub mod png;
 pub mod store;
@@ -30,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 
+use crate::report::issue::{Issue, IssueLevel};
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -102,8 +104,22 @@ pub struct RenderResponse {
     pub pages_html: Option<Vec<String>>,
     /// 会静默产出错误数据的可疑情况（父格查不到、表达式解析失败等）。
     /// 不中断渲染，但调用方应当展示给用户。
+    ///
+    /// **这是向后兼容视图**：内容是 `issues` 里 `level >= Warning` 那些的 `message`，
+    /// 与老版本逐字一致（`Error` 也在里面 —— 升级级别不会让消息消失）。
+    /// 需要分级（比如「结果不可信，拦住导出」）就用 `issues`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
+    /// 结构化诊断，带级别与稳定 `code` —— 与 `warnings` **并存**（增量，不是替换）。
+    ///
+    /// 与 `warnings` 的两点差别：
+    /// 1. `level` 分三级，调用方能区分「提示」与「结果不可信」；
+    /// 2. 带 `code`（前端据此分类，**不要**用 `message.contains(..)` 判断），
+    ///    并带 `sheet` / `pos` 便于定位。
+    ///
+    /// 注意 `Info` 级**只在这里**出现，不进 `warnings`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issues: Option<Vec<Issue>>,
 }
 
 /// 渲染报表：展开 + 求值 + 输出网格/HTML
@@ -123,11 +139,17 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
     let mut sheets = Vec::new();
     let mut dumps: Vec<String> = Vec::new();
     let mut all_pages: Vec<(RenderedSheet, usize, usize, bool)> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
+    // 诊断**只有这一份**（分级 + 带 sheet 归属）。
+    // `RenderResponse.warnings` 是它派生出来的向后兼容视图 —— 见函数末尾。
+    // 这样「某条告警没进分级通道」在结构上就不可能发生。
+    let mut issues: Vec<Issue> = Vec::new();
     for sheet in tpl.sheets.iter_mut() {
         let (sheet_datasets, primary, ds_warns) = prepare_dataset(&tpl.datasets, sheet);
         for w in ds_warns {
-            warnings.push(format!("[{}] {}", sheet.name, w));
+            issues.push(
+                Issue::new(IssueLevel::Warning, issue::CODE_GENERIC, w)
+                    .with_sheet(sheet.name.clone()),
+            );
         }
         // 循环变量：一个取值一张表。suffix 为空表示没开循环，仍按单张表走。
         let groups = loop_groups(
@@ -135,7 +157,7 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
             &primary,
             sheet.loop_field.as_deref(),
             &sheet.name,
-            &mut warnings,
+            &mut issues,
         );
         for (suffix, sub_ds) in groups {
             let sheet_name = if suffix.is_empty() {
@@ -151,8 +173,10 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
             };
             let mut engine = engine::Engine::new_multi(sub_ds, primary.clone());
             let rows = engine.expand_sheet(sheet);
-            for w in engine.warnings() {
-                warnings.push(format!("[{}] {}", sheet_name, w));
+            // 引擎的诊断**不带** `[sheet]` 前缀 —— 归属靠 `sheet` 字段，
+            // 前缀在末尾统一派生（这样 `warnings` 与 `issues` 不可能漂移）。
+            for i in engine.issues() {
+                issues.push(i.clone().with_sheet(sheet_name.clone()));
             }
             if want_dump {
                 dumps.push(format!("=== sheet: {} ===\n{}", sheet_name, engine.dump_text()));
@@ -174,19 +198,30 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
                         .iter()
                         .any(|g| g.iter().any(|r| r.iter().any(|c| c.formula.is_some())))
                 {
-                    warnings.push(format!(
-                        "[{}] 分页导出时公式坐标按整表生成、与逐页复制后的行号不一致，已回落写值",
-                        sheet_name
-                    ));
+                    issues.push(
+                        Issue::new(
+                            IssueLevel::Warning,
+                            issue::CODE_GENERIC,
+                            "分页导出时公式坐标按整表生成、与逐页复制后的行号不一致，已回落写值",
+                        )
+                        .with_sheet(sheet_name.clone()),
+                    );
                 }
                 // 配了页码却没真正分页 → 印不出页码，且**必须说清为什么**。
                 // 静默不印的话，作者只会看到「配置明明写了、输出里就是没有」。
                 if !effective && page_setup.as_ref().is_some_and(|p| p.page_number.is_some()) {
-                    warnings.push(format!(
-                        "[{}] 配了页码但这份模板没真正分页（rows_per_page = {}）：HTML 里印不出页码；\
-                         导出 xlsx 不受影响（那是 Excel 原生页脚）",
-                        sheet_name, cfg.rows_per_page
-                    ));
+                    issues.push(
+                        Issue::new(
+                            IssueLevel::Warning,
+                            issue::CODE_GENERIC,
+                            format!(
+                                "配了页码但这份模板没真正分页（rows_per_page = {}）：HTML 里印不出页码；\
+                                 导出 xlsx 不受影响（那是 Excel 原生页脚）",
+                                cfg.rows_per_page
+                            ),
+                        )
+                        .with_sheet(sheet_name.clone()),
+                    );
                 }
                 for (i, grid) in grids.into_iter().enumerate() {
                     let rows = if n > 1 {
@@ -246,9 +281,21 @@ pub fn render(req: RenderRequest) -> Result<RenderResponse, String> {
     } else {
         None
     };
-    check_paper_consistency(&sheets, &mut warnings);
+    check_paper_consistency(&sheets, &mut issues);
+    // `warnings` 是 `issues` 的**派生视图**（`level >= Warning`），
+    // `[sheet] ` 前缀在这里统一补上 —— 消息本身不带前缀，归属靠 `sheet` 字段。
+    // 于是「某条告警只进了 warnings、没进 issues」在结构上不可能发生。
+    let warnings: Vec<String> = issues
+        .iter()
+        .filter(|i| i.is_warning_or_worse())
+        .map(|i| match &i.sheet {
+            Some(s) => format!("[{s}] {}", i.message),
+            None => i.message.clone(),
+        })
+        .collect();
     let warnings = if warnings.is_empty() { None } else { Some(warnings) };
-    Ok(RenderResponse { sheets, html, dump, pages, pages_html, warnings })
+    let issues = if issues.is_empty() { None } else { Some(issues) };
+    Ok(RenderResponse { sheets, html, dump, pages, pages_html, warnings, issues })
 }
 
 /// 循环变量：按 `field` 的**不同取值**把数据集分组，一个取值渲染出一张 sheet。
@@ -268,7 +315,7 @@ fn loop_groups(
     primary: &str,
     field: Option<&str>,
     sheet_name: &str,
-    warnings: &mut Vec<String>,
+    issues: &mut Vec<Issue>,
 ) -> Vec<(String, BTreeMap<String, DataSet>)> {
     let all = || datasets.clone();
     let field = match field {
@@ -287,9 +334,14 @@ fn loop_groups(
     // 字段压根不存在 —— 多半是字段名写错了。宁可告警 + 退回单张表，
     // 也不要按「(空)」出一张看起来正常、其实什么都没筛的空表
     if !ds.iter().any(|r| r.contains_key(field)) {
-        warnings.push(format!(
-            "[{sheet_name}] 循环字段「{field}」在数据集中不存在，已按单张表渲染"
-        ));
+        issues.push(
+            Issue::new(
+                IssueLevel::Warning,
+                issue::CODE_GENERIC,
+                format!("循环字段「{field}」在数据集中不存在，已按单张表渲染"),
+            )
+            .with_sheet(sheet_name),
+        );
         return vec![(String::new(), all())];
     }
 
@@ -299,10 +351,17 @@ fn loop_groups(
             continue;
         }
         if !other.iter().any(|r| r.contains_key(field)) {
-            warnings.push(format!(
-                "[{sheet_name}] 循环字段「{field}」在数据集 {name} 里不存在，\
-                 该数据集不会被拆分，每张表都会看到它的全部行"
-            ));
+            issues.push(
+                Issue::new(
+                    IssueLevel::Warning,
+                    issue::CODE_GENERIC,
+                    format!(
+                        "循环字段「{field}」在数据集 {name} 里不存在，\
+                         该数据集不会被拆分，每张表都会看到它的全部行"
+                    ),
+                )
+                .with_sheet(sheet_name),
+            );
         }
     }
 
@@ -762,7 +821,7 @@ fn html_style_attr(st: Option<&CellStyle>, pos: &str) -> Result<String, String> 
 ///
 /// 判据用「纸张 + 方向 + 页边距 + 居中」四元组，而不是只比纸张名：
 /// 只比纸张名会漏掉「同一张 A4，一张横向一张纵向」这种同样印不对的情况。
-fn check_paper_consistency(sheets: &[RenderedSheet], warnings: &mut Vec<String>) {
+fn check_paper_consistency(sheets: &[RenderedSheet], issues: &mut Vec<Issue>) {
     let mut seen: Vec<(Option<String>, bool, Option<PageMargins>, bool)> = Vec::new();
     for s in sheets {
         let Some(p) = s.page_setup.as_ref() else {
@@ -777,7 +836,11 @@ fn check_paper_consistency(sheets: &[RenderedSheet], warnings: &mut Vec<String>)
         return;
     }
     let first = sheets.iter().find_map(|s| s.page_setup.as_ref());
-    warnings.push(format!(
+    // 这条是**整份文档级**的（不归属任何单张 sheet）→ 不带 `sheet` 字段
+    issues.push(Issue::new(
+        IssueLevel::Warning,
+        issue::CODE_GENERIC,
+        format!(
         "多张 sheet 的纸张设置不一致（{} 种）：HTML 的 @page 是文档级规则、只能表达一份，已按第一张「{}」出；导出的 xlsx 每张 sheet 各按自己的设置",
         seen.len(),
         first
@@ -786,6 +849,7 @@ fn check_paper_consistency(sheets: &[RenderedSheet], warnings: &mut Vec<String>)
                 .clone()
                 .unwrap_or_else(|| "未指定纸张（听打印机的）".to_string()))
             .unwrap_or_default(),
+        ),
     ));
 }
 
@@ -4913,6 +4977,89 @@ mod tests {
             warnings.iter().any(|w| w.starts_with("[不支持组合]")),
             "告警要带 sheet 名，便于定位。实际：{warnings:#?}"
         );
+    }
+
+    /// `RenderResponse.issues` 必须**同时**做到三件事 —— 缺一条这个通道就是摆设：
+    ///
+    /// 1. **分级真的到了响应上**：落位冲突是 `error`（结果不可信），
+    ///    而不是和「某处降级了」混在一个 `Vec<String>` 里；
+    /// 2. **带 `code`**：前端据此分类，不必去 `message.includes(..)`（那种判据文案一改就静默失效）；
+    /// 3. **`warnings` 与 `issues` 不可能漂移**：`warnings` 是 `issues` 里
+    ///    `level >= warning` 的派生视图，且 `[sheet] ` 前缀由 `sheet` 字段统一补上。
+    ///    所以这里**逐条对账**：两边条数必须一致，且每条 warning 都能在 issues 里找到出处。
+    ///
+    /// 第 3 条是这次改造的核心不变量：改造前 `[sheet] ` 前缀是**拼进消息字符串**里的，
+    /// 一旦有人新增告警站点时忘了拼前缀，`warnings` 就少了一份归属信息而**没有任何测试会红**。
+    #[test]
+    fn graded_issues_reach_the_response_and_stay_in_sync_with_warnings() {
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), sample_data());
+        let cell = |field: &str| CellTpl {
+            image: None,
+            pos: None,
+            value: Some(JsonValue::from("x")),
+            model: Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: Some(field.to_string()),
+                expand_type: Some(ExpandType::C),
+                ..Default::default()
+            }),
+            merge_across: 0,
+            merge_down: 0,
+            merge_to_end: false,
+            chart: None,
+            barcode: None,
+        };
+        let tpl = ReportTemplate {
+            sheets: vec![SheetTpl {
+                name: "冲突表".into(),
+                page: None,
+                // 同一模板行两个列展开格 → 列区间重叠 → 落位冲突（Error 级）
+                rows: vec![RowTpl { cells: vec![cell("region"), cell("salesman")] }],
+                loop_field: None,
+            }],
+            datasets,
+        };
+        let resp = render(RenderRequest { template: tpl, datasets: None, sources: None, dump: None })
+            .expect("渲染不应失败");
+
+        let issues = resp.issues.clone().expect("落位冲突必须出现在 issues 里");
+        let collisions: Vec<_> =
+            issues.iter().filter(|i| i.code == issue::CODE_LAYOUT_COLLISION).collect();
+        assert!(!collisions.is_empty(), "应有 layout_collision 诊断，实际：{issues:#?}");
+        assert!(
+            collisions.iter().all(|i| i.level == IssueLevel::Error),
+            "落位冲突必须是 error 级（结果不可信），实际：{:?}",
+            collisions.iter().map(|i| i.level).collect::<Vec<_>>()
+        );
+        assert!(
+            collisions.iter().all(|i| i.sheet.as_deref() == Some("冲突表")),
+            "诊断要带 sheet 归属，实际：{:?}",
+            collisions.iter().map(|i| i.sheet.clone()).collect::<Vec<_>>()
+        );
+        assert!(
+            collisions.iter().any(|i| i.pos.is_some()),
+            "落位冲突能定位到格，pos 不该为空：{collisions:#?}"
+        );
+
+        // 逐条对账：warnings == issues 里 level>=warning 的派生视图
+        let warnings = resp.warnings.clone().unwrap_or_default();
+        let expect: Vec<String> = issues
+            .iter()
+            .filter(|i| i.is_warning_or_worse())
+            .map(|i| match &i.sheet {
+                Some(s) => format!("[{s}] {}", i.message),
+                None => i.message.clone(),
+            })
+            .collect();
+        assert_eq!(warnings, expect, "warnings 必须是 issues 的派生视图，不能各写一份");
+
+        // 序列化形状：前端拿到的就是这三个键
+        let v = serde_json::to_value(&issues[0]).unwrap();
+        assert_eq!(v["level"], "error");
+        assert_eq!(v["code"], issue::CODE_LAYOUT_COLLISION);
+        assert_eq!(v["sheet"], "冲突表");
+        assert!(v.get("pos").is_some());
     }
 
     #[test]
