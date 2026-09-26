@@ -1209,22 +1209,51 @@ V=abc; echo "测试 ${V}）"    # ✓
 外部评审（用户贴入）提 7 条架构问题，**全部成立**；其中 5 条我做成了可复现测试。
 完整核验见仓库根 **《架构评审核验-逐条复现.md》**。
 
-**复现方式**：`engine.rs` 末尾 5 个 `*_probe` 模块，全部 `#[ignore]`（默认不跑，闸保持绿）。
+**复现方式**：`engine.rs` 末尾的 `*_probe` 模块，全部 `#[ignore]`（默认不跑，闸保持绿）。
 
 ```bash
-# 默认：512 passed / 0 failed / 18 ignored
+# 修 ②① 前：512 passed / 0 failed / 18 ignored
+# 修 ②① 后：514 passed / 0 failed / 16 ignored
 cargo test --manifest-path print-server/Cargo.toml --bin print-server
-# 复现：①②④ 红，③⑤ 特征化通过
+# 复现：③ 红，④ 特征化通过（①② 已修，探针已转常驻测试）
 cargo test --manifest-path print-server/Cargo.toml --bin print-server -- --ignored --nocapture
 ```
 
-| 模块 | 缺陷 | 一句话证据 |
-| --- | --- | --- |
-| `layout_collision_probe` | ① 落位冲突静默覆盖 | 同行两个列展开格 → `实例数=6 落位数=4`，渲染成 `1月 Q1 Q2 Q3`，**2月/3月连同值消失，零告警** |
-| `nonconvergence_probe` | ② 强制退出数值落后一轮 | 震荡模板 → **3 行可见但 `C1` 显示 0** |
-| `cross_ds_col_parent_probe` | ③ 跨数据集列主格裸行号 | ds1 两行/ds2 三行 → `111 \| 222`，第三行静默消失，零告警 |
-| `join_view_first_row_probe` | ④ `join_view` 首行代表整组 | 分组字段≠关联字段 → 组内 100+200 **只取到 100**，零告警 |
-| （无需探针） | ⑤ 图表「每组一张图」不成立 | `resolve_charts` 按 `pos` 去重，`engine.rs:1356-1357` 一眼可见 |
+**修 ②① 时补的一条判据**：`--list --ignored` 实测 16 条 = 13 基准（`scale::bench_*`）
++ 1 条码 oracle dump + **2 条缺陷探针（③④）**。别再把「ignored」一律当成「缺陷探针」。
+
+| 模块 | 缺陷 | 一句话证据 | 状态 |
+| --- | --- | --- | --- |
+| `layout_collision_probe` | ① 落位冲突静默覆盖 | 同行两个列展开格 → `实例数=6 落位数=4`，渲染成 `1月 Q1 Q2 Q3`，**2月/3月连同值消失，零告警** | ✅ 已修 |
+| `nonconvergence_tests` | ② 强制退出数值落后一轮 | 震荡模板 → **3 行可见但 `C1` 显示 0** | ✅ 已修 |
+| `cross_ds_col_parent_probe` | ③ 跨数据集列主格裸行号 | ds1 两行/ds2 三行 → `111 \| 222`，第三行静默消失，零告警 | 待修 |
+| `join_view_first_row_probe` | ④ `join_view` 首行代表整组 | 分组字段≠关联字段 → 组内 100+200 **只取到 100**，零告警 | 待修 |
+| （无需探针） | ⑤ 图表「每组一张图」不成立 | `resolve_charts` 按 `pos` 去重，`engine.rs:1356-1357` 一眼可见 | 不按原注释实现 |
+
+### ②① 的修法（2026-09-26 已落地，故障注入验过）
+
+**② 非收敛**：`evaluate_to_fixpoint` 未收敛时的收尾改成
+「清轮缓存 → 重置 `evaluated` → 按**已冻结的最终** `hidden` 重算全部值」。
+抽出 `clear_round_caches()` / `reset_evaluated()`；
+**`cycle_warned` 刻意不重置**（它是「同一个环只报一次」的闸）。
+告警文案从「已按最后一轮结果出表」（**说反了**）改成「结果**不稳定**，不要当作可发布的结果」。
+
+**① 落位冲突**：写入点加占用检查 —— 保留**先创建**者（序号小 = 模板位置靠前，稳定可预测），
+后到者标 `dropped`（与「没被 place 过」同义 → 图表解析等自动跳过），
+冲突逐条告警（坐标 + 两个 `pos` + 可执行建议），**上限 20 条**，超出只报总数。
+
+**① 刻意不「修好布局」**：两个**独立的**列展开没有合法二维布局，硬排得到的
+`1月 Q1 Q2 Q3` **像一张正常交叉表**（每列都有值），比报错更危险；
+现在的 `1月 2月 3月 Q3` 一眼能看出是坏的。**代价：输出仍是坏的，只是不再静默。**
+
+**一个决定性实验**：在冲突点插临时 `panic!` 跑全套件 → **513 条既有测试一条都不触发**
+（只有探针会，`TEMP-COLLISION A1 vs B1 @(0,1)`）→ 检测是**纯增量**，
+没改任何既有模板的落位。（这条回答了核验文档 §8 的「回归风险」担忧。）
+
+**① 的已知边界（别当成已覆盖）**：检查只比**落位点是否相同**，不比 `colspan`/`rowspan`
+的**覆盖范围** → 「起点不同但区间相交」（A1 在第 0 列 `colspan=3`、B1 落在第 2 列）
+**仍抓不到**。补它要做矩形相交检测，而 `merge_to_end` 让矩形在算之前就依赖别的格子的
+列区间，成本不低 —— **刻意没做**。
 
 ### ② 的机制（最值得记住）
 
@@ -1241,7 +1270,7 @@ cargo test --manifest-path print-server/Cargo.toml --bin print-server -- --ignor
 
 ### ① 的机制
 
-`grid[r][c] = Some(..)`（`engine.rs:1269`）**无占用检查**。
+`grid[r][c] = Some(..)`（原 `engine.rs:1269`）**无占用检查**。
 根因在 `layout_columns`（`engine.rs:1945-1960`）：每个列展开组从**自己的 `tpl_col`**
 起占列（`let mut cursor = self.insts[group[0]].tpl_col;`），两组区间重叠**不检测**。
 

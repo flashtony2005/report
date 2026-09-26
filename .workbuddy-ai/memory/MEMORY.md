@@ -88,10 +88,10 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 ## 局限 / 已知取舍
 
 - **分页不认分组**：`paginate()` 按固定行数切拍平网格，不知哪几行同组 → 一组明细跨页时第二页只有重复表头，**补不出主格**。
-- **`GridCell` 字段很少**：`text/pos/rowspan/colspan/raw_number/num_format/formula` + 后补 `style`/`image`/`chart`/`barcode`。设计器里的彩色是**语义高亮**（标「这格什么角色」不是「长什么样」）。xlsx 基础样靠导出器写死。
+- **`GridCell` 字段很少**：`text/pos/rowspan/colspan/raw_number/num_format/formula` + 后补 `style`/`image`/`chart`/`barcode`。设计器里的彩色是**语义高亮**（标角色不标长相）。xlsx 基础样靠导出器写死。
 - **`GridCell.pos` 保留模板坐标** → 可反查展开后的输出范围。
 - 已核对**不是**缺口：表达式函数集全在；`CellModel` 无死字段；分页三配置都生效；多 sheet 导出支持。
-- ⚠️ **5 个已复现缺陷** → `架构评审核验-逐条复现.md`。
+- ⚠️ **5 个已复现缺陷** → `架构评审核验-逐条复现.md`（②① 已修，③④ 待修）。
 
 ## 对照积木报表的差距分析（`引擎差距分析-对照积木报表.md`）
 

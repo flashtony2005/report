@@ -1178,6 +1178,21 @@ impl Engine {
         self.coord_prefix_cache.borrow_mut().clear();
         let ncols = total_cols.max(1);
         let mut grid: Vec<Vec<Option<GridCell>>> = vec![vec![None; ncols]; total_rows];
+        // 落位冲突记录：(行, 列, 先占者 pos, 后到者 pos)。
+        //
+        // 这里**必须**检测，不能像老代码那样直接赋值 —— 两个实例落在同一格时，
+        // 后写的静默覆盖前一个：整格数据连同它的 pos 一起消失，零告警。
+        // 实测形态：同一模板行里放两个列展开格，`layout_columns` 让每个列展开组
+        // 都从**自己的 tpl_col** 起算，列区间于是重叠（模板列 0 展开成 0..3、
+        // 模板列 1 展开成 1..4），6 个实例只落进 4 个位置，出表是 `1月 Q1 Q2 Q3`
+        // —— 「2月 / 3月 连同它们的值」全没了。
+        //
+        // 规则：**保留先创建的**（实例序号小 = 模板位置靠前 = 结果稳定可预测），
+        // 后到的实例标 `dropped`（与「没被 place 过」同义），并把冲突逐条报出去。
+        // 输出仍然是坏的（两个独立的列展开本来就没有合法的二维布局），
+        // 但不再是**静默**坏的。
+        let mut collisions: Vec<(usize, usize, String, String)> = Vec::new();
+        let mut collided: Vec<usize> = Vec::new();
         for (i, inst) in self.insts.iter().enumerate() {
             if inst.dropped || inst.row_start >= total_rows || inst.col_start >= ncols {
                 continue;
@@ -1266,6 +1281,17 @@ impl Engine {
             if barcode.is_some() && inst.barcode.as_ref().is_some_and(|d| d.from_value()) {
                 text.clear();
             }
+            // 占用检查：这一格已经被先创建的实例写过了 → 记下来，本次不写。
+            if let Some(prev) = grid[inst.row_start][inst.col_start].as_ref() {
+                collisions.push((
+                    inst.row_start,
+                    inst.col_start,
+                    prev.pos.clone(),
+                    inst.pos.clone(),
+                ));
+                collided.push(i);
+                continue;
+            }
             grid[inst.row_start][inst.col_start] = Some(GridCell {
                 text,
                 pos: inst.pos.clone(),
@@ -1292,6 +1318,34 @@ impl Engine {
                 chart: None,
                 barcode,
             });
+        }
+
+        // 冲突里后到的实例：没写进网格 = 没被落位，标 dropped 让后续
+        // （图表解析、网格统计）跟其它「没落位」的实例走同一条路。
+        for idx in &collided {
+            self.insts[*idx].dropped = true;
+        }
+        // 逐条报出，但设上限 —— 病态模板能有几百处冲突，刷屏会把
+        // 真正有用的告警淹掉；超出部分只报**总数**，不隐瞒冲突这件事本身。
+        const MAX_COLLISION_REPORTS: usize = 20;
+        for (r, c, prev, cur) in collisions.iter().take(MAX_COLLISION_REPORTS) {
+            self.warnings.push(format!(
+                "布局冲突：{} 与 {} 都落在第 {} 行第 {} 列，{} 已被丢弃（保留先创建的 {}）。\
+                 同一模板行里的多个列展开格会各自从自己的模板列起算，列区间互相重叠 —— \
+                 请让其中一个成为另一个的列主格（col_parent），或把它们放到不同的模板行。",
+                prev,
+                cur,
+                r + 1,
+                c + 1,
+                cur,
+                prev
+            ));
+        }
+        if collisions.len() > MAX_COLLISION_REPORTS {
+            self.warnings.push(format!(
+                "另有 {} 处布局冲突未逐条列出（同类问题，上一条已说明原因）",
+                collisions.len() - MAX_COLLISION_REPORTS
+            ));
         }
 
         // 引用了从没赋过值的变量 → 告警。静默当 Null 用会让人以为「算出来就是空的」
@@ -5127,12 +5181,28 @@ mod scale {
     }
 }
 
-/// 已知缺陷复现 #1：二维落位冲突（评审 §三.3）。
+/// 回归测试：二维落位冲突必须**被检测并报出**，且结果确定（先创建者胜）。
 ///
-/// **现在是红的，所以 `#[ignore]`。** 修好之后把断言改成「正确行为」并去掉 `#[ignore]`。
+/// 修好之前的行为：`grid[r][c] = Some(..)` 直接赋值，**后写覆盖前写**，
+/// 6 个实例只落进 4 个位置，零告警 —— 实测出表是 `1月 Q1 Q2 Q3`，
+/// 「2月 / 3月 连同它们的值」全没了，而且这张表**看起来像一张正常的交叉表**。
 ///
-/// 复现：同一模板行放**两个**列展开格 → 列区间 0..3 与 1..4 重叠 →
-/// `grid[r][c] = Some(..)` 后写覆盖前写，**6 个实例只剩 4 个落位，无任何告警**。
+/// 复现模板：同一模板行放**两个**列展开格（模板列 0 与 1）。
+/// `layout_columns` 让每个列展开组都从**自己的 `tpl_col`** 起算，
+/// 列区间于是重叠（0..3 与 1..4）—— 两个独立的列展开本来就没有合法的二维布局，
+/// 所以这里不「修好布局」，只保证**不再静默**。
+///
+/// 修法见 `expand_sheet` 里网格填充处的占用检查：
+/// 保留先创建的实例，后到的标 `dropped`，并把冲突逐条报出去。
+///
+/// 顺带记录一个用临时 `panic!` 做过的事实：**513 条既有测试里一条都不触发冲突**，
+/// 只有本模块的模板会 —— 所以「检测」是纯增量，没有改变任何既有模板的落位。
+///
+/// **本次没覆盖的相邻形态（已知边界，别当成已覆盖）**：检查只比「落位点是否相同」，
+/// **不比 colspan / rowspan 的覆盖范围**。所以「A1 在第 0 列、colspan = 3，
+/// B1 落在第 2 列」这种**起点不同但区间相交**的重叠仍然抓不到 ——
+/// B1 会被写进 A1 的合并区里。要补这个得做矩形相交检测，
+/// 而 `merge_to_end`（铺到行尾）会让矩形在算之前就依赖别的格子的列区间，成本不低。
 #[cfg(test)]
 mod layout_collision_probe {
     use super::*;
@@ -5158,10 +5228,9 @@ mod layout_collision_probe {
     }
 
     /// 同一模板行里放**两个**列展开格（模板列 0 与 1）。
-    /// 期望：列区间 0..3 与 1..4 重叠 → `grid[row][col] = Some(..)` 互相覆盖。
+    /// 期望：冲突被报出、后到者被丢弃、先创建者（A1 的 3 个实例）完整保留。
     #[test]
-    #[ignore = "已知缺陷：落位冲突静默覆盖，见模块注释。修好后去掉 ignore"]
-    fn probe_two_col_expand_in_one_row() {
+    fn collision_is_reported_and_first_instance_wins() {
         let mut ds: DataSet = Vec::new();
         for (m, q) in [("1月", "Q1"), ("2月", "Q2"), ("3月", "Q3")] {
             ds.push(BTreeMap::from([
@@ -5178,7 +5247,11 @@ mod layout_collision_probe {
         let mut e = Engine::new(ds);
         let grid = e.expand_sheet(&sheet);
 
-        // 落位冲突统计：同一 (row_start, col_start) 被几个**未丢弃**实例占用
+        // 前提：两个列展开格 × 3 行数据 = 6 个实例
+        assert_eq!(e.insts.len(), 6, "两个列展开格 × 3 行数据");
+
+        // 不变式 1：**没有两个「活着的」实例共用同一个落位**。
+        // 这正是写入点那条占用检查要守住的东西 —— 破了就意味着有格子被静默覆盖。
         let mut seen: HashMap<(usize, usize), Vec<String>> = HashMap::new();
         for i in &e.insts {
             if i.dropped {
@@ -5188,22 +5261,39 @@ mod layout_collision_probe {
         }
         let mut collisions: Vec<_> = seen.iter().filter(|(_, v)| v.len() > 1).collect();
         collisions.sort_by_key(|(k, _)| **k);
-
-        println!("实例数={} 落位数={} 冲突数={}", e.insts.len(), seen.len(), collisions.len());
-        for (k, v) in &collisions {
-            println!("  冲突 {k:?} ← {v:?}");
-        }
-        println!("网格 {total_rows}x{total_cols}", total_rows = grid.len(), total_cols = grid[0].len());
-        for (r, row) in grid.iter().enumerate() {
-            let texts: Vec<String> = row.iter().map(|c| format!("{:?}@{}", c.text, c.pos)).collect();
-            println!("  行{r}: {}", texts.join(" | "));
-        }
-
         assert!(
             collisions.is_empty(),
-            "布局冲突：{} 个落位被多个实例占用 —— 后写入的静默覆盖前一个",
+            "落位冲突未被拦下：{} 个落位被多个实例占用 —— 后写入的会静默覆盖前一个",
             collisions.len()
         );
+
+        // 不变式 2：冲突必须被**逐条报出**，且两个 pos 都要出现（不然作者无从下手）
+        let reported: Vec<&String> =
+            e.warnings().iter().filter(|w| w.contains("布局冲突")).collect();
+        assert_eq!(
+            reported.len(),
+            2,
+            "本模板恰好 2 处冲突，应逐条报出；实际告警：{:?}",
+            e.warnings()
+        );
+        for w in &reported {
+            assert!(w.contains("A1") && w.contains("B1"), "冲突告警必须点出两个 pos，实际：{w}");
+        }
+
+        // 不变式 3：丢弃的是**后创建**的那两个实例，先创建者完整保留
+        let dropped: Vec<String> =
+            e.insts.iter().filter(|i| i.dropped).map(|i| i.pos.clone()).collect();
+        assert_eq!(dropped.len(), 2, "只应丢弃 2 个后到实例，实际丢弃 {dropped:?}");
+        assert!(dropped.iter().all(|p| p == "B1"), "被丢弃的应是后到的 B1，实际 {dropped:?}");
+
+        // 不变式 4：结果确定 —— A1 的三个实例占满前三列，B1 只剩没被挤掉的那个（Q3）。
+        // 注意这与「静默覆盖」的旧输出 `1月 Q1 Q2 Q3` 不同：旧输出**看起来像一张正常的
+        // 交叉表**（每列都有值），新输出一眼能看出是坏的（少了 2月/3月），
+        // 再配合告警，才不会被误信。
+        let row0: Vec<&str> = grid[0].iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(row0, vec!["1月", "2月", "3月", "Q3"], "落位结果与「先创建者胜」不符");
+        assert_eq!(grid.len(), 1, "只有一行模板");
+        assert_eq!(grid[0].len(), 4, "列数应为两个列展开区间的并集上界");
     }
 }
 
