@@ -66,14 +66,18 @@ if [ "$IS_SOLUTION" = "1" ]; then
   # vite 工具链在沙箱里一律要挂这两个 preload，否则会卡死在 RUN / SIGKILL(137)。
   NODE_OPTIONS="--require $ROOT/scripts/vite-safe-delete-bypass.cjs --require $ROOT/scripts/broker-mkdir-throttle.cjs" \
     "$NODE" "$VUETSC" --build --force
-  echo "OK：$TARGET_DIR（vue-tsc --build）无类型错误"
+  # ⚠️ `${TARGET_DIR}（` 的花括号不能省：`$VAR` 紧跟非 ASCII 字符时，
+  # 本机 bash 3.2 会静默吃掉变量的值（详见 ts-check.sh 里那段说明）。
+  echo "OK：${TARGET_DIR}（vue-tsc --build）无类型错误"
   exit 0
 fi
 
 if [ -f "$LOCAL" ]; then
   TSC="$LOCAL"
   EXTRA=""
-  echo "编译器：本仓自带 tsc $("$NODE" "$TSC" --version 2>/dev/null || echo '?')（$TARGET_DIR）"
+  # ⚠️ `${TARGET_DIR}）` 的花括号不能省（同 ts-check.sh 里的说明）。
+  # 注意 `$(...)` 命令替换不受影响，所以前面那个 tsc --version 不用加花括号。
+  echo "编译器：本仓自带 tsc $("$NODE" "$TSC" --version 2>/dev/null || echo '?')（${TARGET_DIR}）"
 elif [ -f "$DONOR" ]; then
   TSC="$DONOR"
   EXTRA="--ignoreDeprecations 6.0"

@@ -66,7 +66,12 @@ TSCFLAGS="$TSCFLAGS --noUnusedLocals"
 
 NS=$(printf '%s\n' "$SRC" | grep -c . || true)
 NE=$(printf '%s\n' "$SPEC" | grep -c . || true)
-echo "检查 $((NS + NE)) 个文件（源码 $NS / 测试 $NE）：$TARGETS"
+# ⚠️ `${NE}）` 的花括号**不能省**。本机 bash 3.2.57（macOS 自带那份）在
+# 「`$VAR` 紧跟一个非 ASCII 字符」时会**静默吃掉变量的值 + 多字节字的第一个字节** ——
+# 这句原本打印成「测试 ）」，那个 `18` 凭空不见了，而退出码一切正常。
+# 实测：`echo "[$V）]"` → `[\xbc\x89]`；`echo "[${V}）]"` → `[abc）]` 正确。
+# `$(...)` 命令替换**不受影响**（只有简单变量会中招）。别顺手把花括号删掉。
+echo "检查 $((NS + NE)) 个文件（源码 $NS / 测试 ${NE}）：$TARGETS"
 
 set +e
 # shellcheck disable=SC2086

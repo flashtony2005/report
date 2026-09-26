@@ -1523,7 +1523,14 @@ mod tests {
             ("Letter", 215.9, 279.4, 1),
             ("Legal", 215.9, 355.6, 5),
         ];
-        assert_eq!(PAPERS.to_vec(), expect, "纸张表变了：HTML 尺寸与 Excel 纸张码要同时想清楚");
+        // 这条已经钉了**内容**（不只是数量）。原先的消息只点了两件事，漏了第三件：
+        // TS 的 `PAPER_NAMES`（`openprint/src/report/grid-report.ts`，设计器下拉用它）。
+        // 三处必须同步；`scripts/mirror-check.py` 会对账 Rust↔TS 那两份。
+        assert_eq!(
+            PAPERS.to_vec(),
+            expect,
+            "纸张表变了：① HTML 尺寸 ② Excel 纸张码 ③ TS 的 PAPER_NAMES（mirror-check.py 会红）三处都要同步"
+        );
     }
 
     #[test]

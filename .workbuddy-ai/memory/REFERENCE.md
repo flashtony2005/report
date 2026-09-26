@@ -1086,3 +1086,69 @@ spec：openprint 70 个 · designer-react 42 个。
    **方向必须单向蕴含** —— 「三方相等」那种写法会永久红（本项目已犯过一次，见 §二十.3）。1 天。
 3. 给 `openprint` 加 `test` 脚本；给 4 个永久不跑的 spec 明确归宿（删或标废弃）；修正那条走不通的提示语。1 天。
 4. 原子写报表（抄 `config.rs:385`）· 夹具搬出 `mod.rs` · 测试模块拆出 · 加根 workspace。
+
+### §二十一.6 第 1 档已实施（2026-09-26）
+
+**跑闸就一条命令**：`bash scripts/check-all.sh`。热跑全量 **~36s**，`--fast` 只跑前两道 **3.5s**。
+
+| # | 闸 | 热跑耗时 |
+| --- | --- | --- |
+| 1 | `python3 scripts/mirror-check.py` | 1s |
+| 2 | `bash scripts/ts-check.sh` | 2s |
+| 3 | `bash scripts/ts-test.sh` | 5s |
+| 4 | `bash scripts/ts-project-check.sh`（designer-react） | 18s |
+| 5 | `bash scripts/ts-project-check.sh openprint` | 6s |
+| 6 | `cargo test --bin print-server` | 4s 暖 / **1m33s 冷编译** |
+
+**退出码三态（这是本次最重要的设计点）**：
+`0 通过` / `1 失败` / **`2 没跑成`（环境缺 tsc/vitest/node/cargo，根本没检查）**。
+把「没跑成」算成通过 = 假绿；算成失败 = 假红。汇总里单独列名，末行写「**不等于通过**」。
+实测：摘掉 rustup 后跑 → 退出码 2 + `⚠ 没跑成：找不到 cargo` + `通过 5 · 失败 0 · 没跑成 1`。
+
+**表钉子改成了「钉内容」**（不是数量）：`assert_eq!(KINDS.to_vec(), vec!["bar","line","pie"], "…同步 TS 的 …")`。
+数量钉子对**改名**毫无反应。新增 `scripts/fault-inject-table-pins.py`：**5 条注入 5/5 抓到**，
+其中两条是「改名」注入（专门证明内容钉子 > 数量钉子）。
+
+**该注入脚本防的坑**：`cargo test <过滤名>` **匹配不到用例时仍返回 0** → 打错用例名会伪装成「通过」。
+现在数输出里真跑了几条 `... ok` / `... FAILED`，匹配不到报「**没验过**」。
+
+### §二十一.7 ⚠️ 本机 bash 3.2.57 会静默吃掉 `$VAR）` 里的变量值（2026-09-26 实测）
+
+```bash
+V=abc; echo "测试 $V）"      # ✗ →「测试 」+乱码；abc 与 ） 的头一字节都没了
+V=abc; echo "测试 ${V}）"    # ✓
+```
+
+**`$VAR` 紧跟非 ASCII 字符 → 静默吃掉变量的值 + 多字节字第一个字节。**
+退出码正常、脚本照跑，只是**打印的数字凭空消失**：
+`检查 31 个文件（源码 13 / 测试 18）` 印成 `测试 ）`。
+
+对照表（哪些写法安全）：
+
+| 写法 | 结果 |
+| --- | --- |
+| `echo "[$V）]"` | ✗ |
+| `echo "[${V}）]"` | ✓ |
+| `echo "[$V""）]"` | ✓ |
+| `echo "[$V ）]"` | ✓（多个空格） |
+| `printf '[%s）]\n' "$V"` | ✓ |
+| `echo "[$(cmd)）]"` | ✓ **命令替换不受影响** |
+| `echo "[（$V]"` | ✓（变量在多字节字**之后**） |
+
+`zsh` **同样中招** → 不是 bash 专属，按 `${VAR}` 写两边都对。
+已修 4 处：`ts-check.sh:69`、`ts-project-check.sh:69`、`ts-project-check.sh:76`（2 处）、`check-all.sh:66`。
+**排查手法**：搜 `\$[A-Za-z_]\w*(?=[\x80-\xff])`（`\$` 转义的不算）。
+**为什么值得单独记**：它出在**闸脚本自己的状态行**上 —— 也就是「本该说真话的那一行」。
+
+### §二十一.8 🔴 更正：`PAPERS` **本来就有**内容钉子
+
+体检报告 §2.2 初版写「纸张/图表/码制三张表都没有钉子」，判据是
+`grep -rnE 'assert_eq!\((PAPERS|KINDS|SYMBOLOGIES)\.len\(\)'` → 无匹配。
+
+**纸张那句错了。** `model.rs:1517 paper_table_is_pinned` 用的是
+`assert_eq!(PAPERS.to_vec(), expect, …)` —— **内容钉子，比数量钉子更强**。
+**我的 grep 只匹配 `.len()` 形式**，静默漏掉 → 错结论。
+`KINDS` / `SYMBOLOGIES` 那两句是对的（确实一个钉子都没有，已补）。
+
+**教训（与 BSD grep 的 `\|` 同一族）**：判「有没有闸」**不能只搜一种写法** ——
+搜**符号名本身**（`PAPERS`），再逐个看用法。`grep` 说「没有」时先怀疑 grep。

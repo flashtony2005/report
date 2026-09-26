@@ -388,6 +388,23 @@ mod tests {
         assert!(err.contains("bar") && err.contains("line") && err.contains("pie"), "要列出支持的：{err}");
     }
 
+    /// `KINDS` 是**唯一**的图表类型白名单，前端另有一份 `CHART_KINDS`
+    /// （`openprint/src/report/grid-report.ts`）。
+    ///
+    /// 钉**内容**而不只钉数量：数量相同但名字改了（`pie` → `donut`）同样会让两边分叉，
+    /// 而 `assert_eq!(KINDS.len(), 3)` 对改名毫无反应。
+    ///
+    /// 漂移的症状是「服务端能画的图，设计器下拉里没有」—— **界面上看不出来**，
+    /// 因为两边各自的行为都「合理」。所以这条钉子红了不是「测试要改」，是**去同步 TS**。
+    #[test]
+    fn kinds_table_is_pinned_and_names_the_ts_mirror() {
+        assert_eq!(
+            KINDS.to_vec(),
+            vec!["bar", "line", "pie"],
+            "图表类型表变了：要同步 TS 的 CHART_KINDS（openprint/src/report/grid-report.ts）"
+        );
+    }
+
     /// 没写 kind → 缺省柱状图（不是报错）
     #[test]
     fn missing_kind_defaults_to_bar() {

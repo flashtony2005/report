@@ -1555,6 +1555,24 @@ mod tests {
         assert!(err.contains("qr") && err.contains("code128"), "要列出支持的：{err}");
     }
 
+    /// `SYMBOLOGIES` 是**唯一**的码制白名单，前端另有一份 `BARCODE_SYMBOLOGIES`
+    /// （`openprint/src/report/grid-report.ts`）。
+    ///
+    /// 钉**内容**而不只钉数量：数量相同但名字改了（`code128` → `code-128`）同样分叉，
+    /// 而数量断言对改名毫无反应。
+    ///
+    /// 这条红了要连带想一件事：**每个码制的字节上限**也在前端另存一份
+    /// （TS `BARCODE_MAX_BYTES` ↔ Rust `MAX_QR_BYTES` / `MAX_CODE128_BYTES`），
+    /// 加码制就得同时定它的上限。上限本身没有闸（见 `架构体检-不足与改进方案.md` §2.2）。
+    #[test]
+    fn symbology_table_is_pinned_and_names_the_ts_mirror() {
+        assert_eq!(
+            SYMBOLOGIES.to_vec(),
+            vec!["qr", "code128"],
+            "码制表变了：要同步 TS 的 BARCODE_SYMBOLOGIES 与 BARCODE_MAX_BYTES（openprint/src/report/grid-report.ts）"
+        );
+    }
+
     #[test]
     fn empty_payload_is_rejected_for_both_symbologies() {
         for sym in SYMBOLOGIES {
