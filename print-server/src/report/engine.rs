@@ -1739,44 +1739,78 @@ impl Engine {
     /// 级联通常一两轮就收敛，但不排除有人写了个会震荡的条件，不能让它转到底。
     fn evaluate_to_fixpoint(&mut self, n: usize) {
         const MAX_ROUNDS: usize = 4;
+        let mut converged = false;
         for round in 0..MAX_ROUNDS {
-            // 新一轮要把 `evaluated` 全部清空重算，跨行缓存必须跟着作废：
-            // `hidden` 变了结果集就变，值重算了前缀和也不再成立。
-            self.pos_index.borrow_mut().clear();
-            self.deps_done.borrow_mut().clear();
-            // resolve 的结果集里含 hidden 过滤，所以同样一轮一清。
-            // 这条 clear 就是 `resolve_cache` 正确性的**全部依据**：
-            // `hidden` 只在下面 `compute_tests` 里变，而那是每轮的末尾，
-            // 所以「清空 → 求值整轮 → 改 hidden」之间结果集恒定。
-            self.resolve_cache.borrow_mut().clear();
-            // 聚合值还多依赖一层：结果集里的格的**值**。一轮之内值同样冻结
-            // （`evaluated` 置位后不再重算），所以跟结果集同生命周期。
-            self.coord_nums_cache.borrow_mut().clear();
-            self.coord_prefix_cache.borrow_mut().clear();
+            self.clear_round_caches();
             for i in 0..n {
                 self.ensure_value(i);
             }
             // 只在第一轮报解析失败，避免同一条告警重复 N 次
             let changed = self.compute_tests(n, round == 0);
             if !changed {
+                converged = true;
                 break;
-            }
-            // 第 0 轮的 changed 只是「首次定下谁被删」，属于正常流程；
-            // 第 1 轮起还在翻转，才说明条件依赖了会随删除而变化的聚合值
-            // （如「小计 < 阈值的分组不显示」），此时结果取决于最后一轮，值得提示。
-            if round >= 1 {
-                self.warnings.push(format!(
-                    "row/col_test 第 {} 轮仍在翻转：测试条件依赖了会随删除变化的聚合值，已按最后一轮结果出表",
-                    round + 1
-                ));
             }
             if round + 1 == MAX_ROUNDS {
                 break;
             }
-            for inst in self.insts.iter_mut() {
-                inst.evaluated = false;
-                inst.evaluating = false;
+            self.reset_evaluated();
+        }
+
+        // ---- 没收敛时的收尾：**值必须与最终可见集合对齐** ----
+        //
+        // 循环里「先求值整轮、再算 hidden」，所以每一轮的值是按**上一轮**的 hidden 算的。
+        // 收敛时两者一致（最后一轮 hidden 没变），没问题；但到 MAX_ROUNDS 强行退出时
+        // `hidden` 刚被改过、值却没重算 —— 于是：
+        //
+        //   `insts[..].value`  ← 第 3 轮的可见集合
+        //   `insts[..].hidden` ← 第 4 轮的可见集合（布局按它过滤）
+        //
+        // 后果是**明细已经被删掉，汇总里还算着它**（实测：3 行可见但汇总显示 0）。
+        // 清一遍缓存、按最终 hidden 重算值，两者就对齐了。
+        //
+        // 注意这里**不再跑 compute_tests**：再跑就会再改 hidden、再要重算值，无限循环。
+        // 所以最终 hidden 被冻结，值以它为准 —— 表内自洽，但条件本身仍不成立，
+        // 必须把这件事说出来（见下面的告警）。
+        if !converged {
+            self.clear_round_caches();
+            self.reset_evaluated();
+            for i in 0..n {
+                self.ensure_value(i);
             }
+            self.warnings.push(format!(
+                "row/col_test 在 {MAX_ROUNDS} 轮内没有稳定下来：测试条件与它依赖的聚合值互相影响\
+                 （删行改变了聚合值，聚合值又决定删哪些行）。已按最终可见集合重算全部数值，\
+                 所以**显示的数值与显示的行是一致的**；但该条件在最终数据上仍不成立 ——\
+                 这张表的结果**不稳定**，不要当作可发布的结果。\
+                 常见修法是让测试条件只依赖**与自身无关**的量（如本行字段），\
+                 或把过滤挪到数据源里。"
+            ));
+        }
+    }
+
+    /// 清空「一轮内有效」的求值缓存。
+    ///
+    /// **调用点必须成对**：`clear_round_caches()` → 求值整轮 → 改 `hidden`。
+    /// 这条时序是 `resolve_cache` / `coord_nums_cache` 正确性的**全部依据** ——
+    /// 它们缓存的结果集里含 `hidden` 过滤，而 `hidden` 只在 `compute_tests` 里变。
+    /// 抽成一个函数是为了让「忘了清哪张」不可能发生（原先五张表散在循环体里）。
+    fn clear_round_caches(&mut self) {
+        self.pos_index.borrow_mut().clear();
+        self.deps_done.borrow_mut().clear();
+        self.resolve_cache.borrow_mut().clear();
+        self.coord_nums_cache.borrow_mut().clear();
+        self.coord_prefix_cache.borrow_mut().clear();
+    }
+
+    /// 让下一轮重新求值全部实例。
+    ///
+    /// `cycle_warned` **不重置**：它是「同一个环只报一次」的闸，
+    /// 重置会让多轮求值把同一条循环引用告警刷屏。
+    fn reset_evaluated(&mut self) {
+        for inst in self.insts.iter_mut() {
+            inst.evaluated = false;
+            inst.evaluating = false;
         }
     }
 
@@ -5173,25 +5207,26 @@ mod layout_collision_probe {
     }
 }
 
-/// 已知缺陷复现 #2：强制退出时数值与布局口径不一致（评审 §三.2）。
+/// 回归测试：非收敛（震荡）时，数值必须与最终可见集合一致。
 ///
-/// **现在是红的，所以 `#[ignore]`。** 修好之后把断言改成「正确行为」并去掉 `#[ignore]`。
+/// 修好之前的行为：`evaluate_to_fixpoint` 到 MAX_ROUNDS 强行退出时**不重置 `evaluated`**，
+/// 于是 `value` 用的是上一轮的 hidden、`hidden` 已是最后一轮的 → 两者不同步。
+/// 实测是「最终 3 行可见，但汇总显示 0」。
 ///
-/// 复现：行测试依赖「可见格数」而删行又改变可见格数 → 震荡 →
-/// 第 4 轮 `changed` 仍为真时 `break`，**不重置 `evaluated`** →
-/// `value` 用的是第 3 轮的 hidden、`hidden` 已是第 4 轮的 → 两者不同步。
-/// 实测：最终 3 行可见，但 `C1` 显示 **0**（按「全被删」那轮算的）。
-/// 附带缺陷：告警文案说「已按最后一轮结果出表」，**与事实相反**。
+/// 修法见 `evaluate_to_fixpoint` 末尾：退出后按**最终** hidden 重算一遍值，
+/// 并冻结 hidden（不再跑 `compute_tests`，否则无限循环）。
+/// 同时把「这张表不稳定」明说出来 —— 老告警写的是「已按最后一轮结果出表」，与事实相反。
+///
+/// 这个模板是**刻意构造的震荡**（`COUNTA(B1) <= 1`：可见格多就删、删完又变少就又留），
+/// 现实中少见，但它是「测试条件依赖了会随删除变化的聚合值」这一族的极端形态。
 #[cfg(test)]
-mod nonconvergence_probe {
+mod nonconvergence_tests {
     use super::*;
 
-    /// 构造一个**震荡**模板：行测试依赖「可见格数」，而删行又会改变可见格数。
     /// A1 行展开 + row_test = `COUNTA(B1) <= 1`；B1 是明细值；C1 = `COUNTA(B1)`。
-    /// 期望：四轮退出后，`C1` 的值是**上一轮 hidden** 算出来的（陈旧）。
+    /// 期望：四轮退出后 `C1` 等于**最终可见**的 B1 个数，且有一条「不稳定」告警。
     #[test]
-    #[ignore = "已知缺陷：强制退出时数值口径落后一轮，见模块注释。修好后去掉 ignore"]
-    fn probe_forced_exit_leaves_stale_values() {
+    fn forced_exit_recomputes_values_against_final_visibility() {
         let mut ds: DataSet = Vec::new();
         for (r, a) in [("华东", 10.0), ("华南", 20.0), ("华北", 30.0)] {
             ds.push(BTreeMap::from([
@@ -5234,23 +5269,28 @@ mod nonconvergence_probe {
         let grid = e.expand_sheet(&sheet);
 
         let visible = e.insts.iter().filter(|i| !i.dropped && i.pos == "A1").count();
-        let c1: Vec<String> = e.insts.iter().filter(|i| i.pos == "C1").map(|i| i.value.to_string()).collect();
-        println!("未丢弃 A1 实例数 = {visible}（震荡末期应为 3）");
-        println!("C1 的值 = {c1:?}（若与可见格数不一致即为陈旧）");
-        println!("告警：");
-        for w in e.warnings() {
-            println!("  - {w}");
-        }
-        println!("网格 {} 行", grid.len());
 
-        // 断言：C1 显示的数字应当等于「最终可见的 B1 个数」
+        // 断言 1：数值必须与**最终可见集合**一致（这条修好前是红的：3 行可见但 C1 = 0）
         let want = visible as f64;
-        let got: Vec<f64> = e.insts.iter().filter(|i| i.pos == "C1").filter_map(|i| i.value.as_f64()).collect();
+        let got: Vec<f64> =
+            e.insts.iter().filter(|i| i.pos == "C1").filter_map(|i| i.value.as_f64()).collect();
         assert!(
-            got.iter().all(|v| (*v - want).abs() < 1e-9),
-            "四轮强制退出后数值与最终可见集合不一致：C1={got:?}，但最终可见 B1 有 {want} 个 \
+            !got.is_empty() && got.iter().all(|v| (*v - want).abs() < 1e-9),
+            "数值与最终可见集合不一致：C1={got:?}，但最终可见 B1 有 {want} 个 \
              —— 这正是「明细已删、汇总仍含」的形态"
         );
+
+        // 断言 2：不稳定必须被**明说**，且不能说反
+        let unstable: Vec<&String> =
+            e.warnings().iter().filter(|w| w.contains("没有稳定下来")).collect();
+        assert_eq!(unstable.len(), 1, "非收敛必须恰好报一次，实际：{:?}", e.warnings());
+        assert!(
+            !e.warnings().iter().any(|w| w.contains("已按最后一轮结果出表")),
+            "老告警文案与事实相反（数值恰恰不是最后一轮的），不该再出现"
+        );
+
+        // 断言 3：震荡模板最终确实留下了数据（不是整张表被删空）
+        assert_eq!(grid.len(), 3, "3 个分组应全部可见");
     }
 }
 
