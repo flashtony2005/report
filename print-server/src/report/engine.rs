@@ -5092,3 +5092,312 @@ mod scale {
         }
     }
 }
+
+/// 已知缺陷复现 #1：二维落位冲突（评审 §三.3）。
+///
+/// **现在是红的，所以 `#[ignore]`。** 修好之后把断言改成「正确行为」并去掉 `#[ignore]`。
+///
+/// 复现：同一模板行放**两个**列展开格 → 列区间 0..3 与 1..4 重叠 →
+/// `grid[r][c] = Some(..)` 后写覆盖前写，**6 个实例只剩 4 个落位，无任何告警**。
+#[cfg(test)]
+mod layout_collision_probe {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn col_cell(field: &str) -> CellTpl {
+        CellTpl {
+            image: None,
+            pos: None,
+            value: Some(JsonValue::from("x")),
+            model: Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: Some(field.to_string()),
+                expand_type: Some(ExpandType::C),
+                ..Default::default()
+            }),
+            merge_across: 0,
+            merge_down: 0,
+            merge_to_end: false,
+            chart: None,
+            barcode: None,
+        }
+    }
+
+    /// 同一模板行里放**两个**列展开格（模板列 0 与 1）。
+    /// 期望：列区间 0..3 与 1..4 重叠 → `grid[row][col] = Some(..)` 互相覆盖。
+    #[test]
+    #[ignore = "已知缺陷：落位冲突静默覆盖，见模块注释。修好后去掉 ignore"]
+    fn probe_two_col_expand_in_one_row() {
+        let mut ds: DataSet = Vec::new();
+        for (m, q) in [("1月", "Q1"), ("2月", "Q2"), ("3月", "Q3")] {
+            ds.push(BTreeMap::from([
+                ("m".to_string(), JsonValue::from(m)),
+                ("q".to_string(), JsonValue::from(q)),
+            ]));
+        }
+        let sheet = SheetTpl {
+            name: "t".into(),
+            page: None,
+            loop_field: None,
+            rows: vec![RowTpl { cells: vec![col_cell("m"), col_cell("q")] }],
+        };
+        let mut e = Engine::new(ds);
+        let grid = e.expand_sheet(&sheet);
+
+        // 落位冲突统计：同一 (row_start, col_start) 被几个**未丢弃**实例占用
+        let mut seen: HashMap<(usize, usize), Vec<String>> = HashMap::new();
+        for i in &e.insts {
+            if i.dropped {
+                continue;
+            }
+            seen.entry((i.row_start, i.col_start)).or_default().push(i.pos.clone());
+        }
+        let mut collisions: Vec<_> = seen.iter().filter(|(_, v)| v.len() > 1).collect();
+        collisions.sort_by_key(|(k, _)| **k);
+
+        println!("实例数={} 落位数={} 冲突数={}", e.insts.len(), seen.len(), collisions.len());
+        for (k, v) in &collisions {
+            println!("  冲突 {k:?} ← {v:?}");
+        }
+        println!("网格 {total_rows}x{total_cols}", total_rows = grid.len(), total_cols = grid[0].len());
+        for (r, row) in grid.iter().enumerate() {
+            let texts: Vec<String> = row.iter().map(|c| format!("{:?}@{}", c.text, c.pos)).collect();
+            println!("  行{r}: {}", texts.join(" | "));
+        }
+
+        assert!(
+            collisions.is_empty(),
+            "布局冲突：{} 个落位被多个实例占用 —— 后写入的静默覆盖前一个",
+            collisions.len()
+        );
+    }
+}
+
+/// 已知缺陷复现 #2：强制退出时数值与布局口径不一致（评审 §三.2）。
+///
+/// **现在是红的，所以 `#[ignore]`。** 修好之后把断言改成「正确行为」并去掉 `#[ignore]`。
+///
+/// 复现：行测试依赖「可见格数」而删行又改变可见格数 → 震荡 →
+/// 第 4 轮 `changed` 仍为真时 `break`，**不重置 `evaluated`** →
+/// `value` 用的是第 3 轮的 hidden、`hidden` 已是第 4 轮的 → 两者不同步。
+/// 实测：最终 3 行可见，但 `C1` 显示 **0**（按「全被删」那轮算的）。
+/// 附带缺陷：告警文案说「已按最后一轮结果出表」，**与事实相反**。
+#[cfg(test)]
+mod nonconvergence_probe {
+    use super::*;
+
+    /// 构造一个**震荡**模板：行测试依赖「可见格数」，而删行又会改变可见格数。
+    /// A1 行展开 + row_test = `COUNTA(B1) <= 1`；B1 是明细值；C1 = `COUNTA(B1)`。
+    /// 期望：四轮退出后，`C1` 的值是**上一轮 hidden** 算出来的（陈旧）。
+    #[test]
+    #[ignore = "已知缺陷：强制退出时数值口径落后一轮，见模块注释。修好后去掉 ignore"]
+    fn probe_forced_exit_leaves_stale_values() {
+        let mut ds: DataSet = Vec::new();
+        for (r, a) in [("华东", 10.0), ("华南", 20.0), ("华北", 30.0)] {
+            ds.push(BTreeMap::from([
+                ("region".to_string(), JsonValue::from(r)),
+                ("amt".to_string(), JsonValue::from(a)),
+            ]));
+        }
+        let cell = |field: Option<&str>, rp: Option<&str>, test: Option<&str>, vex: Option<&str>| CellTpl {
+            image: None,
+            pos: None,
+            value: Some(JsonValue::from("x")),
+            model: Some(CellModel {
+                ds: Some("ds1".to_string()),
+                field: field.map(str::to_string),
+                expand_type: if field == Some("region") { Some(ExpandType::R) } else { None },
+                row_parent: rp.map(str::to_string),
+                row_test_expr: test.map(str::to_string),
+                value_expr: vex.map(str::to_string),
+                ..Default::default()
+            }),
+            merge_across: 0,
+            merge_down: 0,
+            merge_to_end: false,
+            chart: None,
+            barcode: None,
+        };
+        let sheet = SheetTpl {
+            name: "t".into(),
+            page: None,
+            loop_field: None,
+            rows: vec![RowTpl {
+                cells: vec![
+                    cell(Some("region"), None, Some("COUNTA(B1) <= 1"), None),
+                    cell(Some("amt"), Some("A1"), None, None),
+                    cell(None, Some("A1"), None, Some("COUNTA(B1)")),
+                ],
+            }],
+        };
+        let mut e = Engine::new(ds);
+        let grid = e.expand_sheet(&sheet);
+
+        let visible = e.insts.iter().filter(|i| !i.dropped && i.pos == "A1").count();
+        let c1: Vec<String> = e.insts.iter().filter(|i| i.pos == "C1").map(|i| i.value.to_string()).collect();
+        println!("未丢弃 A1 实例数 = {visible}（震荡末期应为 3）");
+        println!("C1 的值 = {c1:?}（若与可见格数不一致即为陈旧）");
+        println!("告警：");
+        for w in e.warnings() {
+            println!("  - {w}");
+        }
+        println!("网格 {} 行", grid.len());
+
+        // 断言：C1 显示的数字应当等于「最终可见的 B1 个数」
+        let want = visible as f64;
+        let got: Vec<f64> = e.insts.iter().filter(|i| i.pos == "C1").filter_map(|i| i.value.as_f64()).collect();
+        assert!(
+            got.iter().all(|v| (*v - want).abs() < 1e-9),
+            "四轮强制退出后数值与最终可见集合不一致：C1={got:?}，但最终可见 B1 有 {want} 个 \
+             —— 这正是「明细已删、汇总仍含」的形态"
+        );
+    }
+}
+
+/// 已知缺陷复现 #3：跨数据集列主格按**裸行号**关联（评审 §三.4）。
+///
+/// **现在是红的，所以 `#[ignore]`。** 修好之后把断言改成「正确行为」并去掉 `#[ignore]`。
+///
+/// 行父格跨数据集时会强制要求 `join_on`（`join_view`），但**列父格这条路没有同等检查**：
+/// `col_parent_index` 把列主格的 `rows` 当裸行号索引，与当前格的 `base` 直接求交。
+/// 实测：ds1 两行、ds2 三行 → ds2 的第三行（333）**静默消失，零告警**。
+#[cfg(test)]
+mod cross_ds_col_parent_probe {
+    use super::*;
+
+    /// A1 = ds1 的列展开；B1 挂 `col_parent: A1` 但读 **ds2**。
+    /// ds2 行数与 ds1 不同 → 暴露「按行号硬凑」而不是拒绝或告警。
+    #[test]
+    #[ignore = "已知缺陷：跨数据集列主格按裸行号关联，见模块注释。修好后去掉 ignore"]
+    fn probe_cross_ds_col_parent_matches_by_row_index() {
+        let mut ds1: DataSet = Vec::new();
+        for m in ["1月", "2月"] {
+            ds1.push(BTreeMap::from([("m".to_string(), JsonValue::from(m))]));
+        }
+        // ds2 有 3 行 —— 与 ds1 的 2 行不等长，专门暴露按行号硬凑
+        let ds2: DataSet = vec![
+            BTreeMap::from([("amt".to_string(), JsonValue::from(111.0))]),
+            BTreeMap::from([("amt".to_string(), JsonValue::from(222.0))]),
+            BTreeMap::from([("amt".to_string(), JsonValue::from(333.0))]),
+        ];
+        let col = CellTpl {
+            image: None, pos: None, value: Some(JsonValue::from("x")),
+            model: Some(CellModel {
+                ds: Some("ds1".to_string()), field: Some("m".to_string()),
+                expand_type: Some(ExpandType::C), ..Default::default()
+            }),
+            merge_across: 0, merge_down: 0, merge_to_end: false, chart: None, barcode: None,
+        };
+        let val = CellTpl {
+            image: None, pos: None, value: Some(JsonValue::from("x")),
+            model: Some(CellModel {
+                ds: Some("ds2".to_string()), field: Some("amt".to_string()),
+                agg: Some(AggType::Sum),
+                col_parent: Some("A1".to_string()), ..Default::default()
+            }),
+            merge_across: 0, merge_down: 0, merge_to_end: false, chart: None, barcode: None,
+        };
+        let sheet = SheetTpl {
+            name: "t".into(), page: None, loop_field: None,
+            rows: vec![RowTpl { cells: vec![col, val] }],
+        };
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), ds1);
+        datasets.insert("ds2".to_string(), ds2);
+        let mut e = Engine::new_multi(datasets, "ds1".to_string());
+        let grid = e.expand_sheet(&sheet);
+
+        println!("网格 {} 行 x {} 列", grid.len(), grid[0].len());
+        for (r, row) in grid.iter().enumerate() {
+            println!("  行{r}: {}", row.iter().map(|c| format!("{:?}", c.text)).collect::<Vec<_>>().join(" | "));
+        }
+        println!("告警数 = {}", e.warnings().len());
+        for w in e.warnings() { println!("  - {w}"); }
+
+        let vals: Vec<Option<f64>> = grid[0].iter().map(|c| c.raw_number).collect();
+        // 特征化断言（characterization）：钉住**当前**（错的）行为，修好后本测试会红，
+        // 那时把它改成断言「拒绝 + 告警」并去掉 `#[ignore]`。
+        assert_eq!(
+            vals,
+            vec![Some(111.0), Some(222.0)],
+            "跨数据集列主格是按**裸行号**关联的：ds2 有 3 行、ds1 只有 2 行 → 第三行被静默丢掉"
+        );
+        assert!(
+            e.warnings().is_empty(),
+            "更糟的是**一条告警都没有** —— 与行父格跨数据集时「必须写 join_on」的待遇不一致：{:?}",
+            e.warnings()
+        );
+    }
+}
+
+/// 已知缺陷复现 #4：`join_view` 用**父实例首行**的关联键代表整组（评审 §三.4 后半）。
+///
+/// **现在是红的，所以 `#[ignore]`。** 修好之后把断言改成「正确行为」并去掉 `#[ignore]`。
+///
+/// `engine.rs:931-937` 的注释说「父实例可能覆盖多行，取第一行（**分组格下它们同键**）」——
+/// 这个括号里的前提**没有任何校验**。只要**分组字段 ≠ 关联字段**，组内各行的关联键就不同，
+/// 首行代表整组立刻出错。
+/// 实测：华东组内有 cust=1 / cust=2 两行，子表两条各 100 / 200 → 只取到首行的 100。
+#[cfg(test)]
+mod join_view_first_row_probe {
+    use super::*;
+
+    #[test]
+    #[ignore = "已知缺陷：join_view 用父实例首行的键代表整组，见模块注释。修好后去掉 ignore"]
+    fn probe_join_on_takes_parent_first_row_only() {
+        // 父数据集：按 region 分组，组内 cust 不同
+        let ds1: DataSet = vec![
+            BTreeMap::from([("region".to_string(), JsonValue::from("华东")), ("cust".to_string(), JsonValue::from(1))]),
+            BTreeMap::from([("region".to_string(), JsonValue::from("华东")), ("cust".to_string(), JsonValue::from(2))]),
+        ];
+        // 子数据集：按 cust 关联
+        let ds2: DataSet = vec![
+            BTreeMap::from([("cust".to_string(), JsonValue::from(1)), ("amt".to_string(), JsonValue::from(100.0))]),
+            BTreeMap::from([("cust".to_string(), JsonValue::from(2)), ("amt".to_string(), JsonValue::from(200.0))]),
+        ];
+        let parent = CellTpl {
+            image: None, pos: None, value: Some(JsonValue::from("x")),
+            model: Some(CellModel {
+                ds: Some("ds1".to_string()), field: Some("region".to_string()),
+                expand_type: Some(ExpandType::R), ..Default::default()
+            }),
+            merge_across: 0, merge_down: 0, merge_to_end: false, chart: None, barcode: None,
+        };
+        let child = CellTpl {
+            image: None, pos: None, value: Some(JsonValue::from("x")),
+            model: Some(CellModel {
+                ds: Some("ds2".to_string()), field: Some("amt".to_string()),
+                agg: Some(AggType::Sum),
+                row_parent: Some("A1".to_string()),
+                join_on: Some("cust".to_string()),   // ← 关联字段 ≠ 分组字段 region
+                ..Default::default()
+            }),
+            merge_across: 0, merge_down: 0, merge_to_end: false, chart: None, barcode: None,
+        };
+        let sheet = SheetTpl {
+            name: "t".into(), page: None, loop_field: None,
+            rows: vec![RowTpl { cells: vec![parent, child] }],
+        };
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), ds1);
+        datasets.insert("ds2".to_string(), ds2);
+        let mut e = Engine::new_multi(datasets, "ds1".to_string());
+        let grid = e.expand_sheet(&sheet);
+
+        println!("网格 {} 行", grid.len());
+        for (r, row) in grid.iter().enumerate() {
+            println!("  行{r}: {}", row.iter().map(|c| format!("{:?}", c.text)).collect::<Vec<_>>().join(" | "));
+        }
+        println!("告警数 = {}", e.warnings().len());
+        for w in e.warnings() { println!("  - {w}"); }
+
+        // 华东组内有 cust=1 与 cust=2 两条子表行，正确合计应为 300
+        let got = grid[0][1].raw_number;
+        assert_eq!(
+            got,
+            Some(300.0),
+            "华东组内两条子表行（100 + 200）应合计 300，实际拿到 {got:?} \
+             —— join_view 只用了父实例**首行**的关联键"
+        );
+    }
+}

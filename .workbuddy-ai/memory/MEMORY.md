@@ -68,7 +68,7 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 
 ## AI 层（**已有**，别当缺口）
 
-`openprint/src/ai/`（716 行）+ `AiAssistantModal.tsx` + Vue 侧 `AiAssistantPanel.vue`（同一 bug 两处）：提示词/few-shot/流式/**校验→回喂错误→重试**/归一化，三模式。**只覆盖自由画布**；`ReportDef` 完全没接。key 在 `localStorage`。**丢弃必须上报**（`dropped` 必填）。详见 `AI优先-差距分析与改进方案.md` / §二十。
+`openprint/src/ai/`（716 行）+ `AiAssistantModal.tsx` + Vue 侧 `AiAssistantPanel.vue`（同一 bug 两处）：提示词/few-shot/流式/**校验→回喂错误→重试**/归一化，三模式。**只覆盖自由画布**；`ReportDef` 完全没接。**丢弃必须上报**（`dropped` 必填）。详见 `AI优先-差距分析与改进方案.md` / §二十。
 
 ## 已完成（别再当缺口重复做）
 
@@ -89,8 +89,9 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 
 - **分页不认分组**：`paginate()` 按固定行数切拍平网格，不知哪几行同组 → 一组明细跨页时第二页只有重复表头，**补不出主格**。
 - **`GridCell` 字段很少**：`text/pos/rowspan/colspan/raw_number/num_format/formula` + 后补 `style`/`image`/`chart`/`barcode`。设计器里的彩色是**语义高亮**（标「这格什么角色」不是「长什么样」）。xlsx 基础样靠导出器写死。
-- **`GridCell.pos` 保留模板坐标** → 可反查展开后的输出范围（服务端画图表的前提）。
-- 已核对**不是**缺口的：表达式函数集（11 官方 + MAP/FILTER/REDUCE/FLATMAP）全在；`CellModel` 无死字段；分页三配置都生效；多 sheet 导出支持。
+- **`GridCell.pos` 保留模板坐标** → 可反查展开后的输出范围。
+- 已核对**不是**缺口：表达式函数集全在；`CellModel` 无死字段；分页三配置都生效；多 sheet 导出支持。
+- ⚠️ **5 个已复现缺陷** → `架构评审核验-逐条复现.md`。
 
 ## 对照积木报表的差距分析（`引擎差距分析-对照积木报表.md`）
 

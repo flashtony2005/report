@@ -1201,3 +1201,92 @@ V=abc; echo "测试 ${V}）"    # ✓
   不连续（0/3/6 行），而 Excel 一条序列只能引用**一个连续区域**。
 - **`row_pixels(pts) = round(pts × 4/3)`**（`xlsx.rs:108-109`）—— 行高与列宽是两套换算。
 
+
+---
+
+## 二十三、5 个已复现缺陷（2026-09-26，外部评审驱动）
+
+外部评审（用户贴入）提 7 条架构问题，**全部成立**；其中 5 条我做成了可复现测试。
+完整核验见仓库根 **《架构评审核验-逐条复现.md》**。
+
+**复现方式**：`engine.rs` 末尾 5 个 `*_probe` 模块，全部 `#[ignore]`（默认不跑，闸保持绿）。
+
+```bash
+# 默认：512 passed / 0 failed / 18 ignored
+cargo test --manifest-path print-server/Cargo.toml --bin print-server
+# 复现：①②④ 红，③⑤ 特征化通过
+cargo test --manifest-path print-server/Cargo.toml --bin print-server -- --ignored --nocapture
+```
+
+| 模块 | 缺陷 | 一句话证据 |
+| --- | --- | --- |
+| `layout_collision_probe` | ① 落位冲突静默覆盖 | 同行两个列展开格 → `实例数=6 落位数=4`，渲染成 `1月 Q1 Q2 Q3`，**2月/3月连同值消失，零告警** |
+| `nonconvergence_probe` | ② 强制退出数值落后一轮 | 震荡模板 → **3 行可见但 `C1` 显示 0** |
+| `cross_ds_col_parent_probe` | ③ 跨数据集列主格裸行号 | ds1 两行/ds2 三行 → `111 \| 222`，第三行静默消失，零告警 |
+| `join_view_first_row_probe` | ④ `join_view` 首行代表整组 | 分组字段≠关联字段 → 组内 100+200 **只取到 100**，零告警 |
+| （无需探针） | ⑤ 图表「每组一张图」不成立 | `resolve_charts` 按 `pos` 去重，`engine.rs:1356-1357` 一眼可见 |
+
+### ② 的机制（最值得记住）
+
+`evaluate_to_fixpoint`（`engine.rs:1740-1781`）在 `round + 1 == MAX_ROUNDS` 时 `break`，
+**不重置 `evaluated`**。于是最后一轮 `changed` 为真时：
+
+| 项 | 用的是哪一轮的 `hidden` |
+| --- | --- |
+| `insts[..].value` | 第 3 轮（**上一轮**） |
+| `insts[..].hidden`（布局按它过滤） | 第 4 轮（最新） |
+
+**附带缺陷**：告警「已按最后一轮结果出表」（`engine.rs:1769`）**与事实相反**——
+数值恰恰不是最后一轮的。**一条说反了的告警比没有告警更坏。**
+
+### ① 的机制
+
+`grid[r][c] = Some(..)`（`engine.rs:1269`）**无占用检查**。
+根因在 `layout_columns`（`engine.rs:1945-1960`）：每个列展开组从**自己的 `tpl_col`**
+起占列（`let mut cursor = self.insts[group[0]].tpl_col;`），两组区间重叠**不检测**。
+
+### ③ 的机制
+
+行父格跨数据集**强制要求 `join_on`**（`join_view` `engine.rs:921-929`），
+**列父格这条路没有同等检查**：`col_parent_index`（`engine.rs:2560-2579`）
+把列主格 `rows` 当**裸行号**索引直接求交。
+注意 `debug_assert!`（`engine.rs:1108-1111`）**只守非分桶那条路，分桶路径无保护**——
+而分桶是主路径。
+
+### ④ 的机制
+
+`engine.rs:931-937` 注释写「取第一行（**分组格下它们同键**）」——
+**括号里那个前提没有任何校验**。分组字段 ≠ 关联字段时立刻出错。
+
+### ⑤ 的机制
+
+```rust
+let mut seen: BTreeSet<String> = BTreeSet::new();
+decls.retain(|(_, _, pos, _, _)| seen.insert(pos.clone()));   // engine.rs:1356-1357
+```
+所有分组实例共享同一 `pos` → 只剩第一份；`ChartIndex` 也按 `pos` 收集（1365-1377）。
+**所以 `make_insts` 里那句「每组一张图」注释是误导性的。**
+（报告初稿沿用了它，已在 §8.2 / §14.6 更正。）
+
+### 两个我**不同意**评审的点（已写进核验文档 §4）
+
+1. **「错误父格应返回模板错误」** —— 诊断对、处方错。失败粒度是**一格**不是整表
+   （`compile_conditionals` 注释 `engine.rs:626-628`），直接报错＝一个笔误废掉整张表。
+   正解是**结构化错误类型**（`warnings` → 分级 `issues`），让调用方拦住导出。
+2. **「零依赖不应成为目标本身」** —— 优先级那半句对；隐含前提（持续投入）无证据，
+   且**代码早就划了线**：QR v11+ 不做、Code128 不自动切码集、PNG 非压缩 stored、
+   ZIP 只写 method 0、OOXML 只写 4~5 part。**沉没成本，非在途投入。**
+
+### 两条评审低估/漏掉的（让修复更便宜）
+
+- **5 个缺陷全部落在现有 512 条测试覆盖之外**：没有一条是「函数算错了」，
+  全是「组合起来才错」。→ **修复第一步是补测试形状，不是改代码。**
+- `layer_coordinate`（`engine.rs:2246`）**已经在算** `"A2:0,B3:2"` 形式的实例身份链
+  （`dump_text` 在用）→ 评审建议的「输出保留实例上下文」是**透出**而非重写。
+  同理 LogicalSheet/PageLayout 分离是既有「声明 vs 结果」约定的延伸。
+
+### 一条可独立先做的性能项
+
+`expr::parse` 在 `ensure_value` 里**每实例每轮都重解析**（`engine.rs:2059`），
+**无 AST 缓存**（grep `ast_cache` / `HashMap<String, Expr>` → 无）。
+10000 行 × 4 轮 = 解析 4 万次。加 AST 缓存几行代码，**不必等模板编译层**。
