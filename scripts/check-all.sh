@@ -5,7 +5,7 @@
 # ## 为什么要有这个脚本
 #
 # 这些闸早就造好了，但此前**没有任何入口会把它们串起来**：没有 CI，没有聚合脚本，
-# 27 个 `.py`（13 故障注入 + 13 探针 + mirror-check）**没有任何 shell 脚本调用过**。
+# 写这个脚本时，27 个 `.py`（13 故障注入 + 13 探针 + mirror-check）**没有任何 shell 脚本调用过**。
 # 于是「闸是绿的」只意味着「上次有人手动跑过」，不意味着「现在没问题」。
 #
 # **一个没人跑的绿闸比一个红闸更坏** —— 红闸至少会喊；没人跑的绿闸会主动产出
@@ -34,14 +34,15 @@
 #
 # ## 不含什么
 #
-# 15 个 `fault-inject-*.py` 与 13 个 `verify-*.py` **不在这里**：前者要改源码、
+# 16 个 `fault-inject-*.py` 与 13 个 `verify-*.py` **不在这里**：前者要改源码、
 # 后者要起真服务（127.0.0.1:18888）。它们按需单独跑，改哪个特性跑哪一个。
 #   ls scripts/fault-inject-*.py   # 注入：证明某条闸真的有牙齿
 #   ls scripts/verify-*.py         # 探针：对活服务做端到端验证
 #
-# （这两个数字以前写的是 13 / 13。`verify` 确实是 13，`fault-inject` **早就已经是 14**
-#  —— 加了新脚本没同步这个注释，于是数字漂了一格。2026-09-26 加了
-#  `fault-inject-issues-ui.py` 之后一并核成 15。）
+# （这两个数字漂过两次：初版写的 13 / 13 —— `verify` 确实是 13，`fault-inject`
+#  **早就已经是 14**，加了新脚本没同步注释。2026-09-26 加 `fault-inject-issues-ui.py`
+#  核成 15；2026-09-27 加 `fault-inject-mirror-semantics.py` 核成 16。
+#  **注释里的数字是最容易漂的东西 —— 改完记得 `ls | wc -l` 核一遍。**）
 #
 # 退出码：0 / 1 / 2，语义见上。
 set -uo pipefail
@@ -56,7 +57,7 @@ for a in "$@"; do
     --list)
       cat <<'EOT'
 会跑的闸（按执行顺序）：
-  1. python3 scripts/mirror-check.py           Rust↔TS 契约逐字段对账（亚秒级）
+  1. python3 scripts/mirror-check.py           Rust↔TS 契约对账（形状 24 组 + 语义 8 条，亚秒级）
   2. bash    scripts/ts-check.sh               逐文件类型检查（--noResolve，快）
   3. bash    scripts/ts-test.sh                前端纯函数单测（借外部 vitest，node 环境）
   4. bash    scripts/ts-project-check.sh               整项目类型检查 · designer-react
@@ -122,7 +123,7 @@ printf '\033[1mcheck-all\033[0m（%s）\n' "$ROOT"
 # 唯一能发现 Rust↔TS 字段/清单漂移的闸。排第一是因为它亚秒级且零依赖 ——
 # 它红了多半意味着后面几个小时的检查都白跑。
 if need python3 "mirror-check.py"; then
-  run "1/7 mirror-check（Rust↔TS 契约）" python3 scripts/mirror-check.py
+  run "1/7 mirror-check（Rust↔TS 契约：形状 + 语义）" python3 scripts/mirror-check.py
 fi
 
 # ---------------------------------------------------- 2. 逐文件类型检查（快）
@@ -165,7 +166,7 @@ printf '通过 %d · 失败 %d · 没跑成 %d\n' "$passed" "$failed" "$skipped"
 [ "${#FAILED_NAMES[@]}"  -gt 0 ] && printf '失败：%s\n'   "${FAILED_NAMES[*]}"
 [ "${#SKIPPED_NAMES[@]}" -gt 0 ] && printf '没跑成：%s\n' "${SKIPPED_NAMES[*]}"
 
-printf '\n（不含 15 个 fault-inject / 13 个 verify —— 要改源码 / 起服务，按需单独跑：`ls scripts/fault-inject-*.py`）\n'
+printf '\n（不含 16 个 fault-inject / 13 个 verify —— 要改源码 / 起服务，按需单独跑：`ls scripts/fault-inject-*.py`）\n'
 
 case $worst in
   0) printf '\033[32m全绿\033[0m\n' ;;

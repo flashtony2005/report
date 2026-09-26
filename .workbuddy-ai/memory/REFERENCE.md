@@ -995,37 +995,79 @@ POST /api/reports/sales-by-region/run → 400 「数据集「ds1」取数失败�
 
 ### 头条：**验证设施一流，「让验证设施跑起来」是缺的**
 
-13 个 `fault-inject-*.py` + 13 个 `verify-*.py` + `mirror-check.py` = **27 个 .py**，
+13 个 `fault-inject-*.py` + 13 个 `verify-*.py` + `mirror-check.py` = **27 个 .py**
+（**体检当时**的数；现已 16 + 13 + 1 = 30），
 **没有任何 shell 脚本调用过任何一个**（`grep -rnE 'python3? .*\.py|mirror' scripts/*.sh scripts/*.mjs scripts/*.cjs` → 无输出）；
 **无 CI**（无 `.github`）；**无 `check-all`**。
 
 → 新形态，已进 `silent-failure-hunt` 的族谱：**「没有跑器的闸」比「红的闸」更坏** ——
 红闸会喊；没跑器的闸是**绿的**，谁看一眼都得到「契约一致」的信心，而那份信心是空头。
 
-### `mirror-check.py`：只对「形状」，不对「语义」
+### `mirror-check.py`：**两层** —— 形状 24 组 + 语义 8 条（2026-09-27 起）
+
+> 下面这段「只对形状」是**体检当时（2026-09-26）**的判断，已**部分过时**。
+> 现状：语义层已加 8 条，见本节末尾「现状」。
 
 覆盖 24 组 struct/interface 字段 + 纸张名清单（`mirror-check.py:29-54, 152-160`）。实测 24/24 OK + 纸张名 6 项。
 
-**不覆盖**的规则体/常量（注释里都写着「改一处要改两处」）：
+**当时不覆盖**的规则体/常量（注释里都写着「改一处要改两处」）：
 
-| 事实 | Rust | TS | 闸 |
+| 事实 | Rust | TS | 闸（体检时） |
 | --- | --- | --- | --- |
 | 字节上限 213/48 | `barcode.rs:52,59` | `grid-report.ts:197-202` | **无** |
-| 码制别名表 | `barcode.rs:190-192` | `grid-report.ts:214-215` | **无** |
-| 图表类型白名单 | `chart.rs` `KINDS` | `grid-report.ts:301` | **无** |
-| 条件运算符 8 个 | `model.rs:171` | `grid-report.ts:417-426` | 半（`model.rs:1422` 只钉 Rust 数字） |
+| 码制别名表 | `barcode.rs:186` | `grid-report.ts:211` | **无** |
+| 图表类型白名单 | `chart.rs:30` `KINDS` | `grid-report.ts:301` | **无** |
+| 条件运算符 8 个 | `model.rs:163` | `grid-report.ts:417` | 半（`model.rs:1422` 只钉 Rust 数字） |
 | 表头行数判据 | `model.rs:1071` | `grid-report.ts:1543` | 半（6 条 Rust 单测） |
 | 纸张名 | `model.rs:772-779` | `grid-report.ts:677` | **有**（mirror-check） |
-| 页脚 255 上限 | `validate_page_number_tpl` | `grid-report.ts:745-750` | **无** |
+| 页脚 255 上限 | `model.rs:1028` | `grid-report.ts:748` | **无** |
 | `#RRGGBB` 校验 | `html_style_attr` | `grid-report.ts` | **无** |
 
 ```bash
-grep -rnE 'assert_eq!\((PAPERS|KINDS|SYMBOLOGIES)\.len\(\)' print-server/src/report  # No matches ← 三张表连钉子都没有
+grep -rnE 'assert_eq!\((PAPERS|KINDS|SYMBOLOGIES)\.len\(\)' print-server/src/report  # No matches
 ```
+⚠️ 这条 grep 的结论「三张表连钉子都没有」**是错的** —— `PAPERS` 有**内容**钉子
+（`model.rs:1517` 用 `.to_vec()` 比，不是 `.len()`）→ **grep 说「没有」时先怀疑 grep**。
 
 → **在 TS 侧加纸张名/图表类型、或改字节上限 → 一条闸都不会红，静默分叉。**
-⚠️ **现在没漂**（读了 5 个 `*Problem` 函数体，与 Rust 逐条对齐 —— 连 code128 码集判据顺序、纸张名大小写不敏感、方向只 trim 都对齐）。
+⚠️ **当时没漂**（读了 5 个 `*Problem` 函数体，与 Rust 逐条对齐 —— 连 code128 码集判据顺序、纸张名大小写不敏感、方向只 trim 都对齐）。
 缺的是**防将来漂**的闸，不是「已经坏了」。
+
+#### 现状：语义层已加（2026-09-27）
+
+`mirror-check.py` 现在是两层：**A. 形状 24 组**（字段名）+ **B. 语义 8 条**（规则类事实）。
+`Fact{label, rust, rust_path, ts, mode, note}`，`mode` 三种方向：
+
+| mode | 含义 | 用在 |
+| --- | --- | --- |
+| `equal` | **顺序 + 内容**都要一致 | 会被 TS 拿去拼提示文案的清单（`PAPER_NAMES.join(' / ')`） |
+| `set_equal` | 集合相等，**顺序不算** | 只做「认不认识」判断的清单（`IssueCode`） |
+| `ts_subset` | **TS 不允许比 Rust 宽**，允许更窄 | 别名表 |
+
+8 条事实：纸张名 / 图表类型 / 码制白名单 / 字节上限 / 条件运算符 / **码制别名（`ts_subset`）** /
+页脚 255 / 诊断 code 词表（`issue.rs:139-149` ↔ `grid-report.ts:799`）。
+
+**两条设计纪律（踩出来的，别丢）**：
+
+1. **抽取失败必须红，不能静默跳过。** 抽取函数返回 `Optional[list[str]]`，
+   **`None` 不是「空」，是「抽取失败」，计为红** —— 静默跳过会让检查退化成
+   「永远绿、但根本没在检查」，**比红闸更坏（产出空头的信心）**。
+   配套 `_one()` 要求锚点**恰好匹配 1 处**：0 处（改名）与 ≥2 处（正则太松）**都算失败**。
+   **≥2 处不是假想的**：`engine.rs` 在 4 个测试函数里各定义了局部 `const KINDS`
+   （`:4559 :4803 :4852 :4921`）→ 全仓搜索 + 「取第一个」会**静默取到测试里的表**。
+2. **数花括号前先把字符串内容抹掉**（`_blank_strings`，抹成**等长**空格所以索引不漂）。
+   `normalise_symbology` 里有 `format!("…{raw}…")` 与 `"{}"` → 字符串里的 `{` 会让
+   函数体切错、可能给**假 OK**。三种引号都要处理（Rust/TS 双引号、TS 单引号、TS 模板串）。
+
+**闸**：`scripts/fault-inject-mirror-semantics.py` → **9 条 9/9**，还原逐字节一致、基线全绿。
+其中两条是**元性质**注入，比「改了会红」更重要：
+**① TS 别名更窄必须仍绿**（对照组 → 证明方向没写反）；
+**② 只改 Rust 锚点、不改事实 → 必须报「抽取失败」**（证明这条路真的会走到红，
+否则前 7 条全绿也可能只是「锚点还在、正则还松」）。
+
+**仍未覆盖**（别当成已覆盖）：**表头行数判据**（不是「一张表」而是一段判据，正则抽不出）、
+**`#RRGGBB`**（两边形态不同）、以及**只覆盖「声明」不覆盖「用法」**
+（闸能证明两边声明同一张表，不能证明两边用同一套逻辑 —— 判据顺序 / trim / 大小写敏感度仍靠人工核对）。
 
 ### 其余不足（详见报告）
 
@@ -1082,23 +1124,40 @@ spec：openprint 70 个 · designer-react 42 个。
 ### 建议（成本四档，详见报告 §4）
 
 1. 加 `scripts/check-all.sh` 串起已有闸（`mirror-check.py` **排第一**，秒级零依赖）＋有 CI 更好。半天。
-2. 把 `mirror-check.py` 从形状扩到语义（补 `PAPERS`/`KINDS`/`SYMBOLOGIES` 的 Rust 侧 `.len()` 钉子）。
+   → ✅ **2026-09-26 已做**（见 §二十一.6）。
+2. 把 `mirror-check.py` 从形状扩到语义（补 `PAPERS`/`KINDS`/`SYMBOLOGIES` 的 Rust 侧内容钉子）。
    **方向必须单向蕴含** —— 「三方相等」那种写法会永久红（本项目已犯过一次，见 §二十.3）。1 天。
+   → ✅ **2026-09-27 已做**（8 条事实 + 9 条注入，见本节上方「现状：语义层已加」）。
+   ⚠️ 报告里这一条写的是「补 `.len()` 钉子」，**`.len()` 那半是错的**：改名时数量不变 → 毫无反应。
+   实做改成了**内容钉子**（`.to_vec()` 比），并由 `fault-inject-table-pins.py` 的两条「改名」注入证明。
 3. 给 `openprint` 加 `test` 脚本；给 4 个永久不跑的 spec 明确归宿（删或标废弃）；修正那条走不通的提示语。1 天。
+   → ❌ 仍未做。
 4. 原子写报表（抄 `config.rs:385`）· 夹具搬出 `mod.rs` · 测试模块拆出 · 加根 workspace。
+   → ❌ 仍未做。
 
 ### §二十一.6 第 1 档已实施（2026-09-26）
 
-**跑闸就一条命令**：`bash scripts/check-all.sh`。热跑全量 **~36s**，`--fast` 只跑前两道 **3.5s**。
+**跑闸就一条命令**：`bash scripts/check-all.sh`。热跑全量 **~36s**（**加第 7 道后实测 195s**），
+`--fast` 只跑前两道 **3.5s**。
 
 | # | 闸 | 热跑耗时 |
 | --- | --- | --- |
-| 1 | `python3 scripts/mirror-check.py` | 1s |
+| 1 | `python3 scripts/mirror-check.py`（形状 24 组 + 语义 8 条） | 1s |
 | 2 | `bash scripts/ts-check.sh` | 2s |
 | 3 | `bash scripts/ts-test.sh` | 5s |
 | 4 | `bash scripts/ts-project-check.sh`（designer-react） | 18s |
 | 5 | `bash scripts/ts-project-check.sh openprint` | 6s |
 | 6 | `cargo test --bin print-server` | 4s 暖 / **1m33s 冷编译** |
+| 7 | `bash scripts/ts-test-designer.sh grid-report-`（jsdom，**串行**） | **160s** |
+
+**第 7 道是 2026-09-26 补的，补的是真缺口**：`designer-react` 有 43 spec / 375 用例，
+而在此之前**没有任何脚本跑它们**（`ts-test.sh` 只覆盖 `openprint/src/report/*.ts`）→
+「改一次 `GridReportModal`，`check-all.sh` 照样全绿」是**真的**。
+**⚠️ `--no-file-parallelism` 是正确性要求不是性能选项**：默认文件级并行下
+**16 失败 / 359 通过**，同样的文件**单独跑 4/4 全绿**，串行 **375/375 全绿**。
+失败形态 `Test timed out` / `expected '' to contain …` = 渲染没跑完就判死，**不是真缺陷**。
+**已知缺口**：第 7 道带 `grid-report-` 过滤（11 文件 / 136 用例），
+另外 **32 个 spec 仍不在聚合跑器里**（那 346s 太贵）。
 
 **退出码三态（这是本次最重要的设计点）**：
 `0 通过` / `1 失败` / **`2 没跑成`（环境缺 tsc/vitest/node/cargo，根本没检查）**。
@@ -1152,6 +1211,38 @@ V=abc; echo "测试 ${V}）"    # ✓
 
 **教训（与 BSD grep 的 `\|` 同一族）**：判「有没有闸」**不能只搜一种写法** ——
 搜**符号名本身**（`PAPERS`），再逐个看用法。`grep` 说「没有」时先怀疑 grep。
+
+### §二十一.9 第 2 档已实施：`mirror-check.py` 语义层（2026-09-27）
+
+8 条规则类事实进闸（纸张名 / 图表类型 / 码制白名单 / 字节上限 / 条件运算符 /
+**码制别名** / 页脚 255 / 诊断 code 词表）。`Fact.mode` 三方向：
+`equal`（顺序+内容）/ `set_equal`（顺序不算）/ **`ts_subset`（TS 不许比 Rust 宽）**。
+**方向必须逐条定** —— 「三方相等」会永久红（本项目已犯过一次，见 §二十.3）。
+
+**两条设计纪律（踩出来的，别丢）**：
+
+1. **抽取失败必须红。** 抽取函数返回 `Optional[list[str]]` —— **`None` 不是「空」，
+   是「抽取失败」，计为红**。静默跳过会让检查退化成「永远绿、但根本没在检查」，
+   **比红闸更坏（产出空头的信心）**。配套 `_one()` 要求锚点**恰好匹配 1 处**：
+   0 处（改名）与 **≥2 处（正则太松）都算失败**。
+   **≥2 处不是假想的**：`engine.rs` 在 4 个测试函数里各定义局部 `const KINDS`
+   （`:4559 :4803 :4852 :4921`）→ 全仓搜索 + 「取第一个」会**静默取到测试里的表**。
+2. **数花括号前先把字符串内容抹掉**（`_blank_strings`，抹成**等长**空格 → 索引不漂）。
+   `normalise_symbology` 里有 `format!("…{raw}…")` 与 `"{}"` → 字符串里的 `{`
+   会让函数体切错、可能给**假 OK**。三种引号都要处理（Rust/TS 双引号、TS 单引号、模板串）。
+
+**闸**：`scripts/fault-inject-mirror-semantics.py` → **9 条 9/9**，还原逐字节一致、基线全绿。
+其中两条是**元性质**注入，比「改了会红」更重要：
+**① TS 别名更窄必须仍绿**（对照组 → 方向没写反）；
+**② 只改 Rust 锚点、不改事实 → 必须报「抽取失败」**（证明这条路真会走到红，
+否则前 7 条全绿也可能只是「锚点还在、正则还松」= **闸根本没在检查**）。
+
+**仍未覆盖**：表头行数判据（不是「一张表」而是一段判据）· `#RRGGBB`（两边形态不同）·
+**只覆盖「声明」不覆盖「用法」**（判据顺序 / trim / 大小写敏感度仍靠人工核对）。
+
+**顺带修的计数漂移**：`check-all.sh` 的 `15 个 fault-inject` → **16**（两处）；
+`报表引擎详解` §15.1 同样 `15` → **16**（它已漂过两次）。
+**判据：注释里的数字最容易漂 —— 改完脚本记得 `ls scripts/fault-inject-*.py | wc -l` 核一遍。**
 
 ---
 
