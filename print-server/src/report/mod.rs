@@ -22,7 +22,7 @@ pub mod store;
 pub mod xlsx;
 pub(crate) mod zip;
 
-use axum::extract::{Json, Path, State};
+use axum::extract::{Json, Path, Query, State};
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{Response as HttpResponse, StatusCode};
 use axum::response::IntoResponse;
@@ -1181,18 +1181,71 @@ pub async fn reports_get_handler(
         .map_err(|e| (StatusCode::NOT_FOUND, e))
 }
 
-/// `PUT /api/reports/save` —— 保存（新建或覆盖）。
+/// `PUT /api/reports/save` 的查询参数。
+///
+/// 为什么用**查询串**而不是请求体字段：请求体就是 `ReportDef` 本身，
+/// 而 `ReportDef` 是要**原样落盘**的。往里塞一个 `force` 就得靠 `#[serde(skip)]`
+/// 加 TS 侧同步忽略 —— 那是在「用户资产的文件格式」上开一个只为本次请求服务的口子，
+/// 迟早会被谁序列化进去。`?force=1` 不进文件、curl 里一眼看得见、日志里留痕。
+#[derive(Debug, Default, Deserialize)]
+pub struct SaveQuery {
+    #[serde(default)]
+    pub force: Option<String>,
+}
+
+impl SaveQuery {
+    /// 只有**明确**写了才算强制。
+    ///
+    /// 认 `1` / `true` / `yes`（大小写不敏感、忽略两侧空白）。
+    /// **其他任何值一律当没带** —— 包括 typo（`flase`）、空值（`?force`）、`0`。
+    ///
+    /// 为什么往「当没带」倒：这个方向判错的代价是**多问一次**
+    /// （用户多点一下确认框）；反方向判错的代价是**静默覆盖掉一份报表**。
+    /// 两者不对称，所以错也要错在安全那边。
+    /// 换句话说：`?force` 的语义是「**证明**你知道要覆盖」，不是「提过这事」。
+    pub fn forced(&self) -> bool {
+        matches!(
+            self.force
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("1") | Some("true") | Some("yes")
+        )
+    }
+}
+
+/// `SaveError` → HTTP 响应。
+///
+/// **`Conflict` 必须是 409，不能和 400 混** —— UI 靠状态码分辨
+/// 「弹错误」还是「弹覆盖确认框」。混成一个码，那个确认框就永远弹不出来了。
+fn save_error_response(e: store::SaveError) -> (StatusCode, String) {
+    match e {
+        store::SaveError::Conflict(m) => (StatusCode::CONFLICT, m),
+        store::SaveError::Invalid(m) => (StatusCode::BAD_REQUEST, m),
+    }
+}
+
+/// `PUT /api/reports/save` —— 保存（新建，或**确认后**覆盖）。
 ///
 /// ⚠️ 路径是 `/api/reports/save`，**不是** `/api/reports/:id`（见 `main.rs` 的路由表）。
 /// `:id` 只挂 GET / DELETE。`id` 从请求体的 `ReportDef` 里取。
+///
+/// 覆盖需要 `?force=1`：目标已存在而没带 force → **409**。
+/// 这是服务端权威判据 —— UI 的列表只是打开弹窗那一刻的快照，
+/// 别的客户端之后新建的同名报表它看不见（见 `store::save_new`）。
 pub async fn reports_save_handler(
     State(state): State<AppState>,
+    Query(q): Query<SaveQuery>,
     Json(def): Json<store::ReportDef>,
 ) -> Result<Json<store::ReportDef>, (StatusCode, String)> {
     let dir = reports_dir_of(&state);
-    store::save(&dir, def)
-        .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))
+    let result = if q.forced() {
+        store::save(&dir, def)
+    } else {
+        store::save_new(&dir, def)
+    };
+    result.map(Json).map_err(save_error_response)
 }
 
 /// `DELETE /api/reports/:id`

@@ -61,6 +61,11 @@ BIG = 1024 * 1024  # 1 MiB，远大于 LIMIT
 BASE = "http://127.0.0.1:18888"
 HEALTH = f"{BASE}/api/report/sample-template"
 SAVE = f"{BASE}/api/reports/save"
+# 覆盖已有报表要**显式**带 force：服务端 `store::save_new` 对「已存在且没带 force」
+# 一律回 409（这是防静默覆盖的那道闸）。本探针第 2 步就是**故意覆盖** v1，
+# 所以必须带 —— 不带的话会在真正测「写一半崩」之前就先被 409 拦掉，
+# 而那看起来会像「原子性没验成」，其实是探针没带对参数。
+SAVE_FORCE = f"{SAVE}?force=1"
 GET = f"{BASE}/api/reports/{PROBE_ID}"
 
 # ⚠️ 沙箱里 HTTP_PROXY 指向本地代理，探 127.0.0.1 会被拦成 502 —— 必须绕过
@@ -219,7 +224,7 @@ def main() -> int:
     # ── 2. 带 RLIMIT_FSIZE 起服务，写一版巨大的（v2）→ 期望服务被打死 ──
     print(f"2) 带 RLIMIT_FSIZE={LIMIT} 起服务，存第二版（{BIG} 字节 description）…")
     p = start_server(limit=LIMIT)
-    code, body = req("PUT", SAVE, def_payload("x" * BIG), timeout=15)
+    code, body = req("PUT", SAVE_FORCE, def_payload("x" * BIG), timeout=15)
     died = p.poll() is not None
     stop_server(p)
     print(f"   PUT 返回：{'（连接断了）' if code is None else f'HTTP {code}'}")

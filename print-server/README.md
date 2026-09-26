@@ -45,7 +45,7 @@ print-server.exe --host 0.0.0.0 --port 18888 --config print-server.json
 | GET | /api/report/sample-template | 内置样例模板（设计器「打开样例」用） |
 | GET | /api/report/cross-tab-* | 交叉表样例模板：基本 / 带合计 / 双指标 / 双指标带合计 / 多级表头 |
 | GET | /api/reports | 报表文件列表（只回元信息，不回模板本体） |
-| PUT | /api/reports/save | 保存报表定义（模板 + 数据源 + 渲染选项） |
+| PUT | /api/reports/save | 保存报表定义（模板 + 数据源 + 渲染选项）。**目标已存在时需 `?force=1`，否则 409** |
 | GET/DELETE | /api/reports/:id | 读取 / 删除一个报表定义 |
 | POST | /api/reports/:id/run | 执行报表定义，回渲染结果 |
 | POST | /api/reports/:id/xlsx | 执行并导出 xlsx |

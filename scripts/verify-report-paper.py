@@ -386,7 +386,11 @@ def case_saved_report_keeps_page_setup() -> None:
     rid = "probe-paper-tmp"
     st, body = http(
         # ⚠️ 存盘路径是 `/api/reports/save`（不是 `/api/reports/:id`，那条只挂 GET/DELETE）
-        "/api/reports/save",
+        # `?force=1`：服务端对「已存在且没带 force」回 409（防静默覆盖那道闸）。
+        # 本探针就是要覆盖上一轮可能残留的 `probe-paper-tmp`，所以显式带 force ——
+        # 不带的话，上一轮中途失败留下的残留会让这一轮**连存都存不进去**，
+        # 报出来的却是「存报表失败：409」，看着像功能坏了，其实是探针没带对参数。
+        "/api/reports/save?force=1",
         {
             "format": "openprint.report",
             "version": 1,

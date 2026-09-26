@@ -19,6 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use super::model::{cell_pos, PageConfig, ReportTemplate, SheetTpl};
@@ -27,6 +28,49 @@ use super::ReportSource;
 /// 文件头标识。读文件时先校验，避免把别的 JSON 当报表打开后报出莫名其妙的字段错误。
 pub const FORMAT: &str = "openprint.report";
 pub const VERSION: u32 = 1;
+
+/// 保存失败的原因。
+///
+/// **必须能区分「请求不合法」和「目标已存在」** —— 前者是 400，后者是 409，
+/// 而 UI 对这两者的反应**相反**：400 是弹错误（别存了），
+/// 409 是弹「要覆盖吗」（确认了就存）。
+///
+/// 用一个 `String` 把它们混在一起的话，UI 只能靠**匹配文案**来分辨 ——
+/// 文案一改（哪怕只是加个标点）就静默退化：覆盖冲突被当成普通错误弹出去，
+/// 用户**再也点不到那个确认框**，于是「保存不了」且看不出为什么。
+/// 这正是本项目最怕的「声明与实现漂移、症状是看着正常」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveError {
+    /// 请求本身有问题（id 非法 / 序列化失败 / 写盘失败）→ 400
+    Invalid(String),
+    /// 目标已存在，且调用方**没有**声明要覆盖 → 409
+    Conflict(String),
+}
+
+impl SaveError {
+    /// 给人看的那句话。**别拿它做分支判据** —— 要分支就 `match` 变体。
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Invalid(m) | Self::Conflict(m) => m,
+        }
+    }
+}
+
+impl fmt::Display for SaveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+/// id 的归一化（去两侧空白）。**只此一处**。
+///
+/// 校验、存在性判断、落盘文件名**必须用同一个 id**。否则会出现这种静默绕过：
+/// `save_new` 拿 `" t9 "` 去查 `" t9 .json"`（不存在 → 放行），
+/// 而 `save` 拿 `"t9"` 去写 `t9.json`（覆盖掉了已有的那份）。
+/// 两个函数各写一遍 `.trim()` 时，这类漂移不会报错，只会安静地毁数据。
+fn normalise_id(raw: &str) -> String {
+    raw.trim().to_string()
+}
 
 /* ------------------------------ 数据结构 ------------------------------ */
 
@@ -307,17 +351,18 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("替换报表文件失败: {e}"))
 }
 
-/// 保存。**覆盖写**：报表是用户的资产，静默覆盖同名文件会丢东西，
-/// 所以调用方（UI）要先经列表确认（见 `GridReportModal.tsx` 的 `saveReport`）；
-/// 这里同时写回 updatedAt 与归一化 id。
+/// 保存。**覆盖写，不问** —— 调用方必须先拿到「可以覆盖」的授权：
+/// 要么用户点了确认框，要么它自己就是「我正在编辑的那一份」。
+/// 没授权就别调这个，调 [`save_new`]（它替你把这关把住）。
 ///
+/// 这里同时写回 updatedAt 与归一化 id（归一化走 [`normalise_id`]，只此一处）。
 /// 落盘走 [`write_atomic`]：**目标文件不会出现「写了一半」的中间态**。
-pub fn save(dir: &Path, mut def: ReportDef) -> Result<ReportDef, String> {
-    let id = def.id.trim().to_string();
+pub fn save(dir: &Path, mut def: ReportDef) -> Result<ReportDef, SaveError> {
+    let id = normalise_id(&def.id);
     if !is_valid_id(&id) {
-        return Err(format!(
+        return Err(SaveError::Invalid(format!(
             "报表 id 不合法（只允许字母数字、-、_，最长 80）: {id:?}"
-        ));
+        )));
     }
     def.id = id;
     if def.name.trim().is_empty() {
@@ -329,9 +374,39 @@ pub fn save(dir: &Path, mut def: ReportDef) -> Result<ReportDef, String> {
 
     let path = path_of(dir, &def.id);
     let text = serde_json::to_string_pretty(&def)
-        .map_err(|e| format!("序列化报表失败: {e}"))?;
-    write_atomic(&path, &text)?;
+        .map_err(|e| SaveError::Invalid(format!("序列化报表失败: {e}")))?;
+    write_atomic(&path, &text).map_err(SaveError::Invalid)?;
     Ok(def)
+}
+
+/// 保存，但**目标已存在就拒绝**（[`SaveError::Conflict`]）。
+///
+/// 这是「不许静默覆盖」的**服务端**那道闸。它与 UI 的确认框是**互补**、
+/// 不是重复 —— 因为两者查的**不是同一个事实**：
+///
+/// - UI 查的是「打开弹窗那一刻的报表列表快照」。**别的客户端在这之后
+///   新建的同名报表，那个快照看不见** → UI 判定「不存在」→ 不弹确认 →
+///   直接覆盖掉别人的东西。这正是客户端自觉永远堵不住的那个洞。
+/// - 这里查的是**文件系统**，是权威事实。
+///
+/// 所以分工是：UI 那道省一次往返、并把「要换掉的是哪一份」说清楚；
+/// 这道保证**任何调用方（含 curl、别的客户端、以后的脚本）都绕不过去**。
+pub fn save_new(dir: &Path, def: ReportDef) -> Result<ReportDef, SaveError> {
+    let id = normalise_id(&def.id);
+    // ⚠️ **先校验再查存在性，顺序不能反**。反了有两处坏：
+    // 1. `path_of` 会拿**未校验**的 id 拼路径 —— `../` 能穿出报表目录；
+    // 2. 非法 id 会被报成 409（「已存在」），把用户指向完全错误的方向。
+    if !is_valid_id(&id) {
+        return Err(SaveError::Invalid(format!(
+            "报表 id 不合法（只允许字母数字、-、_，最长 80）: {id:?}"
+        )));
+    }
+    if path_of(dir, &id).exists() {
+        return Err(SaveError::Conflict(format!(
+            "报表 {id} 已存在；覆盖会换掉原内容。确认要覆盖请带 ?force=1 重发。"
+        )));
+    }
+    save(dir, def)
 }
 
 pub fn delete(dir: &Path, id: &str) -> Result<(), String> {
@@ -529,7 +604,24 @@ mod tests {
 
         let mut v2 = def("t2");
         v2.description = "v2".to_string();
-        assert!(save(&dir, v2).is_err(), "写不进去时必须报错，不能假装成功");
+        /*
+         * ⚠️ **断言到变体，不只是 `is_err()`。**
+         *
+         * 这条用例要的是「写盘失败」。如果只断言 `is_err()`，那么**改成
+         * `save_new` 之后它照样绿** —— 但那时报的是 `Conflict`（目标已存在），
+         * 跟写盘失败毫无关系：`.tmp` 那个目录占位**根本没被碰到**，
+         * 「旧内容被保住了」于是变成一个空头结论。用例绿着，测的东西没了。
+         * 所以这里把「必须是 Invalid」写死 —— 它同时钉住了
+         * 「`.tmp` 占位确实生效」和「这道闸没有把写盘错误误报成覆盖冲突」。
+         */
+        match save(&dir, v2) {
+            Err(SaveError::Invalid(_)) => {}
+            Err(SaveError::Conflict(m)) => panic!(
+                "报成了「目标已存在」（{m}）—— 那就测不到写盘失败了，\
+                 这条用例在为错的理由变绿"
+            ),
+            Ok(_) => panic!("写不进去时必须报错，不能假装成功"),
+        }
 
         let after = load(&dir, "t2")
             .expect("目标文件必须还能解析 —— 这正是原子写要保的东西");
@@ -610,6 +702,65 @@ mod tests {
             items.iter().map(|i| i.id.clone()).collect::<Vec<_>>()
         );
         assert_eq!(items[0].id, "t5");
+    }
+
+    /// **服务端那道闸**：目标已存在时 `save_new` 必须拒绝，且**什么都不许动**。
+    ///
+    /// 这条用例真正钉的是「拒绝 = 零副作用」：不只要求返回 `Conflict`，
+    /// 还要求旧内容**逐字节没变**、且没留下 `.bak`（`write_atomic` 一旦被调用
+    /// 就会备份，所以「没有 .bak」等价于「根本没走到写盘那一步」）。
+    #[test]
+    fn 目标已存在时_save_new_拒绝且不碰文件() {
+        let dir = tempdir();
+        let mut v1 = def("t6");
+        v1.description = "v1".to_string();
+        let saved_v1 = save(&dir, v1).unwrap();
+
+        let mut v2 = def("t6");
+        v2.description = "v2".to_string();
+        match save_new(&dir, v2) {
+            Err(SaveError::Conflict(_)) => {}
+            other => panic!("应当报 Conflict，实际 {other:?}"),
+        }
+
+        let after = load(&dir, "t6").unwrap();
+        assert_eq!(after.description, "v1", "被拒绝了却还是把内容换掉了");
+        assert_eq!(after.updated_at, saved_v1.updated_at, "被拒绝了却动了时间戳");
+        assert!(
+            !dir.join("t6.json.bak").exists(),
+            "被拒绝的保存不该留下备份 —— 有 .bak 说明它其实已经动过盘了"
+        );
+    }
+
+    /// 目标不存在时 `save_new` 就是正常新建（别把闸做成「什么都存不了」）。
+    #[test]
+    fn 目标不存在时_save_new_正常落盘() {
+        let dir = tempdir();
+        let saved = save_new(&dir, def("t7")).unwrap();
+        assert_eq!(saved.id, "t7");
+        assert_eq!(load(&dir, "t7").unwrap().id, "t7");
+    }
+
+    /// **反静默绕过**：判据和落盘必须用**同一个** id。
+    ///
+    /// `save` 会把 id 去空白，所以 `" t8 "` 落盘成 `t8.json`。
+    /// 如果 `save_new` 拿**没去空白**的 id 去查存在性（`" t8 .json"`），
+    /// 它会判定「不存在」→ 放行 → `save` 覆盖掉已有的 `t8.json`。
+    /// **不报错、不警告，安静地毁数据。**
+    /// 这条用例是那个场景的钉子：把 trim 只留在一处（[`normalise_id`]）才绿。
+    #[test]
+    fn save_new_判据与落盘同口径() {
+        let dir = tempdir();
+        save(&dir, def("t8")).unwrap();
+
+        let mut v2 = def("t8");
+        v2.id = "  t8  ".to_string(); // 带空白，归一化后仍是 t8
+        v2.description = "v2".to_string();
+        match save_new(&dir, v2) {
+            Err(SaveError::Conflict(_)) => {}
+            other => panic!("带空白的 id 没被认成同一个目标，实际 {other:?}"),
+        }
+        assert_eq!(load(&dir, "t8").unwrap().description, "");
     }
 
     /// `reports_dir` 的推导规则必须被钉住——它是**静默失败**的来源。

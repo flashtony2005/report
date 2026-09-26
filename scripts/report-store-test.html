@@ -159,8 +159,27 @@ async function api(method, path, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const text = await res.text()
-  if (!res.ok) throw new Error(text || (method + ' ' + path + ' → ' + res.status))
+  if (!res.ok) {
+    const err = new Error(text || (method + ' ' + path + ' → ' + res.status))
+    // 让调用方按**状态码**分支。别去匹配文案 —— 文案改个标点就静默失效，
+    // 而失效的样子是「覆盖冲突被当成普通错误弹出去」，看不出哪里不对。
+    err.status = res.status
+    throw err
+  }
   return text ? JSON.parse(text) : null
+}
+
+/* 保存：服务端对「已存在且没带 force」回 409（防静默覆盖的那道闸）。
+   手工测试页也得尊重它 —— 悄悄覆盖掉别的报表正是这道闸要防的事。
+   所以 409 时问一句，确认了再带 force 重发。 */
+async function saveReport(def) {
+  try {
+    return await api('PUT', '/api/reports/save', def)
+  } catch (e) {
+    if (e.status !== 409) throw e
+    if (!confirm(e.message + '\n\n要覆盖它吗？')) throw new Error('已取消，没有覆盖')
+    return await api('PUT', '/api/reports/save?force=1', def)
+  }
 }
 
 function buildOptions() {
@@ -239,7 +258,7 @@ $('save').onclick = async () => {
       name: $('rName').value.trim() || id,
       template: curTpl, sources, options: buildOptions(),
     }
-    const saved = await api('PUT', '/api/reports/save', def)
+    const saved = await saveReport(def)
     msg('ok', '已保存：' + saved.id + '（' + saved.updatedAt + '）')
     $('json').value = JSON.stringify(saved, null, 2)
     await refresh()

@@ -7,7 +7,7 @@
 「该拦的时候拦住了」。而一组恒绿的用例和一组真有牙齿的用例，
 在「不拦」的时候长得**一模一样** —— 必须把判据拆坏，看用例会不会红。
 
-## 六条注入，每条拆**一个子句**（不是每条都拆整个判据）
+## 八条注入，每条拆**一个子句**（不是每条都拆整个判据）
 
 判据是 `id !== lastSavedId && (!reportsListKnown || 列表里有这个 id)`，
 三个子句各管一件事，所以要**分别**拆：
@@ -18,12 +18,23 @@
 | 2 判据恒真 | 后半句改成恒真（**每次都弹**） | 对照组「id 不存在 → 不弹」 |
 | 3 `reportsListKnown` | 只按列表判 | 「列表读不到 → 仍然弹」 |
 | 4 `lastSavedId` | 去掉「是我在编辑的那份」那半 | 对照组「确认过一次 → 不再弹」 |
-| 5 确认后不落盘 | `onOk` 里不调 `doSave` | 「点覆盖 → 请求发出去」 |
+| 5 确认后不落盘 | `onOk` 里不调 `doSave` | 「点覆盖 → 带 force 重发」 |
 | 6 取消当确定 | `onCancel` 改成和 `onOk` 一样 | 「点取消 → 请求为 0」 |
+| 7 拆掉 409 分支 | `doSave` 里那段 `if (res.status === 409)` 删掉 | ★「客户端快照过期」 |
+| 8 永远带 force | `doSave(def, id, id === lastSavedId)` → 恒 `true` | 对照组「新增不该带 force」 |
 
 **注入 2 和 4 是这里的关键**：它们证明那三条**对照组**（必须**不**弹）不是摆设。
 没有它们，「每次都弹框」和「只有覆盖才弹」在用例上分不开 ——
 而「每次都弹」正是会让用户闭眼点确定、把这道闸作废的那种实现。
+
+**注入 7 和 8 是服务端那道闸加进来之后补的**（`save_new` + `?force=1`）：
+
+- 7 拆掉的是「服务端 409 → 弹确认框」这条翻译。没有它，客户端快照过期时
+  409 会落进通用错误分支，用户看到「报表已存在」却**没有任何办法继续保存**。
+  那条用例（★ 客户端快照过期）是**唯一**能抓到这个的 —— 其它七条都抓不到。
+- 8 拆掉的是「只在有授权时才带 force」。要是无脑永远带 `force=1`，
+  服务端那道闸就形同虚设（任何调用方都能覆盖任何报表），
+  而「永远带 force」**同样能让注入 1~7 全过** —— 只有那条反向对照能抓到它。
 
 注入 5、6 拆的是**按钮接线**而不是判据：判据对了、按钮没接上也照样是 bug。
 
@@ -33,6 +44,18 @@
 所以拆完 `lastSavedId` 变成未使用变量也照样跑得起来 ——
 注入只需要**语法**合法。真要类型检查会红，那是 `ts-project-check.sh` 的事，
 不是这一轮的判据（别把它算进战果）。
+
+## 一个副作用：**用例改名会让「抓到」变成「没抓到」**
+
+每条注入都写死了「应当红在哪条用例上」（按标题子串匹配）。所以**改了用例标题**
+就会让这条注入报「红了，但不是期望的那条」—— 明明抓到了，却报成漏网。
+
+这不是 bug，是刻意的：它宁可**多报一次**，也不肯用「反正红了就算抓到」的松判据
+（那样一条无关的用例红也能冒充战果）。但代价是**改标题时要顺手同步这里的字符串**。
+
+（本轮就踩了一次：`点「覆盖」→ 请求真的发出去` 改成 `点「覆盖」→ 带 force=1 重发`
+之后忘了改这里，注入 5 假报漏网。看到「红了但不是期望的那条」时，
+先看一眼是不是标题漂了，别急着怀疑判据。）
 
 用法：python3 scripts/fault-inject-save-confirm.py
 退出码：0 = 六条注入都被对应用例抓到，且文件逐字节还原；1 = 有漏网。
@@ -51,15 +74,23 @@ COND = """    if (id !== lastSavedId && (!reportsListKnown || savedReports.some(
       setPendingOverwrite({ def, id })
       return
     }
-    await doSave(def, id)"""
+    await doSave(def, id, id === lastSavedId)"""
 
-ON_OK = """        onOk={() => {
-          const p = pendingOverwrite
+# `onOk` 里真正落盘的那三行（不含外面那层箭头函数，锚点短一点更稳）
+ON_OK_TAIL = """          const p = pendingOverwrite
           setPendingOverwrite(null)
-          if (p) void doSave(p.def, p.id)
-        }}"""
+          // `force = true`：用户明确点了「覆盖」→ 这正是服务端要的那句授权
+          if (p) void doSave(p.def, p.id, true)"""
 
 ON_CANCEL = "        onCancel={() => setPendingOverwrite(null)}"
+
+# `doSave` 里那段 409 分支。**它是「服务端说有冲突」转成「弹确认框」的唯一入口**，
+# 拆掉它 409 就会落进下面的 `!res.ok → setError`，用户看到「已存在」却无路可走。
+ON_409 = """        if (res.status === 409) {
+          setError('')
+          setPendingOverwrite({ def, id })
+          return
+        }"""
 
 # (说明, 锚点原文, 替换成, 期望变红的用例名)
 CASES = [
@@ -76,7 +107,7 @@ CASES = [
       setPendingOverwrite({ def, id })
       return
     }
-    await doSave(def, id)""",
+    await doSave(def, id, id === lastSavedId)""",
         "对照组：列表里**没有**这个 id",
     ),
     (
@@ -86,7 +117,7 @@ CASES = [
       setPendingOverwrite({ def, id })
       return
     }
-    await doSave(def, id)""",
+    await doSave(def, id, id === lastSavedId)""",
         "列表**读不到**时不算「没有同名」",
     ),
     (
@@ -96,16 +127,15 @@ CASES = [
       setPendingOverwrite({ def, id })
       return
     }
-    await doSave(def, id)""",
+    await doSave(def, id, id === lastSavedId)""",
         "对照组：确认过一次之后再存同一个 id",
     ),
     (
         "5 onOk 里不落盘：判据对了，但「覆盖」按钮没接上",
-        ON_OK,
-        """        onOk={() => {
-          setPendingOverwrite(null)
-        }}""",
-        "点「覆盖」→ 请求真的发出去",
+        ON_OK_TAIL,
+        """          const p = pendingOverwrite
+          setPendingOverwrite(null)""",
+        "点「覆盖」→ 带 force=1 重发",
     ),
     (
         "6 取消当确定：onCancel 干起了 onOk 的活",
@@ -113,9 +143,21 @@ CASES = [
         """        onCancel={() => {
           const p = pendingOverwrite
           setPendingOverwrite(null)
-          if (p) void doSave(p.def, p.id)
+          if (p) void doSave(p.def, p.id, true)
         }}""",
         "点「取消」→ 什么都不做",
+    ),
+    (
+        "7 拆掉 409 分支：服务端说有冲突，前端却当成普通错误",
+        ON_409,
+        "        // （注入：这里本来会把 409 转成确认框）",
+        "客户端快照过期",
+    ),
+    (
+        "8 永远带 force：等于把服务端那道闸作废",
+        "    await doSave(def, id, id === lastSavedId)",
+        "    await doSave(def, id, true)",
+        "对照组：列表里**没有**这个 id",
     ),
 ]
 
@@ -150,7 +192,7 @@ def run_spec(name_filter: str):
 
 
 def main() -> int:
-    print("先跑基线（未注入时 6 条用例应当全绿）…")
+    print("先跑基线（未注入时 8 条用例应当全绿）…")
     ran, passed, failed, out = run_spec(SPEC)
     if not ran:
         print("✗ **没验过**：这个 spec 没跑起来")

@@ -1,34 +1,44 @@
 /**
- * `GridReportModal` 的 UI 层用例：**保存到「已经存在的 id」之前必须先确认**。
+ * `GridReportModal` 的 UI 层用例：**覆盖已有报表之前必须先确认**。
  *
- * ## 为什么这是一条静默失败，而不是「体验问题」
+ * ## 两道闸，查的不是同一个事实
  *
- * 服务端 `store::save` 是**覆盖写**，它自己的文档注释写着：
+ * 服务端 `store::save` 是覆盖写。它自己的文档注释写着：
  *
  * > 保存。**覆盖写**：报表是用户的资产，静默覆盖同名文件会丢东西，
  * > **所以调用方（UI）要先经列表确认**
  *
  * 而在这之前**那句话是假的**：`saveReport` 直接 `PUT /api/reports/save`，
  * 一次确认都没有 —— UI 手上明明就有 `savedReports` 列表，也没拿它做任何判断。
- * 结果：手打一个已存在的 id → 点保存 → 那份报表**无声无息被换掉**，
- * 界面上只多出一句「已保存模板」。
+ * 结果：手打一个已存在的 id → 点保存 → 那份报表**无声无息被换掉**。
  *
- * 这就是本项目最怕的那一类：**声明与实现漂移，而症状是「看着一切正常」**。
- * 所以本文件测的不是「弹了个框」，而是**「有没有把请求发出去」**。
+ * 现在有两道：
+ *
+ * | | 判据来源 | 挡得住 | 挡不住 |
+ * | --- | --- | --- | --- |
+ * | UI 预判（省一次往返） | 打开弹窗那一刻的列表**快照** | 手打一个列表里已有的 id | 之后别处新建的同名 |
+ * | 服务端 `save_new` | **文件系统**（权威） | 任何调用方，含 curl | —— |
+ *
+ * 第二道是这次新加的。**本文件里最值钱的一条用例是「快照过期」那条**：
+ * 客户端列表是空的（所以它不弹确认），而服务端有同名 → 服务端 409 →
+ * UI 必须把它转成**确认框**，而不是弹一句「已存在」让用户无路可走。
+ * 那正是客户端自觉永远堵不住、只有服务端能接住的那个洞。
  *
  * ## 为什么必须挂真弹窗
  *
- * 判据（`id !== lastSavedId && (!reportsListKnown || 列表里有)`）是**接线**：
- * `savedReports` 有没有进 `saveReport` 的依赖数组、`reportsListKnown` 有没有
- * 在拉列表失败时被置回 false、确认之后有没有真的回到落盘那一步 ——
+ * 判据是**接线**：`savedReports` 有没有进 `saveReport` 的依赖数组、
+ * `reportsListKnown` 有没有在拉列表失败时置回 false、409 分支有没有排在
+ * 通用错误分支**之前**、确认之后有没有真的回到落盘那一步 ——
  * 纯函数测不到任何一条。本项目已经因为「接线漏了」栽过
  * （分页开关画出来了、state 也变了，参数却没进请求体）。
  *
- * ## 三个用例是**对照组**，不是凑数
+ * ## 一半用例是**对照组**，不是凑数
  *
  * 只有「已存在 → 弹框」一条的话，把它写成「保存永远弹框」也能过 ——
- * 而那样做，用户会被训练成闭眼点确定，这个确认就白做了。所以另外钉三条**必须不弹**：
+ * 而那样做，用户会被训练成闭眼点确定，这个确认就白做了。所以另有一批**必须不弹**：
  * 列表里没有这个 id / 已经确认过一次 / 打开后直接存自己那份。
+ * 同理，`force=1` 也必须只在**有授权**时才出现（见「不该带 force」那几条断言）——
+ * 否则「永远带 force」也能让「已存在 → 弹框」过，而那道服务端闸就废了。
  */
 
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
@@ -56,8 +66,19 @@ interface Captured {
 }
 
 let calls: Captured[] = []
-/** `GET /api/reports` 要回的列表。**每个用例自己摆** —— 本文件测的就是它怎么影响判据。 */
+/**
+ * `GET /api/reports` 要回的列表 —— 也就是**客户端看得见的那个快照**。
+ * 每个用例自己摆：本文件测的就是它怎么影响判据。
+ */
 let savedList: Record<string, unknown>[] = []
+/**
+ * **服务端实际有哪些报表** —— 权威事实，与 `savedList` 分开维护。
+ *
+ * 分开是必须的：本文件最值钱的那条用例正是「两者不一致」——
+ * 客户端快照里没有、服务端有（别处刚建的）。用一个变量就造不出那个场景，
+ * 那条用例会退化成「客户端自己拦住了」的假绿。
+ */
+let serverHas = new Set<string>()
 /** 让 `GET /api/reports` 失败（模拟「列表读不到」） */
 let listFails = false
 
@@ -72,17 +93,43 @@ function jsonOk(data: unknown): Response {
   } as unknown as Response
 }
 
+/** 非 2xx 的响应体是**纯文本**（服务端 `(StatusCode, String)`），不是 JSON */
+function textRes(status: number, body: string): Response {
+  return {
+    ok: false,
+    status,
+    headers: new Headers(),
+    json: async () => {
+      throw new Error('服务端的错误响应是纯文本，不该走 json()')
+    },
+    text: async () => body,
+    blob: async () => new Blob([body]),
+  } as unknown as Response
+}
+
+/** 服务端认的 force 写法（与 Rust `SaveQuery::forced` 同一份口径） */
+const FORCE_RE = /[?&]force=(1|true|yes)(&|$)/i
+
 function fakeFetch(input: string | URL, init?: RequestInit): Promise<Response> {
   const url = String(input)
   const method = init?.method ?? 'GET'
-  calls.push({
-    url,
-    method,
-    body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null,
-  })
-  // 列表：可配成失败 —— 「读不到列表」和「没有同名报表」在数据上都是空数组，
-  // 必须能分开造，否则那条边界根本测不到。
-  if (url.includes('/api/reports') && !url.includes('/api/reports/save')) {
+  const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null
+  calls.push({ url, method, body })
+
+  // ⚠️ 先判 save，再判列表 —— 顺序反了的话 `/api/reports` 的前缀匹配会把
+  // `/api/reports/save` 也吞掉，保存请求会被当成「拉列表」回一个数组。
+  if (url.includes('/api/reports/save')) {
+    const id = String(body?.id ?? '').trim()
+    // 与服务端 `save_new` 同一条规则：已存在 且 没带 force → 409
+    if (serverHas.has(id) && !FORCE_RE.test(url)) {
+      return Promise.resolve(
+        textRes(409, `报表 ${id} 已存在；覆盖会换掉原内容。确认要覆盖请带 ?force=1 重发。`),
+      )
+    }
+    serverHas.add(id)
+    return Promise.resolve(jsonOk({ ...body, id }))
+  }
+  if (url.includes('/api/reports')) {
     if (listFails) return Promise.reject(new Error('列表拉不到'))
     return Promise.resolve(jsonOk(savedList))
   }
@@ -244,12 +291,22 @@ function summary(id: string, name: string): Record<string, unknown> {
   return { id, name, description: '', updatedAt: null, sheets: [], sourceCount: 0, bytes: 1 }
 }
 
+/**
+ * 常规摆法：**客户端看到的列表 == 服务端实际有的东西**（也就是没发生「快照过期」）。
+ * 要造不一致的场面就**别用这个**，直接分别写 `savedList` / `serverHas`。
+ */
+function givenReports(...items: Record<string, unknown>[]): void {
+  savedList = items
+  serverHas = new Set(items.map((r) => String(r.id)))
+}
+
 /* --------------------------------- 用例 --------------------------------- */
 
 describe('GridReportModal：覆盖已有报表必须先确认', () => {
   beforeEach(() => {
     calls = []
     savedList = []
+    serverHas = new Set()
     listFails = false
     ;(URL as unknown as { createObjectURL: (b: Blob) => string }).createObjectURL = () => 'blob:fake'
     ;(URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = () => {}
@@ -266,7 +323,7 @@ describe('GridReportModal：覆盖已有报表必须先确认', () => {
   })
 
   it('目标 id 已存在且不是我在编辑的那份 → 弹确认，且**一个 save 请求都没发出去**', async () => {
-    savedList = [summary('taken', '别人的报表')]
+    givenReports(summary('taken', '别人的报表'))
 
     await mount()
     await fillGroupForm()
@@ -288,8 +345,8 @@ describe('GridReportModal：覆盖已有报表必须先确认', () => {
     ).toContain('别人的报表')
   })
 
-  it('点「覆盖」→ 请求真的发出去，且 body 里的 id 就是那个 id', async () => {
-    savedList = [summary('taken', '别人的报表')]
+  it('点「覆盖」→ 带 force=1 重发，且 body 里的 id 就是那个 id', async () => {
+    givenReports(summary('taken', '别人的报表'))
 
     await mount()
     await fillGroupForm()
@@ -303,11 +360,14 @@ describe('GridReportModal：覆盖已有报表必须先确认', () => {
     expect(sent.length, '确认之后必须真的存下去 —— 否则这个确认框就成了「什么都存不了」').toBe(1)
     expect(sent[0]!.method, '保存走 PUT').toBe('PUT')
     expect(sent[0]!.body?.id).toBe('taken')
+    // ★ 确认 = 那句「我有权覆盖」。不带 force 的话服务端还会 409 一次，
+    //   用户会看到自己刚点过「覆盖」却又被问一遍。
+    expect(sent[0]!.url, '确认之后必须带 force=1').toMatch(FORCE_RE)
     expect(confirmVisible(), '确认完框要关掉').toBe(false)
   })
 
   it('点「取消」→ 什么都不做（请求为 0），框关掉', async () => {
-    savedList = [summary('taken', '别人的报表')]
+    givenReports(summary('taken', '别人的报表'))
 
     await mount()
     await fillGroupForm()
@@ -327,8 +387,8 @@ describe('GridReportModal：覆盖已有报表必须先确认', () => {
     expect(confirmVisible(), '取消不该改变判据：目标 id 依然是别人的，要重新问').toBe(true)
   })
 
-  it('对照组：列表里**没有**这个 id → 不弹，直接存（否则就是「每次都拦」）', async () => {
-    savedList = [summary('other', '另一份报表')]
+  it('对照组：列表里**没有**这个 id → 不弹，直接存，且**不带 force**', async () => {
+    givenReports(summary('other', '另一份报表'))
 
     await mount()
     await fillGroupForm()
@@ -339,10 +399,13 @@ describe('GridReportModal：覆盖已有报表必须先确认', () => {
     const sent = saveCalls()
     expect(sent.length, '新增一份报表必须能一次点成').toBe(1)
     expect(sent[0]!.body?.id).toBe('brand-new')
+    // ★ 反向对照：新增时**不能**带 force。要是无脑永远带 force=1，
+    //   服务端那道闸就等于不存在了 —— 而「永远带 force」同样能让上面几条过。
+    expect(sent[0]!.url, '新增不是覆盖，不该带 force').not.toMatch(FORCE_RE)
   })
 
-  it('对照组：确认过一次之后再存同一个 id → 不再弹（打开/存过的那份就是「我的」）', async () => {
-    savedList = [summary('taken', '别人的报表')]
+  it('对照组：确认过一次之后再存同一个 id → 不弹，且**带 force**', async () => {
+    givenReports(summary('taken', '别人的报表'))
 
     await mount()
     await fillGroupForm()
@@ -355,7 +418,12 @@ describe('GridReportModal：覆盖已有报表必须先确认', () => {
     await clickSave()
 
     expect(confirmVisible(), '存自己刚存过的那份还弹框，会把用户训练成闭眼点确定').toBe(false)
-    expect(saveCalls().length, '第二次保存必须直接落盘').toBe(2)
+    const sent = saveCalls()
+    expect(sent.length, '第二次保存必须直接落盘').toBe(2)
+    // ★ 这次**必须带 force**：报表此刻在服务端已经存在了。
+    //   不带的话服务端会 409 → 又弹一次确认框 → 「存自己那份」变成每次都要点两下。
+    //   也就是说这条断言同时钉住了「不弹框」和「服务端那道闸没把正常操作卡住」。
+    expect(sent[1]!.url, '存自己正在编辑的那份要带 force，否则会被服务端顶回来').toMatch(FORCE_RE)
   })
 
   it('列表**读不到**时不算「没有同名」→ 仍然弹（不确定就问，别猜）', async () => {
@@ -372,5 +440,61 @@ describe('GridReportModal：覆盖已有报表必须先确认', () => {
       '列表读不到时无法排除同名，必须当成不确定来问 —— 静默放行就等于赌',
     ).toBe(true)
     expect(saveCalls().length, '没确认之前不能发').toBe(0)
+  })
+
+  /* ------------------------- 服务端那道闸（这次新加的） ------------------------- */
+
+  it('★ 客户端快照过期：列表里没有、服务端却有 → 服务端 409 必须转成确认框，而不是报错', async () => {
+    /*
+     * 这是**只有服务端能接住**的那种情况：
+     * 打开弹窗时列表是空的（另一份是同名报表是之后在别处建的），
+     * 所以客户端预判判定「不存在」→ 不弹确认 → 直接发请求。
+     * 服务端查文件系统，发现已存在且没带 force → 409。
+     */
+    savedList = [] // 客户端看到的
+    serverHas = new Set(['ghost']) // 服务端实际有的
+
+    await mount()
+    await fillGroupForm()
+    await setReportId('ghost')
+    await clickSave()
+
+    // 1) 客户端预判确实放行了 —— 否则这条用例测的就不是服务端那道闸
+    const first = saveCalls()
+    expect(first.length, '客户端快照里没有它，预判应当放行、让服务端去判').toBe(1)
+    expect(first[0]!.url, '预判放行时不该自带 force（那正是要服务端替我判的原因）').not.toMatch(
+      FORCE_RE,
+    )
+
+    // 2) 服务端 409 → **必须弹确认框**。
+    //    这里红通常意味着 409 落进了 `!res.ok → setError`：
+    //    用户会看到一句「报表 ghost 已存在」，然后**没有任何办法继续保存** ——
+    //    明明点一下「覆盖」就能存。这是本条用例存在的全部理由。
+    expect(
+      confirmVisible(),
+      '409 被当成普通错误了 —— 用户会被告知「已存在」却无路可走',
+    ).toBe(true)
+
+    // 3) 确认之后必须带 force 重发 —— 不带的话服务端还会再拒一次
+    await clickTestId('report-overwrite-ok')
+    const sent = saveCalls()
+    expect(sent.length, '确认之后要真的重发一次').toBe(2)
+    expect(sent[1]!.url, '重发必须带 force=1').toMatch(FORCE_RE)
+    expect(sent[1]!.body?.id).toBe('ghost')
+  })
+
+  it('★ 对照组：服务端没有同名时**不该**弹（别把 409 做成「每次都拦」）', async () => {
+    savedList = []
+    serverHas = new Set()
+
+    await mount()
+    await fillGroupForm()
+    await setReportId('fresh')
+    await clickSave()
+
+    expect(confirmVisible(), '服务端也没有，就不该弹').toBe(false)
+    const sent = saveCalls()
+    expect(sent.length).toBe(1)
+    expect(sent[0]!.url).not.toMatch(FORCE_RE)
   })
 })

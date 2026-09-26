@@ -2104,18 +2104,41 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   /**
    * 真正的落盘。**与「要不要先确认」分开** —— 用户在确认框上点「覆盖」之后
    * 要能回到这里，而不是把整个请求重建一遍（重建有可能得到不一样的结果）。
+   *
+   * `force` = 「我声明我有权写这个 id」。它会被翻成 `?force=1` 发给服务端 ——
+   * 服务端的判据是**文件系统**（权威），不是这份 UI 手上的列表快照。
    */
   const doSave = useCallback(
-    async (def: ReportDef, id: string) => {
+    async (def: ReportDef, id: string, force: boolean) => {
       setSaveNotice('')
       setFileBusy(true)
       try {
-        const res = await fetch(`${REPORT_SERVER}/api/reports/save`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(def),
-        })
+        const res = await fetch(
+          `${REPORT_SERVER}/api/reports/save${force ? '?force=1' : ''}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(def),
+          },
+        )
         const text = await res.text()
+        /*
+         * ⚠️ **409 不是错误，是「要你确认」。**
+         *
+         * 服务端说「这个 id 已经有了，而你没声明要覆盖」。这**恰恰**是
+         * 客户端判据漏掉的那种情况：`savedReports` 只是打开弹窗那一刻的快照，
+         * 别的客户端（或另一个标签页）在这之后新建的同名报表它看不见。
+         *
+         * 所以这里必须走「弹确认框」，**不能**落进下面那条 `!res.ok → setError` ——
+         * 否则用户看到一句「报表 x 已存在」然后**没有任何办法继续保存**，
+         * 明明点一下「覆盖」就能存。分支顺序就是这条的全部要害：
+         * 409 判断必须在通用错误之前。
+         */
+        if (res.status === 409) {
+          setError('')
+          setPendingOverwrite({ def, id })
+          return
+        }
         if (!res.ok) throw new Error(text || `保存失败 ${res.status}`)
         setError('')
         // 存成功之后，这个 id 就是「我正在编辑的那一份」了
@@ -2183,13 +2206,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     }
 
     /*
-     * ⚠️ **覆盖已有报表之前必须先问。**
-     *
-     * 服务端 `store::save` 是**覆盖写**，它自己的文档注释写着
-     * 「报表是用户的资产，静默覆盖同名文件会丢东西，所以调用方（UI）要先经列表确认」——
-     * 而在这之前**那句话是假的**：这里直接 PUT，一次确认都没有，
-     * 明明手上就有 `savedReports` 也没用。结果：手打一个已存在的 id → 点保存 →
-     * 那份报表**无声无息被换掉**（界面上只看到一句「已保存模板」）。
+     * **覆盖已有报表之前必须先问。** 这一道是「省一次往返 + 把话说清楚」，
+     * 真正的闸在服务端（`store::save_new`，已存在且没带 `force` → 409）。
      *
      * 判据拆开看：
      * - `id !== lastSavedId` —— 打开 A 再存 A 是**正常操作**，每次都弹会把用户
@@ -2197,15 +2215,23 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
      * - `!reportsListKnown || 列表里有` —— 列表**没读到**时它也是空的，
      *   而「空列表」和「没有同名报表」长得一样。读不到就**当作不确定**，照样问。
      *
-     * **已知边界**：这份列表是打开弹窗那一刻的快照。别的客户端在这之后新建的
-     * 同名报表，这里看不见 —— 真正的兜底要做在服务端（已存在且没带 `force` 就返回 409），
-     * 那是改 API 的事，这次没做（见文档「仍未做」）。
+     * 这道判据只能挡「打开弹窗那一刻列表里就有的同名报表」。**它挡不住**
+     * 别的客户端之后新建的同名报表 —— 那种情况由服务端的 409 接住（见 doSave）。
+     * 两道闸查的不是同一个事实，所以是互补，不是重复。
+     *
+     * 下面那个 `force` 实参 = 「我声明我有权写这个 id」，两种情况成立：
+     * - `id === lastSavedId`：这就是我打开 / 刚存过的那一份，覆盖它是**正常操作**。
+     *   （不带上它的话，第二次保存会被服务端 409 顶回来 —— 用户就会看到
+     *   「存自己刚存过的那份也要确认」，那是把闸做成了绊脚石。）
+     * - 确认框被点过「覆盖」之后：那条路径在 `onOk` 里传 `force = true`。
+     *
+     * 两者都不成立 → **不带 force**，让服务端替我判，而不是自己说了算。
      */
     if (id !== lastSavedId && (!reportsListKnown || savedReports.some((r) => r.id === id))) {
       setPendingOverwrite({ def, id })
       return
     }
-    await doSave(def, id)
+    await doSave(def, id, id === lastSavedId)
   }, [
     buildRequest,
     reportId,
@@ -3749,12 +3775,14 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       )}
 
       {/*
-        覆盖确认。**只在「目标 id 已存在、且不是我正在编辑的那一份」时弹**
-        （判据在 saveReport 里，连同「列表没读到」那种情况一起处理）。
+        覆盖确认。**两个入口都会走到这里**：
+        1. `saveReport` 的本地预判（列表里已经有同名）—— 省一次往返；
+        2. `doSave` 收到服务端 **409** —— 客户端快照看不见的那种冲突。
 
         服务端 `store::save` 是覆盖写 —— 没有这一道，手打一个已存在的 id 点保存
         就会**静默换掉别人的报表**。而这段承诺本来写在服务端的文档注释里
-        （「调用方（UI）要先经列表确认」），只是**从来没实现过**。
+        （「调用方（UI）要先经列表确认」），只是**从来没实现过**；
+        现在服务端自己也有闸了（`save_new` + `?force=1`），两边互补。
       */}
       <Modal
         title="覆盖已有报表？"
@@ -3762,7 +3790,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         onOk={() => {
           const p = pendingOverwrite
           setPendingOverwrite(null)
-          if (p) void doSave(p.def, p.id)
+          // `force = true`：用户明确点了「覆盖」→ 这正是服务端要的那句授权
+          if (p) void doSave(p.def, p.id, true)
         }}
         onCancel={() => setPendingOverwrite(null)}
         okText="覆盖"
