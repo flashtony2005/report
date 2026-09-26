@@ -141,6 +141,10 @@ pub const CODE_LAYOUT_COLLISION: &str = "layout_collision";
 pub const CODE_NONCONVERGENT: &str = "nonconvergent";
 /// 不动点需要 >= 3 轮才稳定 —— 条件之间互相依赖，改模板时要小心（**Info 级**）
 pub const CODE_FIXPOINT_ROUNDS: &str = "fixpoint_rounds";
+/// 列主格跨数据集：列主格的展开行号只在它自己那份数据集里有意义，按行号求交会静默丢数
+pub const CODE_CROSS_DS_COL_PARENT: &str = "cross_ds_col_parent";
+/// 组内多键：`join_on` 的字段 ≠ 父格的分组字段，组内有多个键值，已按**并集**关联
+pub const CODE_JOIN_KEY_NOT_GROUPED: &str = "join_key_not_grouped";
 /// 通用告警：还没细分的旧告警站点都走这个（逐个升级，别一次全动）
 pub const CODE_GENERIC: &str = "generic";
 
@@ -166,8 +170,22 @@ mod tests {
     #[test]
     fn codes_table_is_pinned_and_names_the_ts_mirror() {
         assert_eq!(
-            vec![CODE_LAYOUT_COLLISION, CODE_NONCONVERGENT, CODE_FIXPOINT_ROUNDS, CODE_GENERIC],
-            vec!["layout_collision", "nonconvergent", "fixpoint_rounds", "generic"],
+            vec![
+                CODE_LAYOUT_COLLISION,
+                CODE_NONCONVERGENT,
+                CODE_FIXPOINT_ROUNDS,
+                CODE_CROSS_DS_COL_PARENT,
+                CODE_JOIN_KEY_NOT_GROUPED,
+                CODE_GENERIC,
+            ],
+            vec![
+                "layout_collision",
+                "nonconvergent",
+                "fixpoint_rounds",
+                "cross_ds_col_parent",
+                "join_key_not_grouped",
+                "generic",
+            ],
             "Issue code 词表变了：要同步 TS 的 IssueCode（openprint/src/report/grid-report.ts）"
         );
     }

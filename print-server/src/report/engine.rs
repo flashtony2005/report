@@ -961,6 +961,9 @@ impl Engine {
     ///
     /// 这里是**唯一**允许跨数据集建视图的地方。没有 join_on 就返回空并告警
     /// ——按行号硬凑会产出「看着正常其实错」的数据，那比出空危险得多。
+    ///
+    /// 键取父实例覆盖的**全部**行（并集），不是只取首行 —— 见函数内那段注释。
+    /// 组内同键时（绝大多数模板）行为与改动前逐字节一致。
     fn join_view(
         &mut self,
         child_ds: &str,
@@ -978,29 +981,90 @@ impl Engine {
             return Vec::new();
         };
 
-        // 父行当前的键值：父实例可能覆盖多行，取第一行（分组格下它们同键）
+        // 父行当前的键值。
+        //
+        // 父实例可能覆盖多行。原来这里写「取第一行（**分组格下它们同键**）」——
+        // 那个括号里的前提**没有任何校验**：只要**分组字段 ≠ 关联字段**，
+        // 组内各行的关联键就不同，「首行代表整组」立刻少取数
+        // （实测：华东组内 cust=1 / cust=2 两条子表行 100 + 200，只拿到 100，200 静默丢失）。
+        //
+        // 现在取组内**全部**键值求并集 —— 即「组关联」语义：本组覆盖的每个键，
+        // 它对应的子表行都算进来。
         let pds_name = self.insts[parent_idx].ds.clone();
-        let p_row = self.insts[parent_idx].rows.first().copied();
-        let pv = p_row
-            .and_then(|r| self.ds_ref(&pds_name).and_then(|d| d.get(r)))
-            .and_then(|row| row.get(&key))
-            .cloned();
-        let Some(pv) = pv else {
+        let mut keys: Vec<JsonValue> = Vec::new();
+        {
+            // 借用只活在这个块里：下面要 `self.warn(..)`（`&mut self`）。
+            // `&self.insts[..]` 与 `self.ds_ref(..)` 都是不可变借用，可以共存。
+            //
+            // 复杂度：`contains` 是线性的，所以这里是 O(组内行数 × 组内不同键数)。
+            // **常见情形（组内同键）`keys` 长度恒为 1 → 退化成 O(组内行数)、零额外分配**，
+            // 与改动前一致。只有「组内几乎每行键都不同」（比如 join_on 用了个唯一 id）
+            // 才是 O(组内行数²) —— 那种形状本身就是「分组字段 ≠ 关联字段」的极端，
+            // 该改的是模板（让父格按 join 字段分组），不是在这里加缓存。
+            // 真要跑大数据再换 `HashSet` 归一（下面多键分支已经这么做了）。
+            let p_rows = &self.insts[parent_idx].rows;
+            for r in p_rows {
+                if let Some(v) = self
+                    .ds_ref(&pds_name)
+                    .and_then(|d| d.get(*r))
+                    .and_then(|row| row.get(&key))
+                {
+                    if !keys.contains(v) {
+                        keys.push(v.clone());
+                    }
+                }
+            }
+        }
+        if keys.is_empty() {
             self.warn(format!(
-                "{pos} 的 join_on 字段「{key}」在父数据集 {pds_name} 的当前行里取不到值"
+                "{pos} 的 join_on 字段「{key}」在父数据集 {pds_name} 的这一组里取不到值\
+                 （该实例覆盖 {} 行，一行都没有这个字段）",
+                self.insts[parent_idx].rows.len()
             ));
+            return Vec::new();
+        }
+        // 组内多键 = 分组字段 ≠ 关联字段。**这是唯一会让新旧行为不同的情形**，
+        // 必须说出来：作者会看到一个与改动前**不同的数**，不解释就是新的静默行为变化。
+        if keys.len() > 1 {
+            self.warn_at(
+                issue::CODE_JOIN_KEY_NOT_GROUPED,
+                pos,
+                format!(
+                    "父格按别的字段分组、而本格 join_on 用的是「{key}」，这一组里有 {} 个不同的\
+                     「{key}」值 —— 已按**并集**关联（组内每个键对应的子表行都算进来）。\
+                     若你只要其中一个，请让父格按「{key}」分组，或改用别的关联字段",
+                    keys.len()
+                ),
+            );
+        }
+
+        let Some(child) = self.ds_ref(child_ds) else {
             return Vec::new();
         };
 
-        match self.ds_ref(child_ds) {
-            Some(d) => d
+        // 组内同键（绝大多数模板：分组字段 == 关联字段，或父格就是明细行）
+        // → 与改动前**逐字节一致**，O(|子表|)，无额外分配。
+        if keys.len() == 1 {
+            let only = &keys[0];
+            return child
                 .iter()
                 .enumerate()
-                .filter(|(_, row)| row.get(&key) == Some(&pv))
+                .filter(|(_, row)| row.get(&key) == Some(only))
                 .map(|(i, _)| i)
-                .collect(),
-            None => Vec::new(),
+                .collect();
         }
+
+        // 组内多键 → 并集关联。用 `HashSet` 而不是线性 `contains`：
+        // 父格这一组可能很大，线性扫会退化成 O(|子表| × 组内键数)。
+        // 键用 `to_string()` 归一 —— 与 `JsonValue` 的相等语义一致
+        // （`1` 与 `1.0` 序列化不同、本来就不相等），且避免给 `JsonValue` 造 `Hash`。
+        let wanted: HashSet<String> = keys.iter().map(|v| v.to_string()).collect();
+        child
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.get(&key).is_some_and(|v| wanted.contains(&v.to_string())))
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// 展开一个 sheet，返回输出网格
@@ -1096,7 +1160,8 @@ impl Engine {
                     None => vec![None],
                 };
                 // 列主格实例列表：与行主格做笛卡尔积，取数视图取两者交集（交叉表的本质）
-                let col_parents: Vec<Option<usize>> = match &col_ref {
+                // `mut` 是因为下面要剔掉跨数据集的列主格（见那段注释）。
+                let mut col_parents: Vec<Option<usize>> = match &col_ref {
                     Some(p) => match self.by_pos.get(p).cloned() {
                         Some(list) if !list.is_empty() => list.iter().map(|i| Some(*i)).collect(),
                         // 同上行主格：列主格展开成 0 条时子格不出，而不是挂根拿全量
@@ -1112,12 +1177,55 @@ impl Engine {
                     None => vec![None],
                 };
 
-                // 列主格「数据行 → 所属实例」的索引，用来把逐列主格过滤换成一次分桶。
-                // 每个模板格建一次，O(总行数)。
-                let row_to_cp = self.col_parent_index(&col_parents);
-
                 // 本格读哪份数据：决定 rows 下标属于谁，也决定父格能不能直接求交
                 let cell_ds_name = self.cell_ds(&model);
+
+                // ---- 列主格必须与本格**同一份数据集** ----
+                //
+                // 列主格的 `rows` 是**它自己那份数据集**里的行号；下面要拿它跟本格的
+                // `base` 求交（分桶或二分）。跨数据集时两套行号没有任何共同含义，
+                // 求交结果就是「按行号硬凑」—— 实测 ds1 两行 / ds2 三行时，
+                // ds2 的第三行 333 **静默消失，零告警**。
+                //
+                // 行父格这条路是有兜底的：`join_view` 强制要求 `join_on`。
+                // 列父格**没有**对应机制（列轴上的「反向关联」语义完全不同，
+                // 不是加个字段能覆盖的），所以只能**拒绝**：本格不出数 + 报 Error。
+                // 与「列主格展开成 0 条 → 子格一条都不出」同一条路径。
+                //
+                // 必须在建 `row_to_cp` **之前**过滤：那个索引是直接拿列主格的 `rows`
+                // 建的，混进跨数据集的实例就等于把两套行号混进同一张表。
+                let mut refused_col_ds: Vec<String> = Vec::new();
+                col_parents.retain(|cp| match cp {
+                    None => true,
+                    Some(cp) => {
+                        let cds = self.insts[*cp].ds.clone();
+                        if cds == cell_ds_name {
+                            true
+                        } else {
+                            // 同一份数据集被多实例引用时只报一次（下面按 ds 名去重）
+                            if !refused_col_ds.contains(&cds) {
+                                refused_col_ds.push(cds);
+                            }
+                            false
+                        }
+                    }
+                });
+                for cds in &refused_col_ds {
+                    self.fail_at(
+                        issue::CODE_CROSS_DS_COL_PARENT,
+                        Some(pos.clone()),
+                        format!(
+                            "{pos} 绑的是 {cell_ds_name}，但它的列主格在 {cds}（跨数据集）。\
+                             列主格的展开行号只在它自己那份数据集里有意义，按行号求交会静默丢数，\
+                             所以本格不出数。改法：把两份数据合成一份数据集；\
+                             或把这一格改成**行父格** + join_on 关联"
+                        ),
+                    );
+                }
+
+                // 列主格「数据行 → 所属实例」的索引，用来把逐列主格过滤换成一次分桶。
+                // 每个模板格建一次，O(总行数)。用**过滤后**的列表（见上）。
+                let row_to_cp = self.col_parent_index(&col_parents);
 
                 for parent in &row_parents {
                     let base: Vec<usize> = match parent {
@@ -5649,22 +5757,98 @@ mod slow_fixpoint_tests {
     }
 }
 
-/// 已知缺陷复现 #3：跨数据集列主格按**裸行号**关联（评审 §三.4）。
+/// 缺陷 #3：跨数据集列主格曾按**裸行号**关联（评审 §三.4）—— ✅ 已修，本模块是回归测试。
 ///
-/// **现在是红的，所以 `#[ignore]`。** 修好之后把断言改成「正确行为」并去掉 `#[ignore]`。
-///
-/// 行父格跨数据集时会强制要求 `join_on`（`join_view`），但**列父格这条路没有同等检查**：
-/// `col_parent_index` 把列主格的 `rows` 当裸行号索引，与当前格的 `base` 直接求交。
-/// 实测：ds1 两行、ds2 三行 → ds2 的第三行（333）**静默消失，零告警**。
+/// 修法：**拒绝 + 报 `Error`**（本格一格都不建）。
+/// 列主格的 `rows` 是**它自己那份数据集**里的行号，与本格的 `base` 求交只有在
+/// 同一份数据集里才有意义；跨数据集时两套行号没有任何共同含义。
+/// 行父格这条路有兜底（`join_view` 强制要求 `join_on`），列父格**没有**对应机制
+/// （列轴上的「反向关联」语义完全不同），所以只能拒绝。
 #[cfg(test)]
 mod cross_ds_col_parent_probe {
     use super::*;
 
-    /// A1 = ds1 的列展开；B1 挂 `col_parent: A1` 但读 **ds2**。
-    /// ds2 行数与 ds1 不同 → 暴露「按行号硬凑」而不是拒绝或告警。
+    /// **③ 独立于 ① 的证据**：把数值格放到列头的**下一行**（交叉表的正常形状），
+    /// 就不会落位冲突 → ① 不响；但裸行号求交照样在按行号硬对齐。
+    ///
+    /// 这个形状**最危险**：两份数据集等长时输出
+    /// `1月|2月|3月` / `111|222|333` —— **看着完全正确、零诊断**，纯属行数巧合。
+    /// 下面把子表顺序倒过来（333/222/111），让「按行号对齐」立刻露馅。
     #[test]
-    #[ignore = "已知缺陷：跨数据集列主格按裸行号关联，见模块注释。修好后去掉 ignore"]
-    fn probe_cross_ds_col_parent_matches_by_row_index() {
+    fn cross_ds_col_parent_that_looks_correct_is_still_refused() {
+        let mut ds1: DataSet = Vec::new();
+        for m in ["1月", "2月", "3月"] {
+            ds1.push(BTreeMap::from([("m".to_string(), JsonValue::from(m))]));
+        }
+        // 顺序**倒过来**：若还按裸行号对齐，1月 会配到 333
+        let ds2: DataSet = vec![
+            BTreeMap::from([("amt".to_string(), JsonValue::from(333.0))]),
+            BTreeMap::from([("amt".to_string(), JsonValue::from(222.0))]),
+            BTreeMap::from([("amt".to_string(), JsonValue::from(111.0))]),
+        ];
+        let col = CellTpl {
+            image: None, pos: None, value: Some(JsonValue::from("x")),
+            model: Some(CellModel {
+                ds: Some("ds1".to_string()), field: Some("m".to_string()),
+                expand_type: Some(ExpandType::C), ..Default::default()
+            }),
+            merge_across: 0, merge_down: 0, merge_to_end: false, chart: None, barcode: None,
+        };
+        let val = CellTpl {
+            image: None, pos: None, value: Some(JsonValue::from("x")),
+            model: Some(CellModel {
+                ds: Some("ds2".to_string()), field: Some("amt".to_string()),
+                agg: Some(AggType::Sum),
+                col_parent: Some("A1".to_string()), ..Default::default()
+            }),
+            merge_across: 0, merge_down: 0, merge_to_end: false, chart: None, barcode: None,
+        };
+        // A1 在**第 0 行**、数值格在**第 1 行** —— 交叉表的正常形状，
+        // 同模板行才会撞列，这里不会（所以 ① 不响）。
+        let sheet = SheetTpl {
+            name: "t".into(), page: None, loop_field: None,
+            rows: vec![RowTpl { cells: vec![col] }, RowTpl { cells: vec![val] }],
+        };
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), ds1);
+        datasets.insert("ds2".to_string(), ds2);
+        let mut e = Engine::new_multi(datasets, "ds1".to_string());
+        let grid = e.expand_sheet(&sheet);
+
+        // 列头照常出（那是 ds1 自己的展开）
+        assert_eq!(
+            grid[0].iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+            vec!["1月".to_string(), "2月".to_string(), "3月".to_string()]
+        );
+        // 数值格**拒绝**出数 → 它连实例都没有，于是**那一行物理行也不会出现**
+        // （行数来自实例布局）。所以判据是「整张网格里一个数值都没有」+ 只剩列头那一行。
+        assert_eq!(grid.len(), 1, "数值格拒绝出数后不该再有第 2 行：{grid:#?}");
+        for (r, line) in grid.iter().enumerate() {
+            for (c, cell) in line.iter().enumerate() {
+                assert!(
+                    cell.raw_number.is_none(),
+                    "跨数据集列主格不该按行号对齐出数，实际 ({r},{c}) = {:?}",
+                    cell.raw_number
+                );
+            }
+        }
+        // 而且**不是靠落位冲突拦下的** —— 这条形状里 ① 根本不响，
+        // 所以必须由 ③ 自己报出来。这一条就是「③ 独立于 ①」的判据。
+        let issues = e.issues();
+        assert!(
+            !issues.iter().any(|i| i.code == issue::CODE_LAYOUT_COLLISION),
+            "这个形状不该有落位冲突（正是要证明 ③ 独立于 ①）：{issues:#?}"
+        );
+        let hit: Vec<&Issue> =
+            issues.iter().filter(|i| i.code == issue::CODE_CROSS_DS_COL_PARENT).collect();
+        assert_eq!(hit.len(), 1, "应当报一条跨数据集列主格诊断，实际：{issues:#?}");
+        assert_eq!(hit[0].level, IssueLevel::Error);
+    }
+
+    /// A1 = ds1 的列展开；B1 挂 `col_parent: A1` 但读 **ds2**。
+    /// ds2 行数与 ds1 不同 —— 改动前会按行号硬凑，把 ds2 的第三行静默丢掉。
+    #[test]
+    fn cross_ds_col_parent_is_refused_with_an_error() {
         let mut ds1: DataSet = Vec::new();
         for m in ["1月", "2月"] {
             ds1.push(BTreeMap::from([("m".to_string(), JsonValue::from(m))]));
@@ -5709,37 +5893,68 @@ mod cross_ds_col_parent_probe {
         println!("告警数 = {}", e.warnings().len());
         for w in e.warnings() { println!("  - {w}"); }
 
-        let vals: Vec<Option<f64>> = grid[0].iter().map(|c| c.raw_number).collect();
-        // 特征化断言（characterization）：钉住**当前**（错的）行为，修好后本测试会红，
-        // 那时把它改成断言「拒绝 + 告警」并去掉 `#[ignore]`。
+        // 修好后的判据：**要么出对，要么明确拒绝** ——
+        // 不能再出现「ds2 的第三行静默消失、零告警」这种形态。
+        let texts: Vec<String> = grid[0].iter().map(|c| c.text.clone()).collect();
         assert_eq!(
-            vals,
-            vec![Some(111.0), Some(222.0)],
-            "跨数据集列主格是按**裸行号**关联的：ds2 有 3 行、ds1 只有 2 行 → 第三行被静默丢掉"
+            texts,
+            vec!["1月".to_string(), "2月".to_string()],
+            "跨数据集列主格必须**拒绝出数**（B1 一格都不建），只留 ds1 的列头"
+        );
+        // 关键：ds2 的值一个都不该出现 —— 尤其不能出现「111 / 222」这种
+        // 按裸行号硬凑出来、**看着像正常交叉表**的结果
+        for (r, row) in grid.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                assert!(
+                    cell.raw_number.is_none(),
+                    "跨数据集列主格不该产出任何数值，实际 ({r},{c}) = {:?}",
+                    cell.raw_number
+                );
+            }
+        }
+
+        // 拒绝必须**带诊断** —— 不出数却不说话，只是换了个姿势的静默失败
+        let issues = e.issues();
+        let hit: Vec<&Issue> =
+            issues.iter().filter(|i| i.code == issue::CODE_CROSS_DS_COL_PARENT).collect();
+        assert_eq!(hit.len(), 1, "应当恰好报一条跨数据集列主格诊断，实际：{issues:#?}");
+        assert_eq!(hit[0].level, IssueLevel::Error, "结果不可信 → 必须是 Error 级");
+        assert_eq!(hit[0].pos.as_deref(), Some("B1"), "要能定位到具体格");
+        assert!(
+            hit[0].message.contains("ds1") && hit[0].message.contains("ds2"),
+            "诊断要说清是哪两份数据集：{}",
+            hit[0].message
         );
         assert!(
-            e.warnings().is_empty(),
-            "更糟的是**一条告警都没有** —— 与行父格跨数据集时「必须写 join_on」的待遇不一致：{:?}",
-            e.warnings()
+            hit[0].message.contains("join_on"),
+            "诊断要给出可执行的改法（行父格 + join_on）：{}",
+            hit[0].message
         );
+        // 向后兼容：`Error` 也必须出现在 `warnings` 里（派生视图只增不减）
+        let compat = e.warnings();
+        assert_eq!(compat.len(), 1, "Error 必须同时出现在 warnings 里：{compat:?}");
+        assert!(compat[0].starts_with("B1 "), "warnings 里要带定位：{}", compat[0]);
     }
 }
 
-/// 已知缺陷复现 #4：`join_view` 用**父实例首行**的关联键代表整组（评审 §三.4 后半）。
+/// 缺陷 #4：`join_view` 曾用**父实例首行**的关联键代表整组（评审 §三.4 后半）—— ✅ 已修。
 ///
-/// **现在是红的，所以 `#[ignore]`。** 修好之后把断言改成「正确行为」并去掉 `#[ignore]`。
+/// 旧注释写「取第一行（**分组格下它们同键**）」，**括号里那个前提没有任何校验**。
+/// 只要**分组字段 ≠ 关联字段**，组内各行的关联键就不同，「首行代表整组」立刻少取数。
 ///
-/// `engine.rs:931-937` 的注释说「父实例可能覆盖多行，取第一行（**分组格下它们同键**）」——
-/// 这个括号里的前提**没有任何校验**。只要**分组字段 ≠ 关联字段**，组内各行的关联键就不同，
-/// 首行代表整组立刻出错。
-/// 实测：华东组内有 cust=1 / cust=2 两行，子表两条各 100 / 200 → 只取到首行的 100。
+/// 修法：取组内**全部**键值求**并集**（组关联语义）。组内同键时退化成单值，
+/// 与改动前逐字节一致 —— 那一点由下面的对照组单独证明。
 #[cfg(test)]
 mod join_view_first_row_probe {
     use super::*;
 
+    fn ds_row(pairs: &[(&str, JsonValue)]) -> BTreeMap<String, JsonValue> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+    }
+
+    /// 父按 `region` 分组，`join_on: "cust"` —— 组内有 cust=1 / cust=2 两行。
     #[test]
-    #[ignore = "已知缺陷：join_view 用父实例首行的键代表整组，见模块注释。修好后去掉 ignore"]
-    fn probe_join_on_takes_parent_first_row_only() {
+    fn join_on_unions_all_keys_in_the_parent_group() {
         // 父数据集：按 region 分组，组内 cust 不同
         let ds1: DataSet = vec![
             BTreeMap::from([("region".to_string(), JsonValue::from("华东")), ("cust".to_string(), JsonValue::from(1))]),
@@ -5786,13 +6001,85 @@ mod join_view_first_row_probe {
         println!("告警数 = {}", e.warnings().len());
         for w in e.warnings() { println!("  - {w}"); }
 
-        // 华东组内有 cust=1 与 cust=2 两条子表行，正确合计应为 300
+        // 华东组内有 cust=1 与 cust=2 两条子表行，**并集**关联 → 正确合计 300
+        // （改动前只取首行的 100，200 静默丢失）
         let got = grid[0][1].raw_number;
         assert_eq!(
             got,
             Some(300.0),
             "华东组内两条子表行（100 + 200）应合计 300，实际拿到 {got:?} \
-             —— join_view 只用了父实例**首行**的关联键"
+             —— 组关联要取组内**全部**键值的并集，不能只取首行"
+        );
+
+        // 取并集是**语义变化**，作者会看到一个与改动前不同的数 → 必须说出来
+        let issues = e.issues();
+        let hit: Vec<&Issue> =
+            issues.iter().filter(|i| i.code == issue::CODE_JOIN_KEY_NOT_GROUPED).collect();
+        assert_eq!(hit.len(), 1, "组内多键必须报一条诊断，实际：{issues:#?}");
+        assert_eq!(hit[0].level, IssueLevel::Warning, "并集是正确的组关联语义，不该拦导出");
+        assert_eq!(hit[0].pos.as_deref(), Some("B1"), "要能定位到具体格");
+        assert!(
+            hit[0].message.contains("cust") && hit[0].message.contains("并集"),
+            "诊断要说清关联字段与并集口径：{}",
+            hit[0].message
+        );
+        assert_eq!(e.warnings().len(), 1, "Warning 自然也在 warnings 里：{:?}", e.warnings());
+    }
+
+    /// **对照组**：`join_on` 的字段 **== 父格的分组字段**（绝大多数真实模板）时，
+    /// 组内同键 → 并集退化成单值 → 结果与改动前**一致**，且**一条诊断都不该多**。
+    ///
+    /// 没有这一条，上面那条只证明了「多键时取并集」，
+    /// 证明不了「同键时行为没变」—— 而后者才是不能被碰坏的东西。
+    #[test]
+    fn same_key_group_join_is_unchanged_and_silent() {
+        let ds1: DataSet = vec![
+            ds_row(&[("region", "华东".into()), ("cust", 1.into())]),
+            ds_row(&[("region", "华东".into()), ("cust", 2.into())]),
+            ds_row(&[("region", "华南".into()), ("cust", 3.into())]),
+        ];
+        // 子表按 **region** 关联（== 父格的分组字段）
+        let ds2: DataSet = vec![
+            ds_row(&[("region", "华东".into()), ("amt", 10.0.into())]),
+            ds_row(&[("region", "华东".into()), ("amt", 20.0.into())]),
+            ds_row(&[("region", "华南".into()), ("amt", 5.0.into())]),
+        ];
+        let parent = CellTpl {
+            image: None, pos: None, value: Some(JsonValue::from("x")),
+            model: Some(CellModel {
+                ds: Some("ds1".to_string()), field: Some("region".to_string()),
+                expand_type: Some(ExpandType::R), ..Default::default()
+            }),
+            merge_across: 0, merge_down: 0, merge_to_end: false, chart: None, barcode: None,
+        };
+        let child = CellTpl {
+            image: None, pos: None, value: Some(JsonValue::from("x")),
+            model: Some(CellModel {
+                ds: Some("ds2".to_string()), field: Some("amt".to_string()),
+                agg: Some(AggType::Sum),
+                row_parent: Some("A1".to_string()),
+                join_on: Some("region".to_string()),   // ← 与分组字段相同
+                ..Default::default()
+            }),
+            merge_across: 0, merge_down: 0, merge_to_end: false, chart: None, barcode: None,
+        };
+        let sheet = SheetTpl {
+            name: "t".into(), page: None, loop_field: None,
+            rows: vec![RowTpl { cells: vec![parent, child] }],
+        };
+        let mut datasets = BTreeMap::new();
+        datasets.insert("ds1".to_string(), ds1);
+        datasets.insert("ds2".to_string(), ds2);
+        let mut e = Engine::new_multi(datasets, "ds1".to_string());
+        let grid = e.expand_sheet(&sheet);
+
+        assert_eq!(grid.len(), 2, "两个分组 → 两行：{grid:#?}");
+        assert_eq!(grid[0][1].raw_number, Some(30.0), "华东 = 10 + 20");
+        assert_eq!(grid[1][1].raw_number, Some(5.0), "华南 = 5");
+        assert!(
+            e.issues().is_empty(),
+            "分组字段 == 关联字段时组内同键，不该有任何诊断：{:?}",
+            e.issues()
         );
     }
 }

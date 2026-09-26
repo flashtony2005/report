@@ -796,7 +796,13 @@ export type IssueLevel = 'info' | 'warning' | 'error'
  *
  * `generic` 是还没细分的旧告警站点用的兜底值 —— 它会长期存在，别当成错误。
  */
-export type IssueCode = 'layout_collision' | 'nonconvergent' | 'fixpoint_rounds' | 'generic'
+export type IssueCode =
+  | 'layout_collision'
+  | 'nonconvergent'
+  | 'fixpoint_rounds'
+  | 'cross_ds_col_parent'
+  | 'join_key_not_grouped'
+  | 'generic'
 
 /** 一条诊断。字段与 Rust 侧 `Issue` 逐字段对应（mirror-check.py 盯着 `RenderResponse`） */
 export interface RenderIssue {
