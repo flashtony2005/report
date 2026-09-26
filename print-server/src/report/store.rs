@@ -277,8 +277,41 @@ pub fn load(dir: &Path, id: &str) -> Result<ReportDef, String> {
     read_def(&path)
 }
 
+/// 原子写：先备份 `.bak`，再写 `.tmp`，最后 `rename` 覆盖。
+///
+/// **为什么必须原子**：`std::fs::write` 的语义是 `create + truncate + write` ——
+/// 旧内容在 **truncate 那一刻就没了**，而 `write` 之后还有一整段时间。
+/// 报表是用户的资产，写到一半崩（或磁盘满、或被 `RLIMIT_FSIZE` / SIGXFSZ 打断）
+/// 会让文件变成**截断的 JSON**：`load` 解析失败，而旧内容**没有备份**，不可恢复。
+/// `rename` 在同一目录内是原子的，所以目标文件**要么是旧的完整内容、
+/// 要么是新的完整内容**，不存在「半成品」这一态。
+///
+/// 与 `config.rs::ServerConfig::save` 是同一套做法（那份就在隔壁文件，
+/// 别各写各的 —— 本项目吃过「同一个正确写法在仓库里有两份、其中一份是错的」的亏）。
+///
+/// 注意 `.bak` / `.tmp` 的名字是「原文件名 + 后缀」，所以它们的**扩展名不是 json**，
+/// `list()` 的 `extension() == "json"` 判据天然跳过它们（有单测钉住，别改成
+/// `file_name().ends_with(".json")` —— 那会把 `foo.json.bak` 也当报表读进来）。
+fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建报表目录失败: {e}"))?;
+    }
+    // 备份上一版。覆盖本身是不可逆的；UI 侧虽有确认（那是另一道闸），
+    // 但确认只能防「手滑」，防不了「改错了想退回去」——留一份才有手工恢复的路。
+    if path.exists() {
+        let bak = PathBuf::from(format!("{}.bak", path.display()));
+        std::fs::copy(path, &bak).map_err(|e| format!("备份原报表失败: {e}"))?;
+    }
+    let tmp = PathBuf::from(format!("{}.tmp", path.display()));
+    std::fs::write(&tmp, text).map_err(|e| format!("写入报表临时文件失败: {e}"))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("替换报表文件失败: {e}"))
+}
+
 /// 保存。**覆盖写**：报表是用户的资产，静默覆盖同名文件会丢东西，
-/// 所以调用方（UI）要先经列表确认；这里同时写回 updatedAt 与归一化 id。
+/// 所以调用方（UI）要先经列表确认（见 `GridReportModal.tsx` 的 `saveReport`）；
+/// 这里同时写回 updatedAt 与归一化 id。
+///
+/// 落盘走 [`write_atomic`]：**目标文件不会出现「写了一半」的中间态**。
 pub fn save(dir: &Path, mut def: ReportDef) -> Result<ReportDef, String> {
     let id = def.id.trim().to_string();
     if !is_valid_id(&id) {
@@ -294,11 +327,10 @@ pub fn save(dir: &Path, mut def: ReportDef) -> Result<ReportDef, String> {
     def.version = VERSION;
     def.updated_at = Some(now_rfc3339());
 
-    std::fs::create_dir_all(dir).map_err(|e| format!("创建报表目录失败: {e}"))?;
     let path = path_of(dir, &def.id);
     let text = serde_json::to_string_pretty(&def)
         .map_err(|e| format!("序列化报表失败: {e}"))?;
-    std::fs::write(&path, text).map_err(|e| format!("写入报表文件失败: {e}"))?;
+    write_atomic(&path, &text)?;
     Ok(def)
 }
 
@@ -472,6 +504,112 @@ mod tests {
         assert_eq!(loaded.name, "报表 t1");
         let _ = delete(&dir, "t1").unwrap();
         assert!(load(&dir, "t1").is_err());
+    }
+
+    /// **原子性的可判定面**：写盘中途失败时，目标文件必须仍是**旧的完整内容**。
+    ///
+    /// 「进程写到一半被杀」单测造不出来（要能杀进程 —— 那条由真机探针
+    /// `scripts/verify-atomic-save.py` 用 `RLIMIT_FSIZE` + SIGXFSZ 覆盖），
+    /// 但「写入失败」能造：把 `.tmp` 的路径预先占成一个**目录**，
+    /// `fs::write` 就会 `EISDIR` 失败。
+    ///
+    /// 这条用例的真正价值是**它能区分两种实现** —— 非原子版
+    /// （`fs::write` 直接写目标文件）根本不碰 `.tmp`，于是这次 save 会**成功**
+    /// 并把旧内容换成新内容，`save(...).is_err()` 当场红。
+    /// 「旧内容有没有被保住」这件事因此被钉住了，而不是靠读代码相信。
+    #[test]
+    fn 写入失败时目标文件仍是旧的完整内容() {
+        let dir = tempdir();
+        let mut v1 = def("t2");
+        v1.description = "v1".to_string();
+        let saved_v1 = save(&dir, v1).unwrap();
+
+        // 占住 `.tmp` 这个名字，逼 write_atomic 的写盘失败
+        std::fs::create_dir_all(dir.join("t2.json.tmp")).unwrap();
+
+        let mut v2 = def("t2");
+        v2.description = "v2".to_string();
+        assert!(save(&dir, v2).is_err(), "写不进去时必须报错，不能假装成功");
+
+        let after = load(&dir, "t2")
+            .expect("目标文件必须还能解析 —— 这正是原子写要保的东西");
+        assert_eq!(after.description, "v1", "旧内容被写坏了");
+        /*
+         * 时间戳也必须还是旧的那个。
+         *
+         * 这一条是**为了钉住一个被写错的结论**：`save` 里那句
+         * `def.updated_at = Some(now_rfc3339())` 是在写盘**之前**执行的，
+         * 曾经据此断言过「崩了以后文件带着旧时间戳 → 从列表看不出这次保存失败过」。
+         * 前半句对，**后半句的推论是错的** —— 那个赋值改的是个局部变量，
+         * 写失败时 `def` 直接被丢弃；而失败本身会以 `Err` 的形式返回给调用方
+         * （HTTP 400 / 前端弹错误）。所以它是「可见的数据丢失」，不是静默失败。
+         *
+         * 断言在这里的价值：把「失败时不可能出现『新时间戳 + 旧内容』这种半更新状态」
+         * **写明白**。它其实是上面「逐字节没变」的**推论**，不是独立证据 ——
+         * 但那条更正值得有一行代码替它站台，而不是只活在文档里。
+         */
+        assert_eq!(
+            after.updated_at, saved_v1.updated_at,
+            "写失败却动了时间戳 = 出现「半更新」的文件"
+        );
+    }
+
+    /// 覆盖时留一份上一版 —— 这是「改错了想退回去」的唯一退路。
+    #[test]
+    fn 覆盖时留下上一版备份() {
+        let dir = tempdir();
+        let mut v1 = def("t3");
+        v1.description = "v1".to_string();
+        save(&dir, v1).unwrap();
+        // 首次保存没有「上一版」，不该凭空造一个
+        assert!(!dir.join("t3.json.bak").exists(), "首存不该有 .bak");
+
+        let mut v2 = def("t3");
+        v2.description = "v2".to_string();
+        save(&dir, v2).unwrap();
+
+        assert_eq!(load(&dir, "t3").unwrap().description, "v2");
+        let bak = dir.join("t3.json.bak");
+        assert!(bak.exists(), "覆盖后必须留下上一版");
+        let old: ReportDef =
+            serde_json::from_str(&std::fs::read_to_string(&bak).unwrap()).unwrap();
+        assert_eq!(old.description, "v1", ".bak 里应是上一版，不是刚写的这份");
+    }
+
+    /// 保存成功后不能留下 `.tmp`。
+    #[test]
+    fn 保存成功后不残留临时文件() {
+        let dir = tempdir();
+        save(&dir, def("t4")).unwrap();
+        assert!(!dir.join("t4.json.tmp").exists(), ".tmp 必须被 rename 吃掉");
+        assert!(!dir.join("t4.json.bak").exists(), "首存不该有 .bak");
+    }
+
+    /// `.bak` / `.tmp` **不能出现在报表列表里**。
+    ///
+    /// 这是引入原子写时**新长出来**的风险：`list()` 的判据是
+    /// `path.extension() == Some("json")`，而 `foo.json.bak` 的扩展名是 `bak`，
+    /// 所以天然被跳过 —— 但**改成 `file_name().ends_with(".json")` 就会漏**，
+    /// 那时用户会在列表里看到一份「id 对、内容是上一版」的幽灵报表。
+    #[test]
+    fn 备份与临时文件不进报表列表() {
+        let dir = tempdir();
+        save(&dir, def("t5")).unwrap();
+        let mut v2 = def("t5");
+        v2.description = "v2".to_string();
+        save(&dir, v2).unwrap(); // 这一步会生成 t5.json.bak
+
+        // 再手工塞一个残留的 .tmp（模拟上次崩在写盘中途）
+        std::fs::write(dir.join("t5.json.tmp"), "{ 半个 json").unwrap();
+
+        let items = list(&dir).unwrap();
+        assert_eq!(
+            items.len(),
+            1,
+            "列表里多出了条目：{:?}",
+            items.iter().map(|i| i.id.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(items[0].id, "t5");
     }
 
     /// `reports_dir` 的推导规则必须被钉住——它是**静默失败**的来源。

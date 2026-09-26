@@ -1148,7 +1148,7 @@ spec：openprint 70 个 · designer-react 42 个。
 | 4 | `bash scripts/ts-project-check.sh`（designer-react） | 18s |
 | 5 | `bash scripts/ts-project-check.sh openprint` | 6s |
 | 6 | `cargo test --bin print-server` | 4s 暖 / **1m33s 冷编译** |
-| 7 | `bash scripts/ts-test-designer.sh grid-report-`（jsdom，**串行**） | **160s** |
+| 7 | `bash scripts/ts-test-designer.sh grid-report-`（jsdom，**串行**） | **145s** |
 
 **第 7 道是 2026-09-26 补的，补的是真缺口**：`designer-react` 有 43 spec / 375 用例，
 而在此之前**没有任何脚本跑它们**（`ts-test.sh` 只覆盖 `openprint/src/report/*.ts`）→
@@ -1156,7 +1156,7 @@ spec：openprint 70 个 · designer-react 42 个。
 **⚠️ `--no-file-parallelism` 是正确性要求不是性能选项**：默认文件级并行下
 **16 失败 / 359 通过**，同样的文件**单独跑 4/4 全绿**，串行 **375/375 全绿**。
 失败形态 `Test timed out` / `expected '' to contain …` = 渲染没跑完就判死，**不是真缺陷**。
-**已知缺口**：第 7 道带 `grid-report-` 过滤（11 文件 / 136 用例），
+**已知缺口**：第 7 道带 `grid-report-` 过滤（12 文件 / 142 用例），
 另外 **32 个 spec 仍不在聚合跑器里**（那 346s 太贵）。
 
 **退出码三态（这是本次最重要的设计点）**：
@@ -1243,6 +1243,73 @@ V=abc; echo "测试 ${V}）"    # ✓
 **顺带修的计数漂移**：`check-all.sh` 的 `15 个 fault-inject` → **16**（两处）；
 `报表引擎详解` §15.1 同样 `15` → **16**（它已漂过两次）。
 **判据：注释里的数字最容易漂 —— 改完脚本记得 `ls scripts/fault-inject-*.py | wc -l` 核一遍。**
+
+### §二十一.10 第 4 档第 1 条已实施：保存不再毁用户的报表（2026-09-27）
+
+**两个独立缺口，一起修**（详见 `架构体检-不足与改进方案.md` §9）：
+
+| # | 缺口 | 性质 |
+| --- | --- | --- |
+| **A** | 手打一个**已存在**的 id 点保存 → 那份报表被**无声无息换掉** | **静默** |
+| **B** | 写到一半崩 → 文件变截断 JSON，旧内容无备份、不可恢复 | 可见的数据丢失 |
+
+**A 是这次真正的发现，而且不在体检报告里** —— 是顺着 B 的代码读出来的：
+`store::save` 的 doc 注释写着「静默覆盖同名文件会丢东西，**所以调用方（UI）要先经列表确认**」，
+而 `saveReport` **一次确认都没有**，UI 手上明明有 `savedReports`。
+→ **教训：读到「所以调用方要 X」的注释，去调用方看一眼 X 做了没有。**
+这种注释比没有注释更坏 —— 它让后来的人**以为已经处理过了**。
+
+**B 的修法**：`store.rs` 加 `write_atomic()`（`.bak` 备份 + 写 `.tmp` + `rename`），
+与 `config.rs::ServerConfig::save` 同一套。
+`rename` 保「不出半成品」，`.bak` 保「覆盖可逆」—— 两件事，缺一不可。
+**新风险也钉住了**：`.bak` / `.tmp` 不能进 `list()`。判据是 `extension()=="json"`
+→ 天然跳过；但改成 `contains(".json")` 就会漏（`foo.json.bak` 含 `.json`）。
+
+**A 的判据**（写在 `saveReport`）：`id !== lastSavedId && (!reportsListKnown || 列表里有)`。
+- `id !== lastSavedId`：打开 A 再存 A 是正常操作，每次都弹会把用户训练成闭眼点确定。
+- `!reportsListKnown`：**列表读不到时它也是空数组**，与「一份都没有」数据上完全一样
+  → 只按数组判就会静默放行。拉失败时置回 false，判据退化成「不确定就问」。
+
+**验证（4 道 + 6 条注入，全部证明有牙齿）**：
+
+- Rust：4 条单测（写失败时旧文件完好**含时间戳没变** / 覆盖留 `.bak` / 不残留 `.tmp` /
+  `.bak`-`.tmp` 不进列表）。
+- **真机探针 `scripts/verify-atomic-save.py`**：单测造不出「进程写到一半死掉」，
+  用 `RLIMIT_FSIZE` + SIGXFSZ（超限 → 内核发信号 → 默认处置=终止进程），
+  存 1 MiB 报表让服务必死在中途，断言目标文件**逐字节仍是上一版**。
+  判据是**字节相同**不是「能解析」（后者在旧内容恰好合法时给假绿）。
+- `fault-inject-atomic-save.py` → **4 道门禁 4/4**（注入 A 同时挂单测与探针）。
+- `grid-report-save-confirm.spec.tsx` 6 条 + `fault-inject-save-confirm.py` → **6/6**，
+  每条拆**一个子句**；注入 2（判据恒真=每次都弹）与 4（去掉 `lastSavedId`）
+  专门证明**三条对照组**（必须不弹）不是摆设。
+
+**踩的两个坑（都已写进代码注释）**：
+
+1. **注入锚点别多包一行**。第一版把 `save()` 里整句 `write_atomic(&path, &text)?;`
+   换成 `fs::write(&path, text)?` → **连 `create_dir_all` 一起删了** →
+   `由配置路径推出的目录能存能列` 也红，而原因是 `No such file or directory`，
+   **与原子性无关**。会让人误以为「3 条用例守住了原子性」，其实只有 2 条。
+2. **探针端口复用**。第一次跑出「服务进程已退出 = True」**同时**「写入成功」——
+   18888 上留着上一轮的 print-server：我起的那个（带限额）bind 失败退出，
+   health 与 PUT 全被旧进程答上（它没有限额）。
+   **症状是「服务死了但活干完了」。** 修法：起前 `pkill` 清端口
+   **并确认占端口的 PID 就是我起的那个**（只查「端口有人答话」不够）。
+   → `fault-injection-verify` 反面模式里写着这条，又踩了一遍。
+3. **jsdom 里 antd Modal 关了还在 DOM 里**。`confirmVisible()` 一开始用
+   「有没有那个按钮」判 → 3 条用例同时红在「框该关掉」。
+   根因：**rc-motion 的离场动画在 jsdom 里永远不结束**（没有 `transitionend`），
+   `destroyOnHidden` 等不到 `afterClose`。关掉的框留着 `ant-zoom-leave-active`。
+   拿存在性当判据 → 「该弹」恒真、「不该弹」恒假，**两边都等于没测**。
+   现在看 rc-motion 的状态类（带 `-leave` 才算关）。
+
+**本档没做（边界）**：服务端 409 + `force`（把「覆盖要确认」从客户端自觉变成服务端强制，
+才能覆盖「列表快照过期 / 别的客户端刚建了同名」）· UI 上没有「还原上一版」的入口 ·
+`.bak` 只有一代。
+
+**顺带更正**：体检报告 §2.5 初版说「`updated_at` 在写盘前赋好 → 崩了从列表看不出保存失败过，
+这是静默的那一半」。**前半句对，推论是错的** —— 那个赋值改的是局部变量，
+写失败时 `def` 被丢弃；失败会以 `Err` 返回（HTTP 400 / 前端弹错），
+**是看得见的**。已在该节加更正框，并补了一条断言把「文件压根没被碰过」钉住。
 
 ---
 
@@ -1588,7 +1655,7 @@ TS 镜像 `grid-report.ts` 必须同步（`mirror-check.py` 盯着 `RenderRespon
 
 **所以 `check-all.sh` 不能加全量 `test:app`**（346s 太贵），
 但**「改了弹窗没有任何闸」这件事已经堵上了**：新增 `scripts/ts-test-designer.sh`，
-作为 `check-all.sh` **第 7 道闸**（带 `grid-report-` 过滤 = 11 文件 / 136 用例 / ~160s；
+作为 `check-all.sh` **第 7 道闸**（带 `grid-report-` 过滤 = 12 文件 / 142 用例 / ~145s；
 无参数 = 全量 43 文件）。`ts-test.sh` 覆盖不到 modal —— 它只跑
 `openprint/src/report/*.ts`（node 环境、无 DOM），modal 要 jsdom + antd + React。
 

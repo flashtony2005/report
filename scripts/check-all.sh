@@ -34,15 +34,17 @@
 #
 # ## 不含什么
 #
-# 16 个 `fault-inject-*.py` 与 13 个 `verify-*.py` **不在这里**：前者要改源码、
+# 18 个 `fault-inject-*.py` 与 14 个 `verify-*.py` **不在这里**：前者要改源码、
 # 后者要起真服务（127.0.0.1:18888）。它们按需单独跑，改哪个特性跑哪一个。
 #   ls scripts/fault-inject-*.py   # 注入：证明某条闸真的有牙齿
 #   ls scripts/verify-*.py         # 探针：对活服务做端到端验证
 #
-# （这两个数字漂过两次：初版写的 13 / 13 —— `verify` 确实是 13，`fault-inject`
+# （这两个数字漂过三次：初版写的 13 / 13 —— `verify` 当时确实是 13，`fault-inject`
 #  **早就已经是 14**，加了新脚本没同步注释。2026-09-26 加 `fault-inject-issues-ui.py`
-#  核成 15；2026-09-27 加 `fault-inject-mirror-semantics.py` 核成 16。
-#  **注释里的数字是最容易漂的东西 —— 改完记得 `ls | wc -l` 核一遍。**）
+#  核成 15；2026-09-27 加 `fault-inject-mirror-semantics.py` 核成 16，同日加
+#  `fault-inject-atomic-save.py` / `fault-inject-save-confirm.py` + `verify-atomic-save.py`
+#  核成 18 / 14。
+#  **注释里的数字是最容易漂的东西 —— 改完记得 `ls scripts/*.py | wc -l` 核一遍。**）
 #
 # 退出码：0 / 1 / 2，语义见上。
 set -uo pipefail
@@ -63,10 +65,10 @@ for a in "$@"; do
   4. bash    scripts/ts-project-check.sh               整项目类型检查 · designer-react
   5. bash    scripts/ts-project-check.sh openprint     整项目类型检查 · openprint（vue-tsc --build）
   6. cargo   test --bin print-server           Rust 单测
-  7. bash    scripts/ts-test-designer.sh grid-report-  设计器 UI 单测（jsdom，串行，~160s）
+  7. bash    scripts/ts-test-designer.sh grid-report-  设计器 UI 单测（jsdom，串行，12 文件 / 142 用例，~145s）
 --fast 只跑 1、2。
 
-第 7 道**带过滤参数**（`grid-report-`，11 文件 / 136 用例），不是整套 designer-react：
+第 7 道**带过滤参数**（`grid-report-`，12 文件 / 142 用例），不是整套 designer-react：
 整套要 **~346s**（且必须 `--no-file-parallelism`，见 ts-test-designer.sh 顶部）。
 日常改的报表弹窗全在 `grid-report-*` 里，先用这个把「改了弹窗没人管」堵上；
 要全量就自己跑 `bash scripts/ts-test-designer.sh`（无参数 = 全部）。
@@ -166,7 +168,7 @@ printf '通过 %d · 失败 %d · 没跑成 %d\n' "$passed" "$failed" "$skipped"
 [ "${#FAILED_NAMES[@]}"  -gt 0 ] && printf '失败：%s\n'   "${FAILED_NAMES[*]}"
 [ "${#SKIPPED_NAMES[@]}" -gt 0 ] && printf '没跑成：%s\n' "${SKIPPED_NAMES[*]}"
 
-printf '\n（不含 16 个 fault-inject / 13 个 verify —— 要改源码 / 起服务，按需单独跑：`ls scripts/fault-inject-*.py`）\n'
+printf '\n（不含 18 个 fault-inject / 14 个 verify —— 要改源码 / 起服务，按需单独跑：`ls scripts/fault-inject-*.py`）\n'
 
 case $worst in
   0) printf '\033[32m全绿\033[0m\n' ;;

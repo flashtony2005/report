@@ -1781,6 +1781,27 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
   const [reportId, setReportId] = useState('')
   const [reportName, setReportName] = useState('')
   const [savedReports, setSavedReports] = useState<ReportSummary[]>([])
+  /**
+   * 「已保存列表」到底**读到了没有**。读失败时它是空的，而空的列表和
+   * 「一份报表都没有」长得一模一样 —— 覆盖确认要是把这两种当成一回事，
+   * 就会在列表拉不到时**静默放行**。所以单独记一个标志。
+   */
+  const [reportsListKnown, setReportsListKnown] = useState(false)
+  /**
+   * 「我现在编辑的是哪一份」。打开报表时设成它，保存成功后也设成它。
+   *
+   * 用途只有一个：**区分「存我自己这份」和「存到别人的 id 上」**。
+   * 前者不该弹确认（每次保存都弹会把用户训练成闭眼点确定），后者必须弹。
+   */
+  const [lastSavedId, setLastSavedId] = useState('')
+  /**
+   * 待确认的覆盖：`{ def, id }` 非 null 时弹确认框。
+   * **存下整个 `def` 而不是回头重建** —— 重建有可能得到不一样的结果
+   * （用户在这期间又改了选项），那确认的就是另一份东西了。
+   */
+  const [pendingOverwrite, setPendingOverwrite] = useState<
+    { def: ReportDef; id: string } | null
+  >(null)
   /** 服务端上报的报表目录；读不到就是 null（不猜） */
   const [reportsDir, setReportsDir] = useState<string | null>(null)
   const [fileBusy, setFileBusy] = useState(false)
@@ -2059,6 +2080,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       const res = await fetch(`${REPORT_SERVER}/api/reports`)
       if (!res.ok) throw new Error(`服务端返回 ${res.status}`)
       setSavedReports((await res.json()) as ReportSummary[])
+      setReportsListKnown(true)
       // 服务端把「它到底在哪个目录找的」放在 x-reports-dir 响应头里。
       // 目录是从服务端的配置文件位置推出来的，而那个路径默认是相对路径，
       // 所以换个目录启动服务端就会看到另一个列表 —— 空列表时得能解释原因。
@@ -2066,13 +2088,56 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       const dir = res.headers.get('x-reports-dir')
       setReportsDir(dir ? decodeURIComponent(dir) : null)
     } catch {
-      /* 列表拉不到不影响设计器本身，静默 */
+      /*
+       * 列表拉不到不影响设计器本身，所以这里不报错。
+       * 但**必须把「没读到」记下来** —— 否则 `savedReports` 空着，
+       * 覆盖确认会把「读不到列表」当成「没有同名报表」，静默放行。
+       */
+      setReportsListKnown(false)
     }
   }, [])
 
   useEffect(() => {
     if (open) void refreshReports()
   }, [open, refreshReports])
+
+  /**
+   * 真正的落盘。**与「要不要先确认」分开** —— 用户在确认框上点「覆盖」之后
+   * 要能回到这里，而不是把整个请求重建一遍（重建有可能得到不一样的结果）。
+   */
+  const doSave = useCallback(
+    async (def: ReportDef, id: string) => {
+      setSaveNotice('')
+      setFileBusy(true)
+      try {
+        const res = await fetch(`${REPORT_SERVER}/api/reports/save`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(def),
+        })
+        const text = await res.text()
+        if (!res.ok) throw new Error(text || `保存失败 ${res.status}`)
+        setError('')
+        // 存成功之后，这个 id 就是「我正在编辑的那一份」了
+        setLastSavedId(id)
+        // 内联数据存不下来（报表存的是**数据源声明**，文件 / 接口这条没有声明可存）——
+        // 必须当场说，否则用户要到「打开后执行没数据」才发现。
+        setSaveNotice(
+          dataSourceKind === 'inline'
+            ? '已保存模板。⚠️ 内联数据（文件 / 接口）**不会被保存**：报表文件存的是「数据源声明」' +
+                '而不是数据快照，而这条来源没有可存下来的声明。下次打开这份报表需要重新选文件；' +
+                '要用能存下来的来源，请切回「数据库」。'
+            : '',
+        )
+        void refreshReports()
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setFileBusy(false)
+      }
+    },
+    [refreshReports, dataSourceKind],
+  )
 
   const saveReport = useCallback(async () => {
     const id = reportId.trim()
@@ -2116,33 +2181,52 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       sources,
       options,
     }
-    setSaveNotice('')
-    setFileBusy(true)
-    try {
-      const res = await fetch(`${REPORT_SERVER}/api/reports/save`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(def),
-      })
-      const text = await res.text()
-      if (!res.ok) throw new Error(text || `保存失败 ${res.status}`)
-      setError('')
-      // 内联数据存不下来（报表存的是**数据源声明**，文件 / 接口这条没有声明可存）——
-      // 必须当场说，否则用户要到「打开后执行没数据」才发现。
-      setSaveNotice(
-        dataSourceKind === 'inline'
-          ? '已保存模板。⚠️ 内联数据（文件 / 接口）**不会被保存**：报表文件存的是「数据源声明」' +
-              '而不是数据快照，而这条来源没有可存下来的声明。下次打开这份报表需要重新选文件；' +
-              '要用能存下来的来源，请切回「数据库」。'
-          : '',
-      )
-      void refreshReports()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setFileBusy(false)
+
+    /*
+     * ⚠️ **覆盖已有报表之前必须先问。**
+     *
+     * 服务端 `store::save` 是**覆盖写**，它自己的文档注释写着
+     * 「报表是用户的资产，静默覆盖同名文件会丢东西，所以调用方（UI）要先经列表确认」——
+     * 而在这之前**那句话是假的**：这里直接 PUT，一次确认都没有，
+     * 明明手上就有 `savedReports` 也没用。结果：手打一个已存在的 id → 点保存 →
+     * 那份报表**无声无息被换掉**（界面上只看到一句「已保存模板」）。
+     *
+     * 判据拆开看：
+     * - `id !== lastSavedId` —— 打开 A 再存 A 是**正常操作**，每次都弹会把用户
+     *   训练成闭眼点确定，那这个确认就白做了。只有存到**别的** id 上才算覆盖别人。
+     * - `!reportsListKnown || 列表里有` —— 列表**没读到**时它也是空的，
+     *   而「空列表」和「没有同名报表」长得一样。读不到就**当作不确定**，照样问。
+     *
+     * **已知边界**：这份列表是打开弹窗那一刻的快照。别的客户端在这之后新建的
+     * 同名报表，这里看不见 —— 真正的兜底要做在服务端（已存在且没带 `force` 就返回 409），
+     * 那是改 API 的事，这次没做（见文档「仍未做」）。
+     */
+    if (id !== lastSavedId && (!reportsListKnown || savedReports.some((r) => r.id === id))) {
+      setPendingOverwrite({ def, id })
+      return
     }
-  }, [buildRequest, reportId, reportName, refreshReports, exportFormula, dump, dataSourceKind])
+    await doSave(def, id)
+  }, [
+    buildRequest,
+    reportId,
+    reportName,
+    exportFormula,
+    dump,
+    dataSourceKind,
+    lastSavedId,
+    reportsListKnown,
+    savedReports,
+    doSave,
+  ])
+
+  /** 待覆盖的那份报表在列表里的条目（拿它的展示名，让用户看清要换掉的是哪个） */
+  const overwriteTarget = useMemo(
+    () =>
+      pendingOverwrite
+        ? savedReports.find((r) => r.id === pendingOverwrite.id) ?? null
+        : null,
+    [pendingOverwrite, savedReports],
+  )
 
   /**
    * 打开已保存的报表。
@@ -2210,6 +2294,8 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       setMode('free')
       applyGrid(templateToGrid(def.template.sheets?.[0] ?? { name: '模板', rows: [] }))
       setReportId(def.id)
+      // 记住「现在编辑的是这一份」→ 再存同一个 id 不该弹覆盖确认
+      setLastSavedId(def.id)
       setReportName(def.name)
       setExportFormula(def.options?.exportFormula ?? false)
       setDump(def.options?.dump ?? false)
@@ -3661,6 +3747,46 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           </pre>
         </details>
       )}
+
+      {/*
+        覆盖确认。**只在「目标 id 已存在、且不是我正在编辑的那一份」时弹**
+        （判据在 saveReport 里，连同「列表没读到」那种情况一起处理）。
+
+        服务端 `store::save` 是覆盖写 —— 没有这一道，手打一个已存在的 id 点保存
+        就会**静默换掉别人的报表**。而这段承诺本来写在服务端的文档注释里
+        （「调用方（UI）要先经列表确认」），只是**从来没实现过**。
+      */}
+      <Modal
+        title="覆盖已有报表？"
+        open={pendingOverwrite !== null}
+        onOk={() => {
+          const p = pendingOverwrite
+          setPendingOverwrite(null)
+          if (p) void doSave(p.def, p.id)
+        }}
+        onCancel={() => setPendingOverwrite(null)}
+        okText="覆盖"
+        cancelText="取消"
+        width={430}
+        destroyOnHidden
+        // 覆盖是破坏性的：把确认键标成危险色，别让它看着像「确定」那么无害
+        okButtonProps={{ danger: true, 'data-testid': 'report-overwrite-ok' } as never}
+        cancelButtonProps={{ 'data-testid': 'report-overwrite-cancel' } as never}
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <div>
+            已经有一份报表叫 <b>{pendingOverwrite?.id}</b>
+            {overwriteTarget?.name && overwriteTarget.name !== pendingOverwrite?.id
+              ? `（${overwriteTarget.name}）`
+              : ''}
+            ，保存会<b>把它换掉</b>。
+          </div>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            上一版会留在服务端报表目录的 <code>{pendingOverwrite?.id}.json.bak</code> 里，
+            需要时可以从那里取回。换个 id 保存则是新增一份，不会动到它。
+          </Typography.Text>
+        </Space>
+      </Modal>
 
       {/*
         查询表单：报表声明了参数时，执行前先弹这个。
