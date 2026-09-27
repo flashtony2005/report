@@ -32,20 +32,33 @@
 # 不是为了快，是为了「出错时先在几十秒内看到」。mirror-check 是纯 Python 解析、
 # 零依赖、亚秒级，而且它是**唯一**能发现 Rust↔TS 漂移的闸 —— 所以排第一。
 #
+# ## 谁在跑它
+#
+# **CI**：`.github/workflows/ci.yml` 在 push 到 main / 开 PR / 手动触发时跑的就是
+# 本脚本（`bash scripts/check-all.sh`，与本地逐字相同）。
+# 「闸是绿的、但没人跑」比「红的闸」更坏（绿的会主动产出空头的信心）——
+# 挂上 CI 就是为了消掉那一态。
+# CI 的覆盖**不多不少**就是本脚本的覆盖：下面那两个目录仍不在里面。
+#
 # ## 不含什么
 #
-# 20 个 `fault-inject-*.py` 与 16 个 `verify-*.py` **不在这里**：前者要改源码、
-# 后者要起真服务（127.0.0.1:18888）。它们按需单独跑，改哪个特性跑哪一个。
+# 20 个 `fault-inject-*.py` 与 17 个 `verify-*.py` **不在这里**：前者要改源码、
+# 后者**多数**要起真服务（127.0.0.1:18888）。它们按需单独跑，改哪个特性跑哪一个。
 #   ls scripts/fault-inject-*.py   # 注入：证明某条闸真的有牙齿
 #   ls scripts/verify-*.py         # 探针：对活服务做端到端验证
 #
-# （这两个数字漂过四次：初版写的 13 / 13 —— `verify` 当时确实是 13，`fault-inject`
+# ⚠️ 有一个例外，**刻意不放进来**：`verify-ci-workflow.py` 不需要服务，
+# 但它会**反过来执行 `check-all.sh`**（证明 CI 要跑的命令真的跑得通）——
+# 放进来就是无限递归。想校验 CI 就单独跑 `python3 scripts/verify-ci-workflow.py`。
+#
+# （这两个数字漂过五次：初版写的 13 / 13 —— `verify` 当时确实是 13，`fault-inject`
 #  **早就已经是 14**，加了新脚本没同步注释。2026-09-26 加 `fault-inject-issues-ui.py`
 #  核成 15；2026-09-27 加 `fault-inject-mirror-semantics.py` 核成 16，同日加
 #  `fault-inject-atomic-save.py` / `fault-inject-save-confirm.py` + `verify-atomic-save.py`
 #  核成 18 / 14；同日再给「覆盖冲突」加 `fault-inject-save-conflict.py` +
 #  `verify-save-conflict.py` 核成 19 / 15；同日再给「updatedAt 乐观锁」加
-#  `fault-inject-optimistic-lock.py` + `verify-optimistic-lock.py` 核成 20 / 16。
+#  `fault-inject-optimistic-lock.py` + `verify-optimistic-lock.py` 核成 20 / 16；
+#  同日挂 CI 时加 `verify-ci-workflow.py` 核成 **20 / 17**。
 #  **注释里的数字是最容易漂的东西 —— 改完记得 `ls scripts/*.py | wc -l` 核一遍。**）
 #
 # 退出码：0 / 1 / 2，语义见上。
@@ -170,7 +183,8 @@ printf '通过 %d · 失败 %d · 没跑成 %d\n' "$passed" "$failed" "$skipped"
 [ "${#FAILED_NAMES[@]}"  -gt 0 ] && printf '失败：%s\n'   "${FAILED_NAMES[*]}"
 [ "${#SKIPPED_NAMES[@]}" -gt 0 ] && printf '没跑成：%s\n' "${SKIPPED_NAMES[*]}"
 
-printf '\n（不含 20 个 fault-inject / 16 个 verify —— 要改源码 / 起服务，按需单独跑：`ls scripts/fault-inject-*.py`）\n'
+printf '\n（不含 20 个 fault-inject / 17 个 verify —— 要改源码 / 起服务，按需单独跑：`ls scripts/fault-inject-*.py`）\n'
+printf '（CI 跑的就是本脚本：`.github/workflows/ci.yml`。覆盖边界与它一致，别读成「全都验过了」。）\n'
 
 case $worst in
   0) printf '\033[32m全绿\033[0m\n' ;;

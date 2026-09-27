@@ -1,0 +1,98 @@
+name: gates
+
+# 目的只有一个：**让闸自己跑起来**。
+#
+# 本项目反复吃过同一个亏 ——「闸是绿的、但没人跑」比「红的闸」更坏，
+# 因为绿会**主动**产出空头的信心（`架构体检-不足与改进方案.md` §2c）。
+# 2026-09-27 之前，7 道闸 + 37 个验证脚本全靠手敲，没有任何 CI。
+#
+# 这里跑的就是本地那条命令 `bash scripts/check-all.sh` —— **同一条，不另写 CI 版**，
+# 免得 CI 与本地各跑各的、慢慢漂开（那本身就是一种静默失败）。
+#
+# ────────────────────────────────────────────────────────────────────────────
+# ⚠️ 覆盖边界（别把这条 CI 读成「全都验过了」）
+#
+#   覆盖 = `check-all.sh` 的覆盖：mirror-check（Rust↔TS 契约）· ts-check ·
+#          ts-test（前端纯函数）· ts-project-check ×2 · cargo test · 设计器 UI 单测。
+#
+#   **不覆盖** 20 个 `fault-inject-*.py` 与 17 个 `verify-*.py`：前者要改源码再还原，
+#   后者要起真服务（还有的要 sqlite / postgres / odbc 驱动）。它们仍然只能按需手跑。
+#   （第 17 个是 `verify-ci-workflow.py` —— 它**刻意**不放进 `check-all.sh`，
+#    因为它会反过来执行 `check-all.sh`，放进去就是无限递归。）
+#   → 所以这条 CI 的保证**不多不少**就是 `check-all.sh` 的保证。
+#
+# ⚠️ `check-all.sh` 的退出码是**三态**：0 通过 / 1 失败 / **2 没跑成**（环境缺东西）。
+#   三者都必须让 job 红（非 0 即失败）——「没跑成」**绝不能**算通过，那正是本项目
+#   最讨厌的那类假绿。所以下面**不做任何 `|| true`**，也不吞退出码。
+#
+# ⚠️ 已知未验风险（诚实标注）：设计器 UI 单测在本机**并发**下实测过 16 条失败、
+#   串行 0 失败（`ts-test-designer.sh` 顶部），失败形态是「渲染还没跑完就被判死」，
+#   不是真缺陷。GitHub 的 runner 只有 2 核，比本机更挤 —— 我没有在 2 核环境验证过，
+#   所以首次运行若出现这类超时失败，**那不是回归**。处置办法（二选一）：
+#     · 抬高 vitest 的 `testTimeout`（本仓多数用例是毫秒级，超时值留得很紧）；
+#     · 或把第 7 道拆成独立 job / 只在 main 上跑。
+#   在这条被验证之前，别把「CI 红了」一律当成代码坏了。
+# ────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 只读就够：这条流水线不写任何东西回仓库。
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: check-all（7 道闸）
+    runs-on: ubuntu-latest
+    # 冷启动要编译整个 Rust 工程 + 装两份 node_modules，给足余量。
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # 两个前端项目各自的 node_modules。
+      #
+      # **两边都用 npm**：`package-lock.json` 与 `node_modules/.package-lock.json`
+      # 都在，且没有 pnpm 的 `.modules.yaml` → 实际用的就是 npm。
+      # （`openprint/pnpm-lock.yaml` 是**遗留物**，与 package-lock 并存会让人分不清
+      #  哪个权威 —— 别拿它来装依赖，否则可能解析出另一套版本。）
+      #
+      # ⚠️ `npm ci` 要求 lock 与 package.json **同步**，不同步它会直接失败。
+      #   这是**好事**：不同步说明 lock 该更新了，静默用一套漂了的依赖才是坏事。
+      - name: 装依赖（designer-react）
+        working-directory: designer-react
+        run: npm ci
+
+      - name: 装依赖（openprint）
+        working-directory: openprint
+        run: npm ci
+
+      # Rust 编译产物缓存。key 跟着 Cargo.lock 走：依赖没变就命中，
+      # 变了就自动重建（用 `restore-keys` 兜底拿一份旧的部分缓存）。
+      # 注意本机那份 `~/.cargo/config.toml` 把 target-dir 指到了仓库外，
+      # CI 上没有那个文件 → 走默认的 `print-server/target`，所以缓存这个路径。
+      - name: 缓存 cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            print-server/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('print-server/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: 跑闸
+        run: bash scripts/check-all.sh

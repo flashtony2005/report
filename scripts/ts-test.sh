@@ -32,10 +32,18 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/scripts/node-bin.sh"
 NODE_BIN="$(require_node)"
 
-# 借用的 node_modules：挑第一个真的装着 vitest 的
+# 借用的 node_modules：挑第一个真的装着 vitest 的。
+#
+# **本仓自己的排在最前**，兄弟项目只做兜底 —— 两个理由：
+#   1. CI（ubuntu）上那几个兄弟项目的路径**根本不存在**，旧写法会让闸直接报「没跑成」；
+#      而 CI 上 `npm ci` 之后本仓一定有 `node_modules`。
+#   2. 借来的那份版本不受本仓 `package-lock.json` 约束，跑出什么结论不确定。
+# 并**把用的是哪一份打出来** —— 「vitest 到底哪来的」不该是隐式的。
 BORROWED="${BORROWED_MODULES:-}"
 if [[ -z "$BORROWED" ]]; then
   for cand in \
+    "$ROOT/designer-react/node_modules" \
+    "$ROOT/openprint/node_modules" \
     /Users/lushaohui/project/ontology/web/node_modules \
     /Users/lushaohui/project/ontology2/ui/node_modules
   do
@@ -45,9 +53,12 @@ fi
 
 if [[ -z "$BORROWED" || ! -x "$BORROWED/vitest/vitest.mjs" ]]; then
   echo "找不到可借用的 vitest。设 BORROWED_MODULES=<含 vitest 的 node_modules 绝对路径> 后重试。" >&2
-  echo "（本仓库装不出 node_modules，只能借。）" >&2
+  echo "（本机沙箱装不出 node_modules，只能借；CI 上 npm ci 之后本仓自带那份就在。）" >&2
   exit 2
 fi
+
+# ⚠️ 花括号不能省（`$VAR` 紧跟非 ASCII 字符时本机 bash 3.2 会静默吃掉变量值）。
+echo "vitest：${BORROWED}"
 
 # 被测文件：openprint 的纯函数层（无 DOM / 无 Univer 依赖）
 SRC_DIR="$ROOT/openprint/src/report"

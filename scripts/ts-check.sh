@@ -20,19 +20,64 @@
 # 第一次跑就靠它抓到了 DetailTemplateOptions 缺 page 字段的真 bug，别当摆设。
 set -e
 
-TSC=/Users/lushaohui/project/admin/demo/web/node_modules/typescript/bin/tsc
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# tsc 从哪来 —— **优先本仓自带的**，借别的项目那份只做兜底。
+#
+# 为什么「本仓优先」：
+#   1. 借来的那份**已经漂到 TS 6**（`ts-project-check.sh` 顶部记过：TS 6 把 `baseUrl`
+#      判为 deprecated，会用一条**与代码无关的**配置错误堵死整条闸）。本仓
+#      `package.json` 钉的是 `typescript: ^5.9.3`，用它才是对的那份。
+#   2. **CI（ubuntu）上那几个兄弟项目的路径根本不存在** → 旧写法会让整条闸直接
+#      报「没跑成」。而 CI 上 `npm ci` 之后本仓一定有 `node_modules`。
+#
+# 顺序：`$TSC_BIN` → `designer-react` → `openprint` → 借来的（本机沙箱装不出依赖时的老办法）。
+# 并且**把用的是哪一份打出来** —— 否则「到底哪个编译器跑的」是看不见的。
+# （本文件是 `#!/bin/sh` + `set -e`，所以只用 POSIX 语法、不用 `local`，见 node-bin.sh 的说明。
+#  判断一律写成 `if`，**不用 `[ … ] && …` 当独立语句** —— 后者在 `set -e` 下的行为要靠
+#  「AND-OR 列表里非最后一条命令的失败被忽略」这条细则才成立，太容易看错。）
+_rt_borrowed="/Users/lushaohui/project/admin/demo/web/node_modules/typescript/bin/tsc"
+
+resolve_tsc() {
+  _rt_hit=""
+  if [ -n "${TSC_BIN:-}" ] && [ -f "${TSC_BIN}" ]; then
+    _rt_hit="${TSC_BIN}"
+  else
+    for _rt_d in "$ROOT/designer-react" "$ROOT/openprint"; do
+      if [ -f "$_rt_d/node_modules/typescript/bin/tsc" ]; then
+        _rt_hit="$_rt_d/node_modules/typescript/bin/tsc"
+        break
+      fi
+    done
+  fi
+  if [ -z "$_rt_hit" ] && [ -f "$_rt_borrowed" ]; then
+    _rt_hit="$_rt_borrowed"
+  fi
+  if [ -z "$_rt_hit" ]; then
+    return 1
+  fi
+  printf '%s' "$_rt_hit"
+}
+
 # node 路径**不写死**：版本后缀随环境重发而变（2026-09-23 变过一次，
 # 三个闸同时失效，且本脚本会把「找不到 node」当成类型错误报出来 → 假红）。
-. "$(dirname "$0")/node-bin.sh"
+. "$ROOT/scripts/node-bin.sh"
 NODE="$(require_node)"
 
-if [ ! -f "$TSC" ]; then
-  echo "找不到 tsc：$TSC" >&2
-  echo "换一份 typescript 的路径，或在能装依赖的机器上跑 npm run type-check" >&2
+# `if !` 上下文会关掉 `set -e`，所以解析失败不会让脚本在赋值处就静默退出。
+if ! TSC="$(resolve_tsc)"; then
+  echo "找不到 tsc。试过：\$TSC_BIN、designer-react/node_modules、openprint/node_modules、借来的那份。" >&2
+  echo "（本机沙箱装不出 node_modules；CI 上 npm ci 之后本仓自带那份就在。）" >&2
   exit 2
 fi
 
 TARGETS=${*:-"openprint/src/report designer-react/src/modals"}
+
+# 用的是哪一份 tsc —— 打出来，别让它隐式（借来的那份已漂到 TS 6，结论不一样）。
+# ⚠️ `${TSC}` 的花括号**不能省** —— `$VAR` 紧跟非 ASCII 字符时本机 bash 3.2 会**静默吃掉
+# 变量的值 + 那个多字节字的第一个字节**（本文件下面那段说明就是记这个的，我第一版照样踩了：
+# 打印成 `tsc：<乱码>Version 5.9.3）`，路径凭空不见而退出码一切正常）。
+echo "tsc：${TSC}（$("$NODE" "$TSC" --version 2>/dev/null || echo '?')）"
 
 ALL=$(find $TARGETS -name '*.ts' -o -name '*.tsx' 2>/dev/null | sort)
 
