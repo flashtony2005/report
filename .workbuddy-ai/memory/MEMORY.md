@@ -2,8 +2,8 @@
 
 引擎：Rust `print-server`（展开 + 服务端导出）+ TS `openprint`（引擎层，被 designer-react alias 引用）+ `designer-react`（UI）。
 
-> **细节在 `REFERENCE.md`**（验证方法论 / 沙箱 / 硬事实 / UI 测试 / 单位换算 / 各特性细节）。需要时读，别凭记忆。
-> **引擎全貌看仓库根《报表引擎详解-功能与算法.md》**（15 节，每条结论带 `file:line`，可复核）。
+> **细节在 `REFERENCE.md`**（验证方法论 / 沙箱 / 硬事实 / UI 测试 / 单位换算 / 各特性）。需要时读，别凭记忆。
+> **引擎全貌看《报表引擎详解-功能与算法.md》**（15 节，每条结论带 `file:line`）。
 > 本文件只放「几乎每个任务都用得上」的，**必须 ≤12KB** —— 超了注入时会被截断。
 
 ## 三个「表格」不是一回事（问「能不能合到 Univer」前先分清）
@@ -37,10 +37,10 @@
 
 ## 三条「静默失败」红线（改了必自查）
 
-1. **报表目录跟着 cwd 走**：`store::reports_dir(config_path)` = 配置文件同级的 `reports/`，默认配置路径是**相对**的 `print-server.json`。从仓库根启动 → `/api/reports` 返回 `[]`，**无任何报错**。刻意设计，只做披露（横幅 / `/health` / 响应头）。响应头跨域默认读不到（`CorsLayer::permissive()` 已 expose）；**curl 证明不了浏览器能读**，要页面里 `fetch()` 读。`HeaderValue` 只收可见 ASCII → 中文路径 percent 编码。
+1. **报表目录跟着 cwd 走**：`store::reports_dir(config_path)` = 配置文件同级的 `reports/`，默认配置路径是**相对**的 `print-server.json`。从仓库根启动 → `/api/reports` 返回 `[]`，**无任何报错**。刻意设计，只做披露（横幅 / `/health` / 响应头）。响应头跨域默认读不到（`CorsLayer::permissive()` 已 expose）；**curl 证明不了浏览器能读**，要页面 `fetch()` 读。`HeaderValue` 只收可见 ASCII → 中文路径 percent 编码。
 2. **预览与导出是两套口径**：`buildRenderRequest` 前端算 `headerRows`；xlsx 导出在 Rust 侧另算（`ReportTemplate::header_row_count()`：从第一行起连续「既无 `expand_type=r` 也无 `row_parent」的行；`row_parent: ""` 也算没主格）。**不一致是静默的**。生成器模板第一行是**标题**、第二行才是列头 → 典型值 **2 / 2 / 2 / 3**；`sample_template_has_two_header_rows` 是钉子。**这条也管 `repeat_header_rows`**，见红线 4。
 3. **`ReportSource` 是 `rename_all = "camelCase"`** → JSON 里是 **`connId`**。写成 `conn_id` 被 serde 忽略、静默落到第一个连接，报「sqlite 文件不存在: F:\...\data.db」—— 看着像配置没加载，其实是字段名错了。
-4. **`page.is_some()` ≠ 开了分页**（页面设置也挂在同一个 `PageConfig` 上）。凡这类分支都要改问「**真开分页了吗**」（`rows_per_page > 0`）。踩过两次：`xlsx_header_rows` 不判分页 → 只配纸张就把「2 行表头」静默变「1 行」；`paginate` 没真分页 → 长表印**「第 1 / 1 页」**（错的）。
+4. **`page.is_some()` ≠ 开了分页**（页面设置也挂在同一个 `PageConfig` 上）。凡这类分支都要问「**真开分页了吗**」（`rows_per_page > 0`）。踩过两次：`xlsx_header_rows` 不判分页 → 只配纸张就把「2 行表头」静默变「1 行」；`paginate` 没真分页 → 长表印**「第 1 / 1 页」**（错的）。
 
 ## 能力边界（**别再说「画布有、服务端没有」**）
 
@@ -51,7 +51,7 @@
 
 ## 数据源现状
 
-sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。MySQL **归一成 sqlite**，但 UI 下拉只有三项（`admin.html:407`），**手改配置才会踩**。`/print` 只支持 pdf/html。
+sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。MySQL **归一成 sqlite**，但 UI 下拉只三项（`admin.html:407`），**手改配置才会踩**。`/print` 只支持 pdf/html。
 
 ## 前端三条类型闸（2026-09-23 起两边都是 0 错）
 
@@ -59,20 +59,21 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 （**自动转 `vue-tsc --build`**；openprint 的 tsconfig 是解决方案式，`tsc -p` **假绿**）。
 **长期红着的闸 = 没有闸**（曾红 116 条）。修法与坑见 §十七。
 
-**跑闸**：`bash scripts/check-all.sh`（热跑全量 ~36s；`--fast` 只跑前两道 3.5s）。
+**跑闸**：`bash scripts/check-all.sh`（全量 ~3.5min；`--fast` 只跑前两道 3.5s）。
 退出码**三态**：0 通过 / 1 失败 / **2 没跑成（≠ 通过）**。2026-09-26 前**根本没有跑器** ——
 **「没有跑器的闸」比「红的闸」更坏**（绿的 → 虚假信心）。
-`mirror-check.py` **只对形状（24 组字段 + 纸张名）不对语义**：字节上限/码制别名/图表类型/
-条件运算符/表头行数/页脚 255/`#RRGGBB`/**`IssueCode` 词表** **仍无跨语言闸**（Rust 侧只有内容钉子）。全文 `架构体检-不足与改进方案.md`。
+`mirror-check.py`：**形状 24 组字段 + 语义 8 条**（纸张名/图表类型/码制白名单/字节上限/
+条件运算符/码制别名/页脚 255/`IssueCode` 词表），**抽取失败计红**；**仍未闸**：`#RRGGBB` / 表头行数。
+第 7 道 UI 单测只覆盖 `grid-report-`（另 32 个 spec 不在跑器里）。
 
 ## AI 层（**已有**，别当缺口）
 
-`openprint/src/ai/`（716 行）+ `AiAssistantModal.tsx` + Vue 侧 `AiAssistantPanel.vue`（同一 bug 两处）：提示词/few-shot/流式/**校验→回喂错误→重试**/归一化，三模式。**只覆盖自由画布**；`ReportDef` 完全没接。**丢弃必须上报**（`dropped` 必填）。详见 `AI优先-差距分析与改进方案.md` / §二十。
+`openprint/src/ai/`（716 行）+ `AiAssistantModal.tsx` + Vue 侧 `AiAssistantPanel.vue`（同一 bug 两处）：提示词/few-shot/流式/**校验→回喂错误→重试**/归一化，三模式。**只覆盖自由画布**；`ReportDef` 完全没接。**丢弃必须上报**（`dropped` 必填）。详见 §二十 / `AI优先-差距分析与改进方案.md`。
 
 ## 已完成（别再当缺口重复做）
 
-- **CSV 导出**：`POST /api/report/csv`。RFC 4180 + UTF-8 BOM + CRLF。写 `text` 不写 `formula`。**CSV 注入（`=cmd|`）刻意不改写**（加 `'` 会改掉 `+86` 手机号）。
-- **分页不切合并格**：`merge_blocked_boundaries()`。**关键洞察：主格展开出来就是合并格** → 「不在合并格中间切页」==「组内不跨页」。代价：页大小不再严格等于 `rows_per_page`（宁超不切）。
+- **CSV 导出**：`POST /api/report/csv`。RFC 4180 + BOM + CRLF。写 `text` 不写 `formula`。**CSV 注入（`=cmd|`）刻意不改写**（加 `'` 会改掉 `+86` 手机号）。
+- **分页不切合并格**：`merge_blocked_boundaries()`。**主格展开出来就是合并格** → 「不在合并格中间切页」==「组内不跨页」。代价：页大小不再严格等于 `rows_per_page`（宁超不切）。
 - **格子样式 + 条件格式**：`CellModel.style` → xlsx `with_style()` + HTML `<td style>`（#74 补上；无样式时输出**逐字节不变**）。**刻意不给边框**（Univer 不渲染）。颜色只认 `#RRGGBB`，认不出**两端点都报 400**。条件格式（第一条命中生效）**无新渲染代码**。细节 §十四/§十五。
 - **MySQL / MariaDB / SQL Server / Oracle 明确报错**：`unsupported_engine_name()`。`ServerConfig::load()` **不调 `validate()`**，手改配置写 mysql 会报误导性的「sqlite 文件不存在」。
 - **格子图片**：`CellTpl.image` / `CellModel.image`（两槽都认）→ xlsx 真嵌入 + HTML `<img>`。只收 data URI（收路径＝任意文件读取原语）。细节 §六。
@@ -80,8 +81,9 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 - **条码 / 二维码**：`CellTpl.barcode` / `CellModel.barcode`（两槽都认）→ HTML 内联 SVG + xlsx **1 位灰度位图**（自研 PNG）。QR（**字节模式 + ECC M + v1~10**）+ Code128 全表。**展开行 N 行出 N 个**（同图片，**反图表**）。优先级收成**一个判据** `GridCell::graphic()`。细节 §十一。
 - **ODBC 引擎**：`db_odbc.rs`，可选 feature。**票据指令** `/print` 的 `esc`/`tsc`/`zpl` 已实现。
 - **报表参数**：`ReportDef.params` + `RunRequest.values`（按名绑）；与老 `RunRequest.params`（数据集名 → 位置数组）是两条通道。未知/必填缺失/引用解析不出值**一律报错**；**未知参数检查必须先于必填检查**（否则 typo 被报成「region 必填」）。
-- **报表页面设置**（纸张/方向/边距/页码/居中）：`PageConfig` 后 5 个 `Option` → HTML `@page` + xlsx `pageSetup`/`pageMargins`/`oddFooter`。页码只能服务端烤进 HTML。**B5 = JIS 182×257**。**背景 / 水印没做**。细节 §十六。
-- **Word 导出（B6）**：`POST /api/report/docx` → `docx.rs` + `zip.rs`（**只写 method 0**）。**本机没 Word/WPS** → 「Word 能打开」**验不了**，只能用**四条可判定不变量**替代；**失败是全有全无**。细节 §十八。
+- **报表页面设置**（纸张/方向/边距/页码/居中）：`PageConfig` 后 5 个 `Option` → HTML `@page` + xlsx `pageSetup`/`pageMargins`/`oddFooter`。页码只能服务端烤进 HTML。**B5 = JIS 182×257**。**背景/水印没做**。细节 §十六。
+- **Word 导出**：`POST /api/report/docx` → `docx.rs` + `zip.rs`（**只写 method 0**）。**本机没 Word/WPS** → 「Word 能打开」**验不了**，只能用**四条可判定不变量**替代；**失败是全有全无**。细节 §十八。
+- **覆盖保护两道**：`force`→409（授权）+ `?base=<updatedAt>`→412（版本，**`base` 压过 `force`**）。唯一写入口 `save(dir,def,Expect)`。细节 §二十一.12。
 - **数据文件 / 接口数据集（C 类）**：`RenderRequest.datasets` 早通着。前端 `dataset-import.ts` + `dataset-fetch.ts`（URL **前端直连**＝不造 SSRF）+ `parseWorkbookFile`（xlsx 必须 **`raw: true` + `cellDates`**；`raw: false` 把货币格读成字符串 → **合计都错**）。细节 §十九。
 
 ## 局限 / 已知取舍
@@ -89,13 +91,13 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。My
 - **分页不认分组**：`paginate()` 按固定行数切拍平网格，不知哪几行同组 → 一组明细跨页时第二页只有重复表头，**补不出主格**。
 - **`GridCell` 字段很少**：`text/pos/rowspan/colspan/raw_number/num_format/formula` + 后补 `style`/`image`/`chart`/`barcode`。设计器里的彩色是**语义高亮**（标角色不标长相）。xlsx 基础样靠导出器写死。
 - 已核对**不是**缺口：表达式函数集全在；`CellModel` 无死字段；分页三配置都生效。
-- ⚠️ **5 个已复现缺陷** → `架构评审核验-逐条复现.md`（①②③④ 全已修，⑤ 不按原注释实现）。**诊断已分级并接进界面**（§二十四，Error 拦导出）；`#[ignore]` 里**已无缺陷探针**。**跨数据集两条红线**：列主格跨数据集 = 拒绝 + `Error`；`join_view` 取组内全部键的**并集**（同键时逐字节同旧）。细节 §二十三。
+- ⚠️ **5 个已复现缺陷** → `架构评审核验-逐条复现.md`（①②③④ 已修，⑤ 不按原注释实现）。**诊断已分级接进界面**（§二十四，Error 拦导出）。**跨数据集两条红线**：列主格跨数据集 = 拒绝 + `Error`；`join_view` 取组内全部键的**并集**。细节 §二十三。
 
 ## 对照积木报表的差距分析（`引擎差距分析-对照积木报表.md`）
 
 对标 `jeecgboot/JimuReport`。**结论：不是一个物种** —— 它做广度（填报 / 大屏 / AI / 权限 / 移动端），我们做深度（打印版面 + 非线性内核）。
 
-1. **A 类 5 项明确不做**：填报回写 / 大屏 / AI / 权限分享 / 移动端。**填报**是唯一业务上真会被问的 —— 三个引擎只读，是**架构取舍**；对外口径必须是「按只读设计，不支持回写」，**不能说「暂未实现」**。
-2. **B 类 6 项**：图表/条码二维码/条件格式/B6 Word 导出/C 文件·API 数据集 **全做完 ✅**（前三者同根因：`CellTpl` 缺「非文本格子」通道）。剩 **B4 超链接**（打印用不上）。**B5 子报表：不做**。
-3. **数据源别追数量**（3 vs 30+）。真差距是「没有非 SQL 数据集抽象」；信创库走 ODBC DSN，别逐个写适配。
-4. **⚠️ 许可**：其补充条款**禁止同类竞争** + 必须保留版权标识。本项目就是报表引擎，属同类 → **可读 README 对标功能，不能抄代码 / 兼容其模板格式**。想兼容先找法务。
+1. **A 类 5 项不做**：填报回写 / 大屏 / AI / 权限分享 / 移动端。**填报**是唯一真会被问的 —— 三个引擎只读是**架构取舍**；口径必须说「按只读设计，不支持回写」，**不能说「暂未实现」**。
+2. **B 类 6 项**：图表/条码二维码/条件格式/Word 导出/文件·API 数据集 **全做完 ✅**（前三者同根因：`CellTpl` 缺「非文本格子」通道）。剩 **B4 超链接**（打印用不上）。**B5 子报表：不做**。
+3. **数据源别追数量**（3 vs 30+）。真差距是「没有非 SQL 数据集抽象」；信创库走 ODBC DSN。
+4. **⚠️ 许可**：其补充条款**禁止同类竞争** + 须保留版权标识。本项目就是报表引擎 → **可读 README 对标功能，不能抄代码 / 兼容其模板格式**。想兼容先找法务。
