@@ -1594,6 +1594,38 @@ const ISSUE_TEXT_TYPE: Record<IssueLevel, 'danger' | 'warning' | 'secondary'> = 
   info: 'secondary',
 }
 
+/**
+ * 从 **412** 的响应体里取「服务端当前版本」。
+ *
+ * ⚠️ **读不出来就返回 `null`，绝不抛。** 这个值只影响文案（`null` 时显示
+ * 「服务端版本未知」）。为了一个显示字段把整个确认框吞掉，代价是用户
+ * **再也点不到那个框** —— 而那个框正是 412 存在的全部理由。
+ * 也就是说：宁可少说一句，不能少给一条出路。
+ */
+function staleActualOf(text: string): string | null {
+  try {
+    const v = (JSON.parse(text) as { actual?: unknown }).actual
+    return typeof v === 'string' && v ? v : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 解析保存**成功**的响应，取出里面的 `updatedAt`。
+ *
+ * 拿不到就返回 `null` —— 调用方**不清空 base**（见 `doSave` 里那段注释）：
+ * 清空等于「下一次盲覆盖」，而保持原样最多让用户多点一次确认。
+ */
+function savedStampOf(text: string): string | null {
+  try {
+    const v = (JSON.parse(text) as { updatedAt?: unknown }).updatedAt
+    return typeof v === 'string' && v ? v : null
+  } catch {
+    return null
+  }
+}
+
 export default function GridReportModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const univerRef = useRef<{ dispose: () => void } | null>(null)
@@ -1801,6 +1833,35 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
    */
   const [pendingOverwrite, setPendingOverwrite] = useState<
     { def: ReportDef; id: string } | null
+  >(null)
+  /**
+   * 「我手上这份内容是**基于哪个版本**改的」—— 乐观锁的 `base`。
+   *
+   * 打开报表时从 `def.updatedAt` 装填，**每次保存成功后再从响应里回填**。
+   * 少了回填这一步，第二次保存会拿一个**已经过期的版本**去比，于是 412 自己 ——
+   * 症状是「存自己刚存过的那份也要弹冲突框」。
+   *
+   * 它补的是 `lastSavedId` **结构上**堵不住的那个洞：
+   * 「我打开它 → 别人改了它 → 我保存」。`lastSavedId` 只能说明「这个 id 是我的」，
+   * 说明不了「服务端上那份还是我看到的那一版」。空串 = 没有可比对的版本
+   * （新报表，或老文件里压根没有 `updatedAt`）。
+   */
+  const [baseUpdatedAt, setBaseUpdatedAt] = useState('')
+  /**
+   * 版本对不上（服务端 **412**）时待用户决定的事。
+   *
+   * 与 `pendingOverwrite`（409）**分成两个 state**，因为两件事要用户做的决定
+   * 完全不同：
+   *
+   * - 409 =「这个 id 已经有了，覆盖吗」→ 客户端**原样重发**就能过；
+   * - 412 =「**你手上这份过期了**，别人的改动在里面」→ 原样重发**毫无意义**，
+   *   用户要么先看一眼别人的改动（重新打开，放弃自己这份），要么明知故犯地盖掉。
+   *
+   * 合成一个框的话，「重新打开」这个出口就不存在了，412 就退化成
+   * **一个换了文案的 409** —— 那这把锁等于没装。这正是两者必须能被区分的原因。
+   */
+  const [pendingStale, setPendingStale] = useState<
+    { def: ReportDef; id: string; actual: string | null } | null
   >(null)
   /** 服务端上报的报表目录；读不到就是 null（不猜） */
   const [reportsDir, setReportsDir] = useState<string | null>(null)
@@ -2105,16 +2166,26 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
    * 真正的落盘。**与「要不要先确认」分开** —— 用户在确认框上点「覆盖」之后
    * 要能回到这里，而不是把整个请求重建一遍（重建有可能得到不一样的结果）。
    *
-   * `force` = 「我声明我有权写这个 id」。它会被翻成 `?force=1` 发给服务端 ——
+   * `opts.force` = 「我声明我有权写这个 id」。它会被翻成 `?force=1` 发给服务端 ——
    * 服务端的判据是**文件系统**（权威），不是这份 UI 手上的列表快照。
+   *
+   * `opts.base` = 「我手上这份是基于哪个版本改的」（乐观锁）。它被翻成 `?base=…`。
+   * 服务端版本和它对不上 → **412**，且响应体带上服务端当前版本。
+   *
+   * ⚠️ **服务端那边 `base` 压过 `force`**，所以「确认之后硬覆盖」这条路
+   * 必须**只带 force、不带 base**（见两个确认框的 `onOk`）——
+   * 两个都带的话 base 赢，会再 412 一次，用户点了「覆盖」却还是存不进去。
    */
   const doSave = useCallback(
-    async (def: ReportDef, id: string, force: boolean) => {
+    async (def: ReportDef, id: string, opts: { force: boolean; base: string | null }) => {
       setSaveNotice('')
       setFileBusy(true)
       try {
+        const qs: string[] = []
+        if (opts.force) qs.push('force=1')
+        if (opts.base) qs.push(`base=${encodeURIComponent(opts.base)}`)
         const res = await fetch(
-          `${REPORT_SERVER}/api/reports/save${force ? '?force=1' : ''}`,
+          `${REPORT_SERVER}/api/reports/save${qs.length ? `?${qs.join('&')}` : ''}`,
           {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -2139,10 +2210,45 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           setPendingOverwrite({ def, id })
           return
         }
+        /*
+         * ⚠️ **412 也不是错误，是「你手上这份过期了」。**
+         *
+         * 和 409 长得像（都是「保存没成」），但要用户做的事**完全不同**：
+         * 409 重发一次就行，412 重发**毫无意义** —— 必须让人选
+         * 「先看看别人改了什么」还是「我就是要盖掉」。
+         *
+         * 同理，这条也必须在通用错误分支**之前**。排在后面的话，
+         * 用户只会看到一句「这份报表在别处被改过了」，然后**没有任何出路**。
+         */
+        if (res.status === 412) {
+          setError('')
+          setPendingStale({ def, id, actual: staleActualOf(text) })
+          return
+        }
         if (!res.ok) throw new Error(text || `保存失败 ${res.status}`)
+
         setError('')
-        // 存成功之后，这个 id 就是「我正在编辑的那一份」了
-        setLastSavedId(id)
+        const stamp = savedStampOf(text)
+        if (stamp) {
+          /*
+           * ★ **回填**：把服务端刚给出的版本变成我手上这份的新 base。
+           *
+           * 少了这一句，下一次保存会拿**上一次**的版本去比 —— 而服务端
+           * 已经被这次保存推进过了，于是必然 412。症状是「连存两次，
+           * 第二次弹『别人改过了』」，而那个人就是自己。
+           */
+          setBaseUpdatedAt(stamp)
+          // 存成功之后，这个 id 就是「我正在编辑的那一份」了
+          setLastSavedId(id)
+        } else {
+          /*
+           * 拿不到新版本号（响应不是预期的形状）。**故意不清空 base**：
+           * 清空等于把下一次保存降级成**盲覆盖**，而保持原样最多让用户
+           * 多点一次确认。两个方向的代价不对称，所以错要错在安全那边。
+           * 同时**照实说出来** —— 不说就成了静默的保护降级。
+           */
+          setError('保存成功了，但没能从响应里拿到新版本号 —— 下一次保存会再向你确认一次。')
+        }
         // 内联数据存不下来（报表存的是**数据源声明**，文件 / 接口这条没有声明可存）——
         // 必须当场说，否则用户要到「打开后执行没数据」才发现。
         setSaveNotice(
@@ -2207,7 +2313,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
 
     /*
      * **覆盖已有报表之前必须先问。** 这一道是「省一次往返 + 把话说清楚」，
-     * 真正的闸在服务端（`store::save_new`，已存在且没带 `force` → 409）。
+     * 真正的闸在服务端（`Expect::Absent`，已存在且没带 `force` → 409）。
      *
      * 判据拆开看：
      * - `id !== lastSavedId` —— 打开 A 再存 A 是**正常操作**，每次都弹会把用户
@@ -2219,19 +2325,22 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
      * 别的客户端之后新建的同名报表 —— 那种情况由服务端的 409 接住（见 doSave）。
      * 两道闸查的不是同一个事实，所以是互补，不是重复。
      *
-     * 下面那个 `force` 实参 = 「我声明我有权写这个 id」，两种情况成立：
-     * - `id === lastSavedId`：这就是我打开 / 刚存过的那一份，覆盖它是**正常操作**。
-     *   （不带上它的话，第二次保存会被服务端 409 顶回来 —— 用户就会看到
-     *   「存自己刚存过的那份也要确认」，那是把闸做成了绊脚石。）
-     * - 确认框被点过「覆盖」之后：那条路径在 `onOk` 里传 `force = true`。
+     * 下面传给 `doSave` 的两个东西 = 「我声明我有权写这个 id」+「我手上这份基于哪一版」，
+     * 都只在**存我自己正在编辑的那一份**时才有意义：
+     * - `force`：不带上它的话，第二次保存会被服务端 409 顶回来 —— 用户就会看到
+     *   「存自己刚存过的那份也要确认」，那是把闸做成了绊脚石。
+     * - `base`：**这把锁补的正是 `lastSavedId` 补不上的那一格** ——
+     *   「我打开它 → 别人改了它 → 我保存」。光有 force 只能证明「这个 id 是我的」，
+     *   证明不了「我看到的还是服务端上那一版」，所以那种情况照样会**静默盖掉**别人的改动。
      *
-     * 两者都不成立 → **不带 force**，让服务端替我判，而不是自己说了算。
+     * 存到别的 id 上时两个都不带 → **让服务端替我判**，而不是自己说了算。
      */
     if (id !== lastSavedId && (!reportsListKnown || savedReports.some((r) => r.id === id))) {
       setPendingOverwrite({ def, id })
       return
     }
-    await doSave(def, id, id === lastSavedId)
+    const mine = id === lastSavedId
+    await doSave(def, id, { force: mine, base: mine ? baseUpdatedAt || null : null })
   }, [
     buildRequest,
     reportId,
@@ -2240,6 +2349,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
     dump,
     dataSourceKind,
     lastSavedId,
+    baseUpdatedAt,
     reportsListKnown,
     savedReports,
     doSave,
@@ -2322,6 +2432,17 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
       setReportId(def.id)
       // 记住「现在编辑的是这一份」→ 再存同一个 id 不该弹覆盖确认
       setLastSavedId(def.id)
+      /*
+       * ★ **装填乐观锁的 base**：记下「我手上这份是从哪一版开始改的」。
+       * 之后每次保存都拿它去比对 —— 中间要是别人存过，服务端会 412 而不是
+       * 让我的内容把他的盖掉。
+       *
+       * 老文件 / 手写的文件可能没有 `updatedAt`（那时它是 `undefined`）→
+       * 空串 = 没有可比对的版本，这一次保存退化回「只有 force 保护」。
+       * 但**第一次保存成功后 base 就会被回填**（见 `doSave`），
+       * 所以保护是从那以后一直有的，而不是永远没有。
+       */
+      setBaseUpdatedAt(def.updatedAt ?? '')
       setReportName(def.name)
       setExportFormula(def.options?.exportFormula ?? false)
       setDump(def.options?.dump ?? false)
@@ -3782,7 +3903,7 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         服务端 `store::save` 是覆盖写 —— 没有这一道，手打一个已存在的 id 点保存
         就会**静默换掉别人的报表**。而这段承诺本来写在服务端的文档注释里
         （「调用方（UI）要先经列表确认」），只是**从来没实现过**；
-        现在服务端自己也有闸了（`save_new` + `?force=1`），两边互补。
+        现在服务端自己也有闸了（`Expect::Absent` + `?force=1`），两边互补。
       */}
       <Modal
         title="覆盖已有报表？"
@@ -3790,8 +3911,11 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
         onOk={() => {
           const p = pendingOverwrite
           setPendingOverwrite(null)
-          // `force = true`：用户明确点了「覆盖」→ 这正是服务端要的那句授权
-          if (p) void doSave(p.def, p.id, true)
+          // `force = true`：用户明确点了「覆盖」→ 这正是服务端要的那句授权。
+          // ⚠️ `base` 必须是 **null**：服务端那边 `base` 压过 `force`，
+          //    两个都带的话 base 赢、再 412 一次 —— 用户点了「覆盖」却还是存不进去。
+          //    这一条是「用户已经在框里表过态」的那条路，所以刻意放弃版本比对。
+          if (p) void doSave(p.def, p.id, { force: true, base: null })
         }}
         onCancel={() => setPendingOverwrite(null)}
         okText="覆盖"
@@ -3813,6 +3937,82 @@ export default function GridReportModal({ open, onClose }: { open: boolean; onCl
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             上一版会留在服务端报表目录的 <code>{pendingOverwrite?.id}.json.bak</code> 里，
             需要时可以从那里取回。换个 id 保存则是新增一份，不会动到它。
+          </Typography.Text>
+        </Space>
+      </Modal>
+
+      {/*
+        **版本冲突（412）确认。**
+
+        与上面那个 409 的框**长得像但意思完全不同**，所以必须分开：
+        409 是「这个 id 已经有了」（重发一次就行），这里是
+        「**你手上这份是从旧版本改出来的，别人的改动在里面**」。
+        两者的差别不在文案，而在**用户能做的事**：这里多一个出口 ——
+        「放弃我的改动，重新打开」，那才是能看见对方改了什么的那条路。
+        少了它，412 就只是一个换了文案的 409，这把锁也就白装了。
+      */}
+      <Modal
+        title="这份报表在别处被改过了"
+        open={pendingStale !== null}
+        onCancel={() => setPendingStale(null)}
+        width={470}
+        destroyOnHidden
+        /*
+         * 三个按钮，**两个都是破坏性的**（一个丢别人的改动，一个丢我的）——
+         * 所以默认焦点既不放在「覆盖」也不放在「重新打开」，而是让用户
+         * 必须先读一眼。antd 的 `footer` 自定义正好能把这件事摆明。
+         */
+        footer={[
+          <Button
+            key="later"
+            data-testid="report-stale-cancel"
+            onClick={() => setPendingStale(null)}
+          >
+            先不存了
+          </Button>,
+          <Button
+            key="reload"
+            danger
+            data-testid="report-stale-reload"
+            onClick={() => {
+              const p = pendingStale
+              setPendingStale(null)
+              // 重新打开 = 放弃本地改动，回到服务端那一版。**这就是 412 唯一
+              // 有价值的出路** —— 用户得先看得见别人改了什么，才能决定要不要盖。
+              if (p) void openReport(p.id)
+            }}
+          >
+            放弃我的改动，重新打开
+          </Button>,
+          <Button
+            key="force"
+            type="primary"
+            danger
+            data-testid="report-stale-force"
+            onClick={() => {
+              const p = pendingStale
+              setPendingStale(null)
+              // 只带 force、**不带 base**（base 会压过 force → 再 412 一次）
+              if (p) void doSave(p.def, p.id, { force: true, base: null })
+            }}
+          >
+            用我的版本覆盖
+          </Button>,
+        ]}
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <div>
+            报表 <b>{pendingStale?.id}</b> 在服务端已经不是你看过的那一版了 ——
+            你打开它之后，别处又保存过一次。
+          </div>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            你手上基于 <code>{baseUpdatedAt || '（没有版本号）'}</code>，
+            服务端现在是 <code>{pendingStale?.actual ?? '（版本号未知）'}</code>。
+            {' '}直接保存会<b>把对方那次改动一起盖掉</b>。
+          </Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            「重新打开」会丢掉你这次的修改（想留住的话，先把 id 改掉另存一份）。
+            上一版仍会留在服务端的 <code>{pendingStale?.id}.json.bak</code> 里。
           </Typography.Text>
         </Space>
       </Modal>

@@ -25,7 +25,7 @@ pub(crate) mod zip;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{Response as HttpResponse, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response as AxumResponse};
 use model::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -1191,6 +1191,10 @@ pub async fn reports_get_handler(
 pub struct SaveQuery {
     #[serde(default)]
     pub force: Option<String>,
+    /// 调用方手上那份的 `updatedAt`（乐观锁的 `If-Match`）。
+    /// 服务端当前版本和它对不上 → **412**，且响应体带上服务端版本。
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 impl SaveQuery {
@@ -1213,39 +1217,98 @@ impl SaveQuery {
             Some("1") | Some("true") | Some("yes")
         )
     }
+
+    /// 本次保存的**前提**。**`base` 压过 `force`。**
+    ///
+    /// 两个都带时按 `base` 走，理由是代价不对称：
+    ///
+    /// - 反过来（`force` 赢）→ 一个带着 `base` 的请求会**静默退化成盲覆盖**。
+    ///   调用方以为自己在版本保护下，其实不在，而且**没有任何迹象** ——
+    ///   这正是本项目最怕的那类失败。
+    /// - 按 `base` 走 → 本来想直接覆盖，结果多弹一次确认框。用户多点一下。
+    ///
+    /// 一个方向会静默毁数据，另一个方向多一次点击，所以错也要错在安全那边。
+    ///
+    /// `?base=`（空值 / 只有空白）**当没带**：它更可能是客户端拼串拼出来的空值，
+    /// 而不是「我的版本是一个空字符串」。当没带就落回 `force` / [`Expect::Absent`]
+    /// 那条路 —— 而那条路自己会把该问的问出来。
+    ///
+    /// [`Expect::Absent`]: store::Expect::Absent
+    pub fn expect(&self) -> store::Expect {
+        match self
+            .base
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(b) => store::Expect::Base(b.to_string()),
+            None if self.forced() => store::Expect::Anything,
+            None => store::Expect::Absent,
+        }
+    }
+}
+
+/// 412 的响应体。**必须带上服务端当前版本** ——
+/// 否则客户端只知道「对不上」，没法告诉用户「你手上是 X，现在是 Y」，
+/// 只能整页刷新重来。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CasConflictBody {
+    /// 调用方声明的版本
+    pub expected: String,
+    /// 服务端当前版本；`None` = 文件已不存在
+    pub actual: Option<String>,
 }
 
 /// `SaveError` → HTTP 响应。
 ///
-/// **`Conflict` 必须是 409，不能和 400 混** —— UI 靠状态码分辨
-/// 「弹错误」还是「弹覆盖确认框」。混成一个码，那个确认框就永远弹不出来了。
-fn save_error_response(e: store::SaveError) -> (StatusCode, String) {
+/// **三种失败必须是三个不同的状态码**，因为 UI 要做的**动作各不相同**：
+///
+/// - 400：弹错误（别存了）
+/// - 409：弹「要覆盖吗」—— 客户端**原样重发**就能过
+/// - 412：弹「别人改过了」—— 原样重发**毫无意义**，得让用户选「重新打开」还是「硬覆盖」
+///
+/// 混成一个码，UI 就只能靠匹配文案去猜，而文案一改就静默退化：
+/// 那个确认框**再也弹不出来**，用户只会看到「保存失败」且无路可走。
+fn save_error_response(e: store::SaveError) -> AxumResponse {
     match e {
-        store::SaveError::Conflict(m) => (StatusCode::CONFLICT, m),
-        store::SaveError::Invalid(m) => (StatusCode::BAD_REQUEST, m),
+        store::SaveError::Conflict(m) => (StatusCode::CONFLICT, m).into_response(),
+        store::SaveError::Invalid(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        store::SaveError::Stale { expected, actual } => (
+            StatusCode::PRECONDITION_FAILED,
+            Json(CasConflictBody { expected, actual }),
+        )
+            .into_response(),
     }
 }
 
-/// `PUT /api/reports/save` —— 保存（新建，或**确认后**覆盖）。
+/// `PUT /api/reports/save` —— 保存（新建 / 覆盖 / 乐观锁更新）。
 ///
 /// ⚠️ 路径是 `/api/reports/save`，**不是** `/api/reports/:id`（见 `main.rs` 的路由表）。
 /// `:id` 只挂 GET / DELETE。`id` 从请求体的 `ReportDef` 里取。
 ///
-/// 覆盖需要 `?force=1`：目标已存在而没带 force → **409**。
-/// 这是服务端权威判据 —— UI 的列表只是打开弹窗那一刻的快照，
-/// 别的客户端之后新建的同名报表它看不见（见 `store::save_new`）。
+/// 三种前提由查询串声明（判据见 [`SaveQuery::expect`]）：
+///
+/// | 查询串 | 含义 | 目标已存在时 |
+/// | --- | --- | --- |
+/// | 什么都不带 | 新建 | **409**，提示带 `?force=1` 重发 |
+/// | `?force=1` | 用户已确认覆盖 | 覆盖 |
+/// | `?base=<updatedAt>` | 乐观锁 | 版本不符 → **412** + 服务端版本 |
+///
+/// 前两者是「服务端权威判据」：UI 的列表只是打开弹窗那一刻的快照，
+/// 别的客户端之后新建的同名报表它看不见（见 [`store::Expect`]）。
+/// 第三者补的是 UI **结构上**堵不住的那个洞 —— 「我打开它 → 别人改了它 → 我保存」。
+/// `force` 是**授权声明**（「我可以覆盖」），不是版本比对，所以它挡不住这一种；
+/// `base` 才是。
 pub async fn reports_save_handler(
     State(state): State<AppState>,
     Query(q): Query<SaveQuery>,
     Json(def): Json<store::ReportDef>,
-) -> Result<Json<store::ReportDef>, (StatusCode, String)> {
+) -> Result<Json<store::ReportDef>, AxumResponse> {
     let dir = reports_dir_of(&state);
-    let result = if q.forced() {
-        store::save(&dir, def)
-    } else {
-        store::save_new(&dir, def)
-    };
-    result.map(Json).map_err(save_error_response)
+    store::save(&dir, def, q.expect())
+        .map(Json)
+        .map_err(save_error_response)
 }
 
 /// `DELETE /api/reports/:id`
@@ -2318,6 +2381,86 @@ fn cross_tab_data() -> DataSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /* ------------- PUT /api/reports/save 的「前提」判定 ------------- */
+
+    /// 直接构造查询串对应的 `SaveQuery`，免得为测一个纯函数去起服务器。
+    fn q(pairs: &str) -> SaveQuery {
+        let mut out = SaveQuery::default();
+        for kv in pairs.split('&').filter(|s| !s.is_empty()) {
+            let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+            match k {
+                "force" => out.force = Some(v.to_string()),
+                "base" => out.base = Some(v.to_string()),
+                _ => panic!("用例里写了不认识的参数 {k}"),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn 保存前提_按查询串判() {
+        use store::Expect;
+        // 什么都不带 = 新建
+        assert_eq!(q("").expect(), Expect::Absent);
+        // 明确声明要覆盖
+        assert_eq!(q("force=1").expect(), Expect::Anything);
+        assert_eq!(q("force=true").expect(), Expect::Anything);
+        assert_eq!(q("force=yes").expect(), Expect::Anything);
+        // force 的 typo / 0 / 空值一律**当没带**：这个方向判错只多问一次，
+        // 反方向判错是静默覆盖掉一份报表
+        for bad in [
+            "force=0",
+            "force=flase",
+            "force=false",
+            "force=no",
+            "force=",
+            "force",
+        ] {
+            assert_eq!(q(bad).expect(), Expect::Absent, "?{bad} 不该被当成授权");
+        }
+        // 乐观锁
+        assert_eq!(
+            q("base=2026-09-27T12:00:00.000Z").expect(),
+            Expect::Base("2026-09-27T12:00:00.000Z".into())
+        );
+    }
+
+    /// **`base` 压过 `force`。** 这是整块设计里最容易被「顺手」写反的一处。
+    ///
+    /// 反过来写（`force` 赢）的后果不是「少一次保护」，而是**静默的**：
+    /// 一个带着 `base` 的请求会退化成盲覆盖，调用方以为自己在版本保护下、
+    /// 其实不在，而且**没有任何迹象**。所以这条必须钉死。
+    #[test]
+    fn 保存前提_base_压过_force() {
+        use store::Expect;
+        assert_eq!(
+            q("force=1&base=V1").expect(),
+            Expect::Base("V1".into()),
+            "两个都带时按 force 走了 —— 带 base 的请求会静默退化成盲覆盖"
+        );
+        // 查询串里的顺序不该改变语义
+        assert_eq!(q("base=V1&force=1").expect(), Expect::Base("V1".into()));
+    }
+
+    /// 空的 / 只有空白的 `base` **当没带**，落回 `force` / 新建那条路。
+    ///
+    /// 它更可能是客户端拼串拼出来的空值，而不是「我的版本是一个空字符串」。
+    #[test]
+    fn 保存前提_空的_base_当没带() {
+        use store::Expect;
+        assert_eq!(q("base=").expect(), Expect::Absent);
+        assert_eq!(q("base=&force=1").expect(), Expect::Anything, "空 base 应当落回 force");
+
+        let mut blank = SaveQuery::default();
+        blank.base = Some("   ".into());
+        assert_eq!(blank.expect(), Expect::Absent, "只有空白也算没带");
+
+        // 两侧空白会被去掉（`?base=%20V1%20` 这种）
+        let mut padded = SaveQuery::default();
+        padded.base = Some("  V1  ".into());
+        assert_eq!(padded.expect(), Expect::Base("V1".into()));
+    }
 
     fn grid() -> Vec<Vec<GridCell>> {
         let resp = render(RenderRequest { template: sample_template(), datasets: None, sources: None, dump: None }).unwrap();

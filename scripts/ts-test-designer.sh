@@ -8,7 +8,7 @@
 # （`environment: 'node'`、无 DOM、无 Univer）。而 `designer-react/src/**/*.spec.tsx`
 # 这批要 **jsdom + antd + React**，只能用它自己装的那份 vitest 跑。
 #
-# 于是出现过一个真空：**43 个 designer-react spec 文件，没有任何脚本会跑它们**。
+# 于是出现过一个真空：**44 个 designer-react spec 文件，没有任何脚本会跑它们**。
 # 改一次 `GridReportModal`，`check-all.sh` 依然全绿 —— 因为根本没有闸在管这个文件。
 # 这正是本项目反复吃过的「**没有跑器的闸比红的闸更坏**」。
 #
@@ -18,6 +18,8 @@
 #
 #   默认并行：43 文件 / 375 用例 → **16 失败 / 359 通过**（238s）
 #   串行：    43 文件 / 375 用例 → **0 失败 / 375 通过**（346s）
+#
+# （那两个 43 是**当时**的文件数；现在是 44。用例数没重测 —— 别把它当现状。）
 #
 # 而且**同样的 4 个文件单独跑 4/4 全绿**（各 14~21s）——
 # 失败全是 `Test timed out` / `expected '' to contain '标签网格'` 这类
@@ -32,6 +34,8 @@
 # 同一条命令（`grid-report-` 过滤）实测过 **96s** 和 **161s** 两个数 ——
 # 96s 那次是**紧跟在另一次 vitest 之后**跑的，vite 的 transform 缓存是热的。
 # 冷一点就是 161s（check-all 里那道实测 162s，稳定复现）。
+# 2026-09-27 又见过 **230s**（同机同时还在跑别的命令）→ 这个数**随负载浮动**，
+# **别拿耗时当回归判据**（用例数才是；见「用法」里的 12 文件 / 151 用例）。
 # 顺手排除过一个嫌疑：**加不加那两个 preload 都是 161s**，
 # 所以 preload 不是拖慢的原因（留着是为了和 `fault-inject-*-ui.py` 一致）。
 # 写进注释的数字一律取**偏保守**的那个。
@@ -39,7 +43,7 @@
 # ## 用法
 #
 #   bash scripts/ts-test-designer.sh                  # 全部 designer-react spec（~346s）
-#   bash scripts/ts-test-designer.sh grid-report-     # 按文件名过滤（~160s，11 文件 / 136 用例）
+#   bash scripts/ts-test-designer.sh grid-report-     # 按文件名过滤（12 文件 / 151 用例；~160s，负载重时见过 230s）
 #   bash scripts/ts-test-designer.sh grid-report-issues -t '看得见'   # 再按用例名过滤（参数透传）
 #
 # 退出码：0 通过 / 2 **没跑成**（designer-react 没装 node_modules）/ 其它 失败。

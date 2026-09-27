@@ -11,24 +11,30 @@
 
 | 注入 | 拆掉什么 | 期望变红 |
 | --- | --- | --- |
-| S1 | `save_new` 不查存在性（退化成 `save`） | 单测 `目标已存在时_save_new_拒绝且不碰文件` + 真机探针 |
-| S2 | `save_new` 拿**未归一化**的 id 查存在性 | 单测 `save_new_判据与落盘同口径` |
+| S1 | `Expect::Absent` 不查存在性（退化成直接覆盖） | 单测 `目标已存在时_要求不存在则拒绝且不碰文件` + 真机探针 |
+| S2 | 闸拿**未归一化**的 id 拼路径 | 单测 `要求不存在时_判据与落盘同口径` |
 | S3 | `forced()` 放宽成「带了 force 参数就算」 | 真机探针（`?force=0` / typo 会被当授权） |
 | S4 | `Conflict` 也映射成 400 | 真机探针（状态码错了，UI 那个确认框永远弹不出来） |
-| S5 | handler 永远走 `save`（等于没有闸） | 真机探针 |
-| S6 | `save_new` 的 id 校验返回 `Conflict` | 真机探针（非法 id 报成 409，把人指向错误方向） |
+| S5 | handler 永远走「无条件覆盖」 | 真机探针 |
+| S6 | id 校验返回 `Conflict` | 真机探针（非法 id 报成 409，把人指向错误方向） |
+
+> **2026-09-27 重锚**：`save` / `save_new` 两个入口并成了一个
+> `save(dir, def, expect: Expect)`（三态：`Absent` / `Base` / `Anything`）。
+> 本脚本的锚点与用例名**全部跟着改过一遍** —— 这不是可选动作：
+> 锚点失配时脚本会打印「匹配 0 处，没验过」并计入失败，那还算好的；
+> 真正危险的是**用例名失配**（见下面 S5 那段）。
 
 ## S2 是这里最值钱的一条
 
 它证明的是一件**只有靠注入才看得见**的事：`" t8 "` 与 `"t8"` 是不是同一个目标。
-`save` 会 trim，所以 `" t8 "` 落盘成 `t8.json`；如果 `save_new` 拿没 trim 的串
-去查存在性，它会判定「不存在」→ 放行 → `save` 覆盖掉已有的 `t8.json`。
+落盘会把 id 去空白，所以 `" t8 "` 落盘成 `t8.json`；如果闸拿没去空白的串
+去拼路径，它会判定「不存在」→ 放行 → 覆盖掉已有的 `t8.json`。
 **不报错、不警告，安静地毁数据。** 这条注入把这个绕过复现出来，
 看那条用例会不会红 —— 不红的话，那条用例就是摆设。
 
 ## S4 / S5 只有真机探针抓得到
 
-`Conflict` → 400 这种错在**函数层完全看不出来**（`save_new` 老老实实返回了
+`Conflict` → 400 这种错在**函数层完全看不出来**（`save` 老老实实返回了
 `SaveError::Conflict`，单测全绿），错的只是 handler 把它翻译成哪个状态码。
 UI 靠状态码分辨「弹错误」还是「弹覆盖确认框」—— 翻错了那个框**永远弹不出来**，
 而用户只会看到「报表已存在」且无路可走。
@@ -58,15 +64,23 @@ MOD = ROOT / "print-server" / "src" / "report" / "mod.rs"
 
 # ── store.rs 的锚点 ────────────────────────────────────────────────
 
-# S1：把「已存在就拒」整段拿掉
-ANCHOR_EXISTS_CHECK = """    if path_of(dir, &id).exists() {
-        return Err(SaveError::Conflict(format!(
-            "报表 {id} 已存在；覆盖会换掉原内容。确认要覆盖请带 ?force=1 重发。"
-        )));
-    }"""
+# S1：把「已存在就拒」整段拿掉（整个 `Expect::Absent` 分支变成空操作）
+ANCHOR_EXISTS_CHECK = """        Expect::Absent => {
+            if path.exists() {
+                return Err(SaveError::Conflict(format!(
+                    "报表 {id} 已存在；覆盖会换掉原内容。确认要覆盖请带 ?force=1 重发。"
+                )));
+            }
+        }"""
 
-# S2：查存在性时用**未归一化**的 id（`id` 是 trim 过的，`def.id` 不是）
-ANCHOR_EXISTS_LINE = "    if path_of(dir, &id).exists() {"
+# S2：闸拿**未归一化**的 id 拼路径。
+# ⚠️ 锚点必须**同时**把 `def.id = id.clone();` 挪到 `path_of` 之后 ——
+# 现在那一句就在前面，`def.id` 已经是归一化过的值，只改 `path_of(dir, &def.id)`
+# 是**空注入**（改了个等价的表达式，行为一点没变，脚本会报「仍然是绿的」，
+# 而人会以为是断言没牙齿）。所以这里注入的是**赋值顺序**。
+ANCHOR_ID_ORDER = """    def.id = id.clone();
+
+    let path = path_of(dir, &id);"""
 
 # S6：id 校验返回 Conflict 而不是 Invalid
 ANCHOR_INVALID = """    if !is_valid_id(&id) {
@@ -74,7 +88,7 @@ ANCHOR_INVALID = """    if !is_valid_id(&id) {
             "报表 id 不合法（只允许字母数字、-、_，最长 80）: {id:?}"
         )));
     }
-    if path_of(dir, &id).exists() {"""
+    def.id = id.clone();"""
 
 # ── mod.rs 的锚点 ─────────────────────────────────────────────────
 
@@ -89,35 +103,35 @@ ANCHOR_FORCED = """        matches!(
         )"""
 
 # S4：Conflict 也翻成 400
-ANCHOR_CONFLICT_MAP = "        store::SaveError::Conflict(m) => (StatusCode::CONFLICT, m),"
+ANCHOR_CONFLICT_MAP = (
+    "        store::SaveError::Conflict(m) => (StatusCode::CONFLICT, m).into_response(),"
+)
 
-# S5：handler 永远走 save
-ANCHOR_HANDLER_PICK = """    let result = if q.forced() {
-        store::save(&dir, def)
-    } else {
-        store::save_new(&dir, def)
-    };"""
+# S5：handler 永远走「无条件覆盖」（等于没有闸）
+ANCHOR_HANDLER_PICK = "    store::save(&dir, def, q.expect())"
 
 # (说明, 文件, 锚点原文, 替换成, [门禁…])
 # 门禁两种：("unit", 用例名) 跑 cargo test；("probe", None) 跑真机探针。
 # 探针那一道要重新编译，排在单测后面。
 CASES = [
     (
-        "S1 save_new 不查存在性（退化成直接覆盖）",
+        "S1 Expect::Absent 不查存在性（退化成直接覆盖）",
         STORE,
         ANCHOR_EXISTS_CHECK,
-        "    // （注入：这里本来会拒绝覆盖已有报表）",
+        "        Expect::Absent => {}",
         [
-            ("unit", "目标已存在时_save_new_拒绝且不碰文件"),
+            ("unit", "目标已存在时_要求不存在则拒绝且不碰文件"),
             ("probe", None),
         ],
     ),
     (
-        "S2 查存在性时用未归一化的 id（trim 只做了一半）",
+        "S2 闸拿未归一化的 id 拼路径（trim 只做了一半）",
         STORE,
-        ANCHOR_EXISTS_LINE,
-        "    if path_of(dir, &def.id).exists() {",
-        [("unit", "save_new_判据与落盘同口径")],
+        ANCHOR_ID_ORDER,
+        """    let path = path_of(dir, &def.id);
+
+    def.id = id.clone();""",
+        [("unit", "要求不存在时_判据与落盘同口径")],
     ),
     (
         "S3 force 判据放宽成「带了参数就算」",
@@ -130,14 +144,14 @@ CASES = [
         "S4 Conflict 也映射成 400（状态码错了）",
         MOD,
         ANCHOR_CONFLICT_MAP,
-        "        store::SaveError::Conflict(m) => (StatusCode::BAD_REQUEST, m),",
+        "        store::SaveError::Conflict(m) => (StatusCode::BAD_REQUEST, m).into_response(),",
         [("probe", None)],
     ),
     (
-        "S5 handler 永远走 save（等于没有这道闸）",
+        "S5 handler 永远走无条件覆盖（等于没有这道闸）",
         MOD,
         ANCHOR_HANDLER_PICK,
-        "    let _ = q.forced();\n    let result = store::save(&dir, def);",
+        "    let _ = q.expect();\n    store::save(&dir, def, store::Expect::Anything)",
         [("probe", None)],
     ),
     (
@@ -149,7 +163,7 @@ CASES = [
             "报表 id 不合法（只允许字母数字、-、_，最长 80）: {id:?}"
         )));
     }
-    if path_of(dir, &id).exists() {""",
+    def.id = id.clone();""",
         [("probe", None)],
     ),
 ]
