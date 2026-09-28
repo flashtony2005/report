@@ -5,8 +5,10 @@
 # ## 为什么要有这个脚本
 #
 # 这些闸早就造好了，但此前**没有任何入口会把它们串起来**：没有 CI，没有聚合脚本，
-# 写这个脚本时，27 个 `.py`（13 故障注入 + 13 探针 + mirror-check）**没有任何 shell 脚本调用过**。
-# 于是「闸是绿的」只意味着「上次有人手动跑过」，不意味着「现在没问题」。
+# 写这个脚本时，**28 个 `.py`（14 故障注入 + 13 探针 + mirror-check）**没有任何 shell 脚本调用过
+# （⚠️ 初版这里写的是「27 个（13 + 13 + mirror-check）」—— **两个数都错了**，
+#  见下面那段漂移记录；现在是 **20 / 17**）。于是「闸是绿的」只意味着「上次有人手动跑过」，
+# 不意味着「现在没问题」。
 #
 # **一个没人跑的绿闸比一个红闸更坏** —— 红闸至少会喊；没人跑的绿闸会主动产出
 # 「契约一致」的信心，而那份信心是空头的。本脚本就是为了消掉这一条。
@@ -81,7 +83,7 @@ for a in "$@"; do
   5. bash    scripts/ts-project-check.sh openprint     整项目类型检查 · openprint（vue-tsc --build）
   6. cargo   test --bin print-server           Rust 单测
   7. bash    scripts/ts-test-designer.sh grid-report-  设计器 UI 单测（jsdom，串行，12 文件 / 151 用例，~185s）
-  8. bash    scripts/ts-test-openprint.sh      引擎层单测（openprint 自己的 vitest，70 文件 / 915 用例，~145s）
+  8. bash    scripts/ts-test-openprint.sh      引擎层单测（openprint 自己的 vitest，70 文件 / 915 用例，~120s）
 --fast 只跑 1、2。
 
 第 7 道**带过滤参数**（`grid-report-`，12 文件 / 151 用例），不是整套 designer-react：
@@ -96,6 +98,10 @@ toolbar / stores…）仍然不在本脚本里 —— 不是「没必要」，�
 而闸 7 当时还写着「那批由 ts-test.sh 用纯 node 环境跑」（**那句话是错的**）。
 现在闸 8 用 openprint **自己**的 vitest 跑全部 70 个 spec（915 用例），
 引擎层的闸从此长在引擎包里，不再借 designer-react 的配置。
+
+⚠️ 上面写的耗时都是**本机**实测。**CI 快得多**（同一份代码，run #9/#10 实测）：
+跑闸总计 **158s**（本机 363s）；闸 7 **96s**（本机 185s）；闸 8 **22s**（本机 ~120s）。
+⇒ **别拿本机耗时估 CI**（差 2~5 倍，机制未查明）。
 EOT
       exit 0
       ;;
