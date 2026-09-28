@@ -104,19 +104,53 @@ done
 passed=0; failed=0; skipped=0; worst=0
 declare -a FAILED_NAMES=() SKIPPED_NAMES=()
 
+# ------------------------------------------------------------------ 诊断通道
+#
+# ⚠️ 在 GitHub Actions 上，**check-run 的 annotation 是唯一不需要 admin 权限就能读的输出**。
+#    2026-09-27 实测：job log 走 API 要 admin（403「Must have admin rights to Repository.」），
+#    而同一个 check-run 的 annotations 用裸 curl 就拿到了。
+#    ⇒ 红的时候必须把**原因**写进 annotation。否则一条红 CI 只能告诉你
+#      「有东西失败了」—— 读不到是哪个闸、为什么。那正是本项目最讨厌的那种
+#      「闸在跑、但结论不可用」。
+#
+# 只在 Actions 上启用：本地保持**实时流式**输出（缓冲会让 160s 的 UI 闸全程无输出）。
+GH_ANNOTATE=0
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then GH_ANNOTATE=1; fi
+
+# 失败/没跑成的闸的明细：`名字|退出码|日志文件`（日志文件仅 Actions 上存在）
+declare -a FAIL_DETAIL=()
+# annotation 正文里的 `%` 和 `\r` 必须转义，否则 GitHub 解析不出来（换行另走「一行一条」）
+# ⚠️ 这两个都是**读 stdin 的过滤器**，不是 `f "$x"` ——
+#    第一版把 gh_escape 写成 `printf '%s' "$1"` 却拿它当管道过滤器用，
+#    在 `set -u` 下直接 `$1: unbound variable`，annotation 变成空行（实测踩过）。
+gh_escape() { sed -e 's/%/%25/g' -e 's/\r//g'; }
+# 闸的输出带 ANSI 颜色码，直接塞进 annotation 会显示成乱码
+gh_strip_ansi() { sed $'s/\033\\[[0-9;]*[A-Za-z]//g'; }
+
 run() {
   local name="$1"; shift
   printf '\n\033[1m── %s ──\033[0m\n' "$name"
-  local t0=$SECONDS rc=0
-  "$@" || rc=$?
+  local t0=$SECONDS rc=0 out=""
+  if [ "$GH_ANNOTATE" = 1 ]; then
+    # 只在 CI 上缓冲：这样失败时能拿到完整输出写进 annotation。
+    # ⚠️ 注意**不能**改成 `"$@" | tee` —— 那会让 `$?` 变成 tee 的（恒 0），
+    #    正是本脚本最忌讳的「把失败读成通过」。
+    out="$(mktemp "${TMPDIR:-/tmp}/check-all.XXXXXX")"
+    "$@" >"$out" 2>&1 || rc=$?
+    cat "$out"
+  else
+    "$@" || rc=$?
+  fi
   local dt=$((SECONDS - t0))
   case $rc in
     0) printf '   \033[32m✓ 通过\033[0m（%ss）\n' "$dt"; passed=$((passed + 1)) ;;
     2) printf '   \033[33m⚠ 没跑成\033[0m（%ss，退出码 2 = 环境缺东西，**不等于通过**）\n' "$dt"
        skipped=$((skipped + 1)); SKIPPED_NAMES+=("$name")
+       FAIL_DETAIL+=("$name|2|$out")
        if [ "$worst" -lt 2 ]; then worst=2; fi ;;
     *) printf '   \033[31m✗ 失败\033[0m（%ss，退出码 %s）\n' "$dt" "$rc"
        failed=$((failed + 1)); FAILED_NAMES+=("$name")
+       FAIL_DETAIL+=("$name|$rc|$out")
        if [ "$worst" -lt 1 ]; then worst=1; fi ;;
   esac
 }
@@ -191,4 +225,35 @@ case $worst in
   1) printf '\033[31m有失败项\033[0m\n' ;;
   2) printf '\033[33m有闸没跑成 —— **不等于通过**，先把环境补齐再下结论\033[0m\n' ;;
 esac
+
+# ------------------------------------------------------------------ 写 annotation
+#
+# 放在最后：失败原因（哪个闸 + 退出码 + 输出尾部）写成 check-run annotation。
+# 为什么值得占这一段代码：**读 CI 的人未必有 admin**（我这次就没有）。
+# 只有一条「Process completed with exit code 1」的红 CI，等于把诊断成本全推给下一个人。
+if [ "$GH_ANNOTATE" = 1 ] && [ "$worst" -ne 0 ]; then
+  _ann=0
+  for _entry in "${FAIL_DETAIL[@]}"; do
+    _nm="${_entry%%|*}"; _rest="${_entry#*|}"
+    _rc="${_rest%%|*}"; _log="${_rest#*|}"
+    if [ "$_rc" = 2 ]; then _kind="没跑成（环境缺东西，**不等于通过**）"; else _kind="失败"; fi
+    printf '::error::闸「%s」%s，退出码 %s\n' "$_nm" "$_kind" "$_rc"
+    _ann=$((_ann + 1))
+    # 尾部若干行足够定位：头部多半是启动噪声，而 annotation 数量有上限
+    if [ -n "$_log" ] && [ -f "$_log" ]; then
+      while IFS= read -r _l; do
+        # 跳过空行与纯颜色码的行（它们占名额但不带信息）
+        case "$(printf '%s' "$_l" | gh_strip_ansi | tr -d '[:space:]')" in
+          '') continue ;;
+        esac
+        printf '::error::  %s\n' "$(printf '%s' "$_l" | gh_strip_ansi | gh_escape)"
+        _ann=$((_ann + 1))
+        if [ "$_ann" -ge 12 ]; then break; fi
+      done < <(tail -n 15 "$_log")
+      rm -f "$_log"
+    fi
+    if [ "$_ann" -ge 12 ]; then break; fi
+  done
+fi
+
 exit $worst

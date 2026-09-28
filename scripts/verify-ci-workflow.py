@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -261,6 +262,66 @@ INJECTIONS: list[tuple[str, str, str, str]] = [
 ]
 
 
+def annotation_channel_selftest() -> int:
+    """证明 `check-all.sh` 的 `::error::` 诊断通道**真的会输出**，且**不篡改退出码**。
+
+    ## 为什么非要这条（它替代的是哪一句话）
+
+    2026-09-27 首次 CI 跑红，而 **job log 走 API 要 admin 权限**（403
+    「Must have admin rights to Repository.」）—— 于是那条红 CI 只留下一句
+    「Process completed with exit code 1」，**读不到是哪个闸失败了**。
+    同一个 check-run 的 **annotations 却用裸 curl 就能读**。
+
+    ⇒ 失败原因必须写进 annotation。但「写了」不等于「写得出来」：
+    这段代码本身会踩 `set -u`、转义、颜色码三个坑（下面每一条都真踩过）。
+    所以要有注入证明它**会红**。
+
+    ## 注入是**纯环境**的
+
+    往 `PATH` 最前面放一个假 `python3`，让它退 1 / 退 2 ——
+    **不改仓库里任何文件**。比「就地改 + `finally` 还原」干净得多。
+    """
+    print("\n  诊断通道（check-all.sh 的 ::error:: annotation）：")
+    missed = 0
+    # (假 python3 的退出码 or None, 期望 check-all 退出码, 期望 annotation 里出现的词 or None, 标签)
+    cases = [
+        (None, 0, None, "基线（不注入）"),
+        (1, 1, "失败", "假 python3 退 1"),
+        (2, 2, "没跑成", "假 python3 退 2"),
+    ]
+    with tempfile.TemporaryDirectory(prefix="ann-selftest-") as tmp:
+        for stub_rc, want_rc, want_text, label in cases:
+            env = dict(os.environ, GITHUB_ACTIONS="true")
+            if stub_rc is not None:
+                d = Path(tmp) / f"stub{stub_rc}"
+                d.mkdir(exist_ok=True)
+                stub = d / "python3"
+                stub.write_text(f'#!/bin/sh\necho "注入：假 python3" >&2\nexit {stub_rc}\n')
+                stub.chmod(0o755)
+                env["PATH"] = f"{d}:{env['PATH']}"
+            proc = subprocess.run(
+                ["bash", "scripts/check-all.sh", "--fast"],
+                cwd=str(ROOT), capture_output=True, text=True, env=env,
+            )
+            errs = [l for l in proc.stdout.splitlines() if l.startswith("::error::")]
+            ok = proc.returncode == want_rc
+            if want_text is None:
+                ok = ok and not errs
+            else:
+                ok = ok and any(want_text in l for l in errs)
+                # 光有「闸名」不够：正文里必须有闸自己的输出，否则诊断等于没做
+                ok = ok and any("注入：假 python3" in l for l in errs)
+            print(
+                f"    {'✓' if ok else '✗'} {label}：退出码 {proc.returncode}"
+                f"（期望 {want_rc}），::error:: {len(errs)} 条"
+            )
+            if not ok:
+                missed += 1
+                for l in errs[:6]:
+                    print(f"        | {l}")
+    return missed
+
+
 def self_test() -> int:
     """故障注入：改**副本**、不碰真文件。
 
@@ -327,6 +388,9 @@ def self_test() -> int:
             missed += 1
     finally:
         scratch.unlink(missing_ok=True)
+
+    # 诊断通道（失败原因写进 check-run annotation）—— 纯环境注入，不改仓库文件
+    missed += annotation_channel_selftest()
 
     print(f"\n{caught} 条抓到 / {missed} 条漏网")
     return 0 if missed == 0 else 1
