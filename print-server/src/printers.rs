@@ -10,7 +10,11 @@
 //! - Windows：EnumPrintersW / DeviceCapabilitiesW（winspool）
 //! - macOS / Linux：CUPS 命令行（`lpstat` / `lpoptions`）
 //!
-//! 两路都失败时返回空列表（ok:true, count:0），前端有安全默认（defaultDpi 300）。
+//! 两路都失败时，**接口**返回空列表（ok:true, count:0），前端有安全默认（defaultDpi 300）。
+//! ⚠️ 注意降级发生在 **`list_printers_handler`** 里的 `unwrap_or_default()`；
+//! `list_printers()` **自身**失败时返回 `Err`（见它上面的注释）。这两句必须分开读 ——
+//! 2026-09-28 首次 CI 跑红就是因为一条测试把「接口降级为空」读成了
+//! 「`list_printers()` 返回 `Ok(空)`」，于是只在装了 CUPS 的机器上才绿。
 //! （曾因 winspool 未做 cfg 隔离，macOS 链接阶段报 `Undefined symbols: _DeviceCapabilitiesW`；
 //!   `cargo test` 测不出来，因为测试 harness 替换了 main，路由不可达导致函数被死代码消除。）
 
@@ -390,12 +394,40 @@ ColorModel/Color Mode: *Gray
         assert_eq!(c.max_dpi, 0);
     }
 
-    /// 本机没配队列时 /printers 依然是 200 + 空列表，不能 500
+    /// `/printers` 的降级契约：**枚举失败也不能 panic / 500**。
+    ///
+    /// ⚠️ 2026-09-28 修正（首次 CI 实测红换来的）。原版是
+    /// `match list_printers() { Ok(v) => assert!(v.is_empty()), Err(e) => panic!("未配置队列不算错误: {e}") }`，
+    /// **是一条假绿** —— 它只在「本机装了 `lpstat` 且没配队列」时成立：
+    ///
+    /// - 本机 macOS **自带 `lpstat`** → 命令跑得起来、没队列 → `Ok(空)` → **绿**；
+    /// - CI runner（ubuntu-latest）**不带 CUPS 客户端** → `Command::new("lpstat")`
+    ///   报 `ENOENT` → `Err` → 断言失败 → **红**。
+    ///
+    /// 真正的契约是**调用方降级**（`list_printers_handler` 里那句 `unwrap_or_default()`），
+    /// 它对「装了 CUPS 但没配队列」和「压根没装 CUPS」**两种情形都成立**。
+    /// 所以这里断言的是**降级结果**，不是 `list_printers()` 的 Ok-ness ——
+    /// 后者是**宿主环境**的属性，不是代码的契约。
     #[test]
     fn list_printers_degrades_to_empty() {
-        match list_printers() {
-            Ok(v) => assert!(v.is_empty(), "本机未配置 CUPS 队列，应返回空列表"),
-            Err(e) => panic!("未配置队列不算错误: {}", e),
+        // ① 「没装 CUPS」这一路（= CI 的真实情形）：命令不存在必须返回 Err，
+        //    而**不能** panic —— 降级是调用方的责任。这条**不依赖宿主**，确定性地绿。
+        let e = run_cups("__no_such_cups_tool__", &["-a"])
+            .expect_err("命令不存在时必须返回 Err，不能假装成功");
+        assert!(
+            e.contains("__no_such_cups_tool__"),
+            "错误里要带上是哪条命令失败了：{e}"
+        );
+
+        // ② 降级之后必须是「一个结构自洽的列表」，绝不能 panic。
+        //    两种宿主情形都收敛到这里：没装 CUPS → `Err` → 降级为空；
+        //    装了 CUPS 但没配队列 → `Ok(空)`。
+        //    （若本机**确实配了打印机**，`degraded` 非空是正常的 —— 所以这里只钉字段自洽，
+        //     不断言「一定为空」；那才是原版那条假绿。）
+        let degraded = list_printers().unwrap_or_default();
+        for p in &degraded {
+            assert!(!p.name.is_empty(), "打印机名不能为空");
+            assert!(p.default_dpi > 0, "defaultDpi 必须 > 0（前端的安全默认依赖它）");
         }
     }
 }
