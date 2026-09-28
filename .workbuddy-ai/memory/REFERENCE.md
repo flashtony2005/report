@@ -1148,7 +1148,8 @@ spec：openprint 70 个 · designer-react 42 个。
 | 4 | `bash scripts/ts-project-check.sh`（designer-react） | 18s |
 | 5 | `bash scripts/ts-project-check.sh openprint` | 6s |
 | 6 | `cargo test --bin print-server` | 4s 暖 / **1m33s 冷编译** |
-| 7 | `bash scripts/ts-test-designer.sh grid-report-`（jsdom，**串行**） | **145s** |
+| 7 | `bash scripts/ts-test-designer.sh grid-report-`（jsdom，**串行**） | **185s**（实测；浮动） |
+| 8 | `bash scripts/ts-test-openprint.sh`（引擎层，openprint 自己的 vitest） | **137s**（实测；浮动） |
 
 **第 7 道是 2026-09-26 补的，补的是真缺口**：`designer-react` 有 43 spec / 375 用例，
 而在此之前**没有任何脚本跑它们**（`ts-test.sh` 只覆盖 `openprint/src/report/*.ts`）→
@@ -1156,8 +1157,10 @@ spec：openprint 70 个 · designer-react 42 个。
 **⚠️ `--no-file-parallelism` 是正确性要求不是性能选项**：默认文件级并行下
 **16 失败 / 359 通过**，同样的文件**单独跑 4/4 全绿**，串行 **375/375 全绿**。
 失败形态 `Test timed out` / `expected '' to contain …` = 渲染没跑完就判死，**不是真缺陷**。
-**已知缺口**：第 7 道带 `grid-report-` 过滤（12 文件 / 142 用例），
+**已知缺口**：第 7 道带 `grid-report-` 过滤（**12 文件 / 151 用例**，2026-09-28 实测），
 另外 **32 个 spec 仍不在聚合跑器里**（那 346s 太贵）。
+⚠️ 这个「12 文件 / N 用例」的 N **漂过两次**（142 → 144 → 151），
+每次都是加了用例没改注释 —— 所以别在注释里写会漂的数，或写的时候顺手实测一遍。
 
 **退出码三态（这是本次最重要的设计点）**：
 `0 通过` / `1 失败` / **`2 没跑成`（环境缺 tsc/vitest/node/cargo，根本没检查）**。
@@ -1654,10 +1657,70 @@ V=abc; echo "测试 ${V}）"    # ✓
 - **双 lockfile**：两个 `package-lock.json` 都是 `lockfileVersion 3`，`node_modules` 里有
   `.package-lock.json`、**没有** pnpm 的 `.modules.yaml` → **npm 才是真包管理器**，
   `openprint/pnpm-lock.yaml` 是**遗留物**（清理留给用户）。
-- **`openprint` 是「配了但没接」**：`vitest.config.ts` 的 include 在，`package.json`
-  里**没有 `test` 脚本** → 又一个 §2c 形态；**CI 不修这个**（「没接」不算失败）。
+- ~~**`openprint` 是「配了但没接」**：`package.json` 里**没有 `test` 脚本** → 又一个 §2c 形态；
+  **CI 不修这个**（「没接」不算失败）。~~
+  **← 2026-09-28 更正，而且我当时的判断错得很具体。** 补上 `test` 脚本后才发现：
+  缺的不是一个脚本名，是**整个引擎层的 67 个 spec / 约 676 条用例没有任何跑器**
+  —— 而第 7 道闸的注释当时还写着「那批由 `ts-test.sh` 跑」（**那句话是错的**，
+  `ts-test.sh` 只覆盖 `openprint/src/report/` 3 个文件）。
+  「配好了没接线…不修」这个判断，把一个**大缺口**读成了**小事**。见 §二十一.14。
 - 仓库级 `.cargo/config.toml` 与 `rust-toolchain` **都不存在** → 本机
   `target-dir=/Users/lushaohui/.cargo/target` 是**用户级**覆盖，CI 走默认 `print-server/target`。
+
+---
+
+### §二十一.14 第 3 档已实施：把闸门搬回该在的地方（2026-09-28）
+
+（详情：`架构体检-不足与改进方案.md` §11；方法论：skill `silent-failure-hunt` §2d/§2e。）
+
+**五条里最重要的一条是第 3 条挖出来的**：`openprint` 没有 `test` 脚本**不是**「小事」——
+它是**整个引擎层没有跑器**。判据：`ts-test-designer.sh` 的 `--exclude '../openprint/src/**'`
+注释说「那批由 `ts-test.sh` 跑」，而 `ts-test.sh` 的 `SRC_DIR` 是
+`$ROOT/openprint/src/report`（**3 个**文件）→ **67 个 spec / 约 676 条用例一条闸都不跑**，
+`check-all.sh` 照样全绿。**第 2 条「给 4 个永跑的 spec 一个归宿」被这条推翻**：
+它们只是**没有跑器**，闸 8 一上就全绿（13 用例），**不用删、不用归档**。
+
+新增 **闸 8 `scripts/ts-test-openprint.sh`** = `cd openprint && npm test`
+（= openprint **自己**的 vitest，**70 文件 / 915 用例**）。闸数 7 → **8**。
+⚠️ **必须在 `openprint/` 目录下跑** —— 契约录制器的 `GOLDEN` 按 `process.cwd()` 解析。
+
+**顺带修的三个「宿主相关」**（都是「本机绿 ≠ 别人机器绿」同族）：
+① `ts-test.sh` 里两条 `/Users/lushaohui/project/ontology*/…` 硬编码候选 → 删掉
+（实测本仓两条候选**都**装着 `vitest.mjs`，那两条从来只是冗余，留着会**静默挑一个别人机器上没有的目录**）；
+② 录制器**不再静默重录**（见下）；③ 第 3 条那句**错注释**改成「由闸 8 跑」并写明教训。
+
+**录制器不再「缺失就自动重建」**（`designer-contract.spec.ts`）：原代码
+`if (!existsSync(GOLDEN)) { writeFileSync(…); return }` → golden 一缺就**重录并通过**，
+契约从「冻结在 `8ced46b`」退化成「当前代码自证」，**退出码还是 0**。
+改成：默认**失败**并打印两条恢复路径（`git checkout 8ced46b -- <golden>` / `npm run test:record`）。
+**注入四条全做**：① 基线通过且逐字节未改 · ② **移走 golden 不设开关 → 失败(1)且未重录**（核心）
+· ③ 移走 + `DESIGNER_CONTRACT_RECORD=1` → 通过并录制 · ④ 还原后 sha256 一致。
+
+#### 成功路径也留痕：`::notice::`（同日的后续）
+
+**起因**：闸 8 挂上 CI 后 run #6 绿了，但 step 耗时**反而**从 186s 掉到 165s。
+`job success` **结构上**不携带「跑了几道闸」，job log 又要 admin
+⇒ **「全绿」在 API 侧不可证伪**（§10.11 的诊断通道只在**红**时说话，只解决了一半）。
+
+- `check-all.sh` 退出码为 0 且在 Actions 上时发 `::notice::`，正文 = 闸数 + 各道耗时 + 总计。
+  新增 `GATE_DETAIL[]` 记**每道**闸（原先只记失败的）。
+- ⚠️ 正文**不能**复用带 `\033[1m` 的标题格式（会漏进 annotation）；正文过 `gh_escape`（`%` → `%25`）。
+- **顺手修一个只在 CI 上发生的泄漏**：`run()` 给每道闸建 `mktemp` 日志，
+  而清理只遍历 `FAIL_DETAIL` ⇒ **每个绿闸留一个临时文件**。
+  改 `ALL_LOGS[]` 全清（实测注入后 `/tmp/check-all.*` 22 → 22，不再增长）。
+- `verify-ci-workflow.py` 的基线断言原本只是「没有 `::error::`」= **空断言**（基线本来就绿）。
+  补成「恰好一条 `::notice::` 且正文含『跑完 2 道闸』」。
+- **注入两条，都变红、逐字节还原（sha256 `bb4ae2bf…`）**：
+  ① notice 通道改名 → 基线 ✗；② 保留 notice 但正文不再含那个数 → 基线 ✗。
+
+> **可迁移判据：「耗时对不上」是歧义，不是证据。**
+> 正确反应是「**把信息写到我读得到的地方去**」，不是「大概是负载吧」。
+> 与 §二十一.13 那条（「我这条命令读不到」≠「这件事读不到」）是同一个动作。
+
+**实测耗时**：全量 8 道闸 **363s**（1/3/6/24/6/1/**185**/**137**s）。
+⚠️ 闸 6 只花 1s 是**已编译**的增量结果，CI 冷启动要重编 Rust，别拿它估 CI。
+⚠️ 本文档里「12 文件 / 142 用例 / ~145s」这类数**漂过两次**（142→144→151，145s→185s）——
+**注释里的数字是最容易漂的东西**，改完顺手实测一遍。
 
 ---
 
@@ -2003,7 +2066,7 @@ TS 镜像 `grid-report.ts` 必须同步（`mirror-check.py` 盯着 `RenderRespon
 
 **所以 `check-all.sh` 不能加全量 `test:app`**（346s 太贵），
 但**「改了弹窗没有任何闸」这件事已经堵上了**：新增 `scripts/ts-test-designer.sh`，
-作为 `check-all.sh` **第 7 道闸**（带 `grid-report-` 过滤 = 12 文件 / 142 用例 / ~145s；
+作为 `check-all.sh` **第 7 道闸**（带 `grid-report-` 过滤 = 12 文件 / **151** 用例 / ~185s；
 无参数 = 全量 43 文件）。`ts-test.sh` 覆盖不到 modal —— 它只跑
 `openprint/src/report/*.ts`（node 环境、无 DOM），modal 要 jsdom + antd + React。
 

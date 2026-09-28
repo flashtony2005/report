@@ -80,7 +80,7 @@ for a in "$@"; do
   4. bash    scripts/ts-project-check.sh               整项目类型检查 · designer-react
   5. bash    scripts/ts-project-check.sh openprint     整项目类型检查 · openprint（vue-tsc --build）
   6. cargo   test --bin print-server           Rust 单测
-  7. bash    scripts/ts-test-designer.sh grid-report-  设计器 UI 单测（jsdom，串行，12 文件 / 151 用例，~160s）
+  7. bash    scripts/ts-test-designer.sh grid-report-  设计器 UI 单测（jsdom，串行，12 文件 / 151 用例，~185s）
   8. bash    scripts/ts-test-openprint.sh      引擎层单测（openprint 自己的 vitest，70 文件 / 915 用例，~145s）
 --fast 只跑 1、2。
 
@@ -124,7 +124,7 @@ T_START=$SECONDS
 #      「有东西失败了」—— 读不到是哪个闸、为什么。那正是本项目最讨厌的那种
 #      「闸在跑、但结论不可用」。
 #
-# 只在 Actions 上启用：本地保持**实时流式**输出（缓冲会让 160s 的 UI 闸全程无输出）。
+# 只在 Actions 上启用：本地保持**实时流式**输出（缓冲会让 185s 的 UI 闸全程无输出）。
 GH_ANNOTATE=0
 if [ "${GITHUB_ACTIONS:-}" = "true" ]; then GH_ANNOTATE=1; fi
 
@@ -219,7 +219,8 @@ fi
 
 # ---------------------------------------------------- 7. 设计器 UI 单测（最贵，排在最后）
 
-# 排在最后是因为它 **~160s**，比前面几道加起来还贵（「便宜的排前面」那条规则的直接后果）。
+# 排在最后是因为它 **~185s**（本机实测；耗时随负载浮动，别当回归判据），
+# 比前面几道加起来还贵（「便宜的排前面」那条规则的直接后果）。
 # 只跑 `grid-report-`：整套 designer-react 要 ~346s，见 ts-test-designer.sh 顶部。
 run "7/8 ts-test-designer（报表弹窗 spec）" \
   bash scripts/ts-test-designer.sh grid-report-
