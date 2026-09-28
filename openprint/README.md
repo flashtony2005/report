@@ -275,6 +275,23 @@ pnpm build
 pnpm preview
 ```
 
+> ⚠️ **上面这段是上游 openprint 项目的工作流；本仓库实际用的是 `npm`，不是 `pnpm`。**
+>
+> 证据（2026-09-28 实测）：`openprint/package-lock.json` 与 `node_modules/.package-lock.json`
+> 都在，而 pnpm 的标记 `node_modules/.modules.yaml` **不在** ⇒ 真正解析依赖的是 npm。
+> `openprint/pnpm-lock.yaml` 是**遗留物**，与 `package-lock.json` 并存会让人分不清哪个权威。
+>
+> **别照着 `pnpm install` 装** —— 那会解析出**另一套**版本，而 CI 用的是 `npm ci`。
+> 本仓库的正确入口：
+>
+> ```bash
+> cd openprint && npm ci    # 注意在 openprint/ 目录下跑（契约 golden 按 cwd 解析）
+> ```
+>
+> （`npm ci` 要求 `package-lock.json` 与 `package.json` **同步**，不同步会**直接失败** ——
+> 这是好事：不同步说明 lock 该更新了，静默用一套漂了的依赖才是坏事。）
+> 这两个 lockfile 该留哪个、`pnpm` 段该不该整体改写，是**需要人拍板**的事，这里只标注事实。
+
 ### 测试与覆盖边界
 
 本仓库有**四条**跑测试的入口，覆盖范围**互不相同**。别把任意一条的「绿」读成「全绿」。
