@@ -27,7 +27,9 @@
     "build-only": "vite build",
     "build:sdk": "vite build --config vite.sdk.config.ts && vue-tsc -p tsconfig.sdk.json",
     "type-check": "vue-tsc --build",
-    "format": "prettier --write --experimental-cli src/"
+    "format": "prettier --write --experimental-cli src/",
+    "test": "vitest run",
+    "test:record": "DESIGNER_CONTRACT_RECORD=1 vitest run src/design/stores/designer-contract.spec.ts"
   },
   "dependencies": {
     "@bwip-js/generic": "^4.11.2",

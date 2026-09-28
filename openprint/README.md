@@ -275,6 +275,47 @@ pnpm build
 pnpm preview
 ```
 
+### 测试与覆盖边界
+
+本仓库有**四条**跑测试的入口，覆盖范围**互不相同**。别把任意一条的「绿」读成「全绿」。
+
+| 入口 | 跑什么 | 覆盖边界 |
+| --- | --- | --- |
+| `cd openprint && npm test` | 本包自己的 vitest（`vitest.config.ts`） | 本包**全部 70 个 spec / 915 用例**。引擎层的**权威**闸。 |
+| `cd designer-react && npx vitest run` | React 应用自己的 vitest | designer-react 自己的 spec + `../openprint/src` 的 spec，但**排除** 4 个 Vue 状态层 spec。 |
+| `bash scripts/ts-test.sh` | 借本仓 `node_modules` 的 vitest，把 `openprint/src/report/*.ts` **拷到临时目录**跑 | **只有** `openprint/src/report/`（3 文件 / 239 用例）。 |
+| `bash scripts/check-all.sh` | 以上这些 + 类型检查 + Rust 单测，共 **8 道闸** | 用 `bash scripts/check-all.sh --list` 看完整清单。 |
+
+**⚠️ 「绿」的边界（别读多了）**
+
+- `scripts/ts-test.sh` 的绿**只**说明 `openprint/src/report/*.ts` 这几个纯函数对。
+  它跑在**临时目录**、用手写的**最简 vitest 配置**（没有真 tsconfig）——
+  是真实环境的一个**近似物**。近似物会漂，所以它的绿**不能**外推到整个引擎层。
+- 「引擎层的 spec 有没有被跑到」这件事**曾经**取决于 `designer-react` 的配置：
+  谁 reorganize 一下 designer-react，整层覆盖就静默消失，而退出码照样 0。
+  现在 `openprint` 有自己的 `test`（`check-all.sh` 闸 8），这条依赖已经断掉。
+- `scripts/ts-test-designer.sh` **默认带 `--exclude '../openprint/src/**'`**；
+  不带过滤参数时它跑 designer-react 的全部 spec，但**必须串行**
+  （`--no-file-parallelism` 是**正确性**要求，不是性能选项 —— 见该脚本顶部）。
+
+**契约 golden 是冻结的**
+
+`src/contracts/golden/designer-v1.json`（49012 B）自初始化提交 `8ced46b` 起**未被修改过**，
+它是「React 版状态层与 Vue 版行为等价」这个结论的**唯一基准**。
+
+- 跑测试**不会**改它。录制器（`src/design/stores/designer-contract.spec.ts`）
+  默认只校验；golden 缺失时**直接失败**，**不会**偷偷重录。
+- 想**恢复**它（不改行为）→ 从 git 取回，别重录：
+  `git checkout 8ced46b -- openprint/src/contracts/golden/designer-v1.json`
+- 确实要**合法变更行为**因而要重录 → 必须显式，且必须在 `openprint/` 下跑
+  （路径按 `process.cwd()` 解析）：
+
+  ```bash
+  cd openprint && npm run test:record
+  ```
+
+  **重录 = 取消冻结**：之后它只证明「当前 Vue 代码自证」，不再证明任何历史行为。
+
 ### 环境要求
 
 - Node.js >= 22.18.0

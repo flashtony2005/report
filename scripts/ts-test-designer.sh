@@ -81,8 +81,15 @@ export NODE_OPTIONS="${NODE_OPTIONS:-}${NODE_OPTIONS_EXTRA}"
 
 cd "$DESIGNER" || exit 2
 
-# `--exclude ../openprint/src/**`：那批由 ts-test.sh 用纯 node 环境跑，
-# 这里再来一遍是重复劳动（而且那份的 import 图更重）。
+# `--exclude ../openprint/src/**`：那批现在由**闸 8 `ts-test-openprint.sh`** 跑
+# （openprint 自己的 vitest，全部 70 个 spec）—— 这里再来一遍是重复劳动
+# （而且那份的 import 图更重）。
+#
+# ⚠️ 2026-09-28 更正：这里原本写的是「那批由 ts-test.sh 用纯 node 环境跑」——
+# **那句话是错的。** `ts-test.sh` 只覆盖 `openprint/src/report/`（**3 个**文件），
+# 于是 openprint 的 **67 个 spec / 约 676 条用例一条闸都不跑**，
+# 而 `check-all.sh` 照样全绿。一个「**闸是绿的、但没有跑器**」被一句错注释掩护了很久。
+# 教训：**在注释里给别的闸派活时，先去核那个闸的真实覆盖范围**，别凭印象。
 # 位置参数是 vitest 的**文件名过滤**，空着就是全部。
 "$NODE_BIN" node_modules/.bin/vitest run \
   --exclude '../openprint/src/**' \

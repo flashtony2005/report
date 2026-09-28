@@ -81,6 +81,7 @@ for a in "$@"; do
   5. bash    scripts/ts-project-check.sh openprint     整项目类型检查 · openprint（vue-tsc --build）
   6. cargo   test --bin print-server           Rust 单测
   7. bash    scripts/ts-test-designer.sh grid-report-  设计器 UI 单测（jsdom，串行，12 文件 / 151 用例，~160s）
+  8. bash    scripts/ts-test-openprint.sh      引擎层单测（openprint 自己的 vitest，70 文件 / 915 用例，~145s）
 --fast 只跑 1、2。
 
 第 7 道**带过滤参数**（`grid-report-`，12 文件 / 151 用例），不是整套 designer-react：
@@ -89,6 +90,12 @@ for a in "$@"; do
 要全量就自己跑 `bash scripts/ts-test-designer.sh`（无参数 = 全部）。
 ⚠️ 这是**已知的覆盖缺口**：`designer-react` 另外那 32 个 spec 文件（canvas / panels /
 toolbar / stores…）仍然不在本脚本里 —— 不是「没必要」，是那 346s 太贵。
+
+第 8 道补上的是**另一个**缺口（2026-09-28 补）：在此之前 openprint 的引擎层 spec
+只有 `src/report/` 那 3 个被跑到（闸 3），其余 **67 个 / 约 676 条用例一条闸都没有** ——
+而闸 7 当时还写着「那批由 ts-test.sh 用纯 node 环境跑」（**那句话是错的**）。
+现在闸 8 用 openprint **自己**的 vitest 跑全部 70 个 spec（915 用例），
+引擎层的闸从此长在引擎包里，不再借 designer-react 的配置。
 EOT
       exit 0
       ;;
@@ -174,30 +181,30 @@ printf '\033[1mcheck-all\033[0m（%s）\n' "$ROOT"
 # 唯一能发现 Rust↔TS 字段/清单漂移的闸。排第一是因为它亚秒级且零依赖 ——
 # 它红了多半意味着后面几个小时的检查都白跑。
 if need python3 "mirror-check.py"; then
-  run "1/7 mirror-check（Rust↔TS 契约：形状 + 语义）" python3 scripts/mirror-check.py
+  run "1/8 mirror-check（Rust↔TS 契约：形状 + 语义）" python3 scripts/mirror-check.py
 fi
 
 # ---------------------------------------------------- 2. 逐文件类型检查（快）
 
-run "2/7 ts-check（逐文件类型）" bash scripts/ts-check.sh
+run "2/8 ts-check（逐文件类型）" bash scripts/ts-check.sh
 
 if [ "$FAST" = 1 ]; then
-  printf '\n（--fast：跳过 3~7）\n'
+  printf '\n（--fast：跳过 3~8）\n'
 else
 
 # ---------------------------------------------------- 3. 前端纯函数单测
 
-run "3/7 ts-test（前端纯函数单测）" bash scripts/ts-test.sh
+run "3/8 ts-test（前端纯函数单测）" bash scripts/ts-test.sh
 
 # ---------------------------------------------------- 4/5. 整项目类型检查（慢）
 
-run "4/7 ts-project-check（designer-react）" bash scripts/ts-project-check.sh
-run "5/7 ts-project-check（openprint）"      bash scripts/ts-project-check.sh openprint
+run "4/8 ts-project-check（designer-react）" bash scripts/ts-project-check.sh
+run "5/8 ts-project-check（openprint）"      bash scripts/ts-project-check.sh openprint
 
 # ---------------------------------------------------- 6. Rust 单测
 
 if need cargo "cargo test"; then
-  run "6/7 cargo test（print-server）" \
+  run "6/8 cargo test（print-server）" \
     cargo test --manifest-path print-server/Cargo.toml --bin print-server
 fi
 
@@ -205,8 +212,20 @@ fi
 
 # 排在最后是因为它 **~160s**，比前面几道加起来还贵（「便宜的排前面」那条规则的直接后果）。
 # 只跑 `grid-report-`：整套 designer-react 要 ~346s，见 ts-test-designer.sh 顶部。
-run "7/7 ts-test-designer（报表弹窗 spec）" \
+run "7/8 ts-test-designer（报表弹窗 spec）" \
   bash scripts/ts-test-designer.sh grid-report-
+
+# ---------------------------------------------------- 8. 引擎层单测（最贵，排最后）
+
+# 2026-09-28 补：在此之前**没有任何一道闸**跑 openprint 的引擎层 spec ——
+# 闸 3 只覆盖 `openprint/src/report/`（3 个文件），闸 7 又显式
+# `--exclude '../openprint/src/**'`，于是 70 个 spec 里有 67 个（约 676 条用例）
+# **一条闸都不跑**，而本脚本照样全绿。又一个「闸是绿的、但没有跑器」。
+# 用 openprint **自己**的 vitest（= `cd openprint && npm test`），闸长在引擎包里。
+# 它和闸 7 同量级（实测 145s；独立跑见过 240s —— 耗时随负载浮动，
+# 见 ts-test-designer.sh 顶部那条「别拿耗时当回归判据」），所以也排最后。
+# 详见 ts-test-openprint.sh 顶部。
+run "8/8 ts-test-openprint（引擎层单测）" bash scripts/ts-test-openprint.sh
 
 fi
 

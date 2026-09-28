@@ -4,7 +4,7 @@ name: gates
 #
 # 本项目反复吃过同一个亏 ——「闸是绿的、但没人跑」比「红的闸」更坏，
 # 因为绿会**主动**产出空头的信心（`架构体检-不足与改进方案.md` §2c）。
-# 2026-09-27 之前，7 道闸 + 37 个验证脚本全靠手敲，没有任何 CI。
+# 2026-09-27 之前，这些闸 + 37 个验证脚本全靠手敲，没有任何 CI。
 #
 # 这里跑的就是本地那条命令 `bash scripts/check-all.sh` —— **同一条，不另写 CI 版**，
 # 免得 CI 与本地各跑各的、慢慢漂开（那本身就是一种静默失败）。
@@ -13,7 +13,8 @@ name: gates
 # ⚠️ 覆盖边界（别把这条 CI 读成「全都验过了」）
 #
 #   覆盖 = `check-all.sh` 的覆盖：mirror-check（Rust↔TS 契约）· ts-check ·
-#          ts-test（前端纯函数）· ts-project-check ×2 · cargo test · 设计器 UI 单测。
+#          ts-test（前端纯函数）· ts-project-check ×2 · cargo test ·
+#          设计器 UI 单测（只 `grid-report-*`）· **引擎层单测（openprint 全部 70 个 spec）**。
 #
 #   **不覆盖** 20 个 `fault-inject-*.py` 与 17 个 `verify-*.py`：前者要改源码再还原，
 #   后者要起真服务（还有的要 sqlite / postgres / odbc 驱动）。它们仍然只能按需手跑。
@@ -32,6 +33,11 @@ name: gates
 #     · 抬高 vitest 的 `testTimeout`（本仓多数用例是毫秒级，超时值留得很紧）；
 #     · 或把第 7 道拆成独立 job / 只在 main 上跑。
 #   在这条被验证之前，别把「CI 红了」一律当成代码坏了。
+#
+# ⚠️ 第 8 道（引擎层单测，2026-09-28 补）与第 7 道同量级：本机实测 145s
+#   （70 文件 / 915 用例；独立跑见过 240s，随负载浮动）。它排在最后，
+#   所以前面任一道红了它就不会跑。
+#   它本身不依赖宿主（不用 CUPS / 不用外网），失败就是真失败。
 # ────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -46,9 +52,9 @@ permissions:
 
 jobs:
   gates:
-    name: check-all（7 道闸）
+    name: check-all（8 道闸）
     runs-on: ubuntu-latest
-    # 冷启动要编译整个 Rust 工程 + 装两份 node_modules，给足余量。
+    # 冷启动要编译整个 Rust 工程 + 装两份 node_modules，再加上第 7/8 道那 ~330s，给足余量。
     timeout-minutes: 30
 
     steps:

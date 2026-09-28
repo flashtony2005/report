@@ -32,28 +32,34 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/scripts/node-bin.sh"
 NODE_BIN="$(require_node)"
 
-# 借用的 node_modules：挑第一个真的装着 vitest 的。
+# 借用的 node_modules：**只扫本仓**。仓库外的绝对路径一律不自动用。
 #
-# **本仓自己的排在最前**，兄弟项目只做兜底 —— 两个理由：
-#   1. CI（ubuntu）上那几个兄弟项目的路径**根本不存在**，旧写法会让闸直接报「没跑成」；
-#      而 CI 上 `npm ci` 之后本仓一定有 `node_modules`。
-#   2. 借来的那份版本不受本仓 `package-lock.json` 约束，跑出什么结论不确定。
-# 并**把用的是哪一份打出来** —— 「vitest 到底哪来的」不该是隐式的。
+# ⚠️ 2026-09-28：这里原本还有两条 `/Users/lushaohui/project/ontology*/...` 硬编码候选。
+# 删掉它们的理由 —— 它们是**宿主相关**的依赖：本机存在，别人机器（含 CI）不存在。
+# 实测本仓两条候选（designer-react / openprint）都装着 `vitest/vitest.mjs`，
+# 所以那两条从来只是「本机恰好也能用」的冗余；而它们留在候选里，
+# 会让脚本**静默挑一个别人机器上根本不存在的目录** ——
+# 正是「本机绿、CI 红」那类问题的温床（同类问题本仓已踩两次）。
+# 真需要借用外部依赖时，**显式**给 `BORROWED_MODULES`，别让它自己猜。
 BORROWED="${BORROWED_MODULES:-}"
 if [[ -z "$BORROWED" ]]; then
   for cand in \
     "$ROOT/designer-react/node_modules" \
-    "$ROOT/openprint/node_modules" \
-    /Users/lushaohui/project/ontology/web/node_modules \
-    /Users/lushaohui/project/ontology2/ui/node_modules
+    "$ROOT/openprint/node_modules"
   do
     if [[ -x "$cand/vitest/vitest.mjs" ]]; then BORROWED="$cand"; break; fi
   done
 fi
 
 if [[ -z "$BORROWED" || ! -x "$BORROWED/vitest/vitest.mjs" ]]; then
-  echo "找不到可借用的 vitest。设 BORROWED_MODULES=<含 vitest 的 node_modules 绝对路径> 后重试。" >&2
-  echo "（本机沙箱装不出 node_modules，只能借；CI 上 npm ci 之后本仓自带那份就在。）" >&2
+  cat >&2 <<'MSG'
+找不到可用的 vitest。本脚本**只扫本仓**这两处：
+  designer-react/node_modules · openprint/node_modules
+都没有 → 说明依赖没装（CI 上 `npm ci` 之后本仓自带那份就在）。
+
+**本机沙箱装不出 node_modules 时**，显式指一份现成的 —— 脚本不会自己去猜外部路径：
+  BORROWED_MODULES=/绝对路径/node_modules bash scripts/ts-test.sh
+MSG
   exit 2
 fi
 

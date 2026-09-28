@@ -24,7 +24,21 @@ describe('designer 状态层 · 跨框架契约（React 端 vs Vue golden）', (
   it('golden fixture 必须已由 Vue 端录制', () => {
     expect(
       existsSync(GOLDEN),
-      `golden 不存在：${GOLDEN}\n请先在 openprint 项目跑：npx vitest run src/design/stores/designer-contract.spec.ts`,
+      `golden 不存在：${GOLDEN}\n` +
+        `\n` +
+        `它是**冻结在 8ced46b** 的跨框架契约基准：Vue 端录制，React 端只读比对。\n` +
+        `「React 与 Vue 行为等价」这个结论，全靠它。\n` +
+        `\n` +
+        `⚠️ **重新录制 = 取消冻结** —— 录完它只证明「当前 Vue 代码自证」，\n` +
+        `不再证明任何历史行为，而退出码照样是 0。所以录制必须**显式**要求。\n` +
+        `\n` +
+        `① 只是想恢复这份基准（**不改行为**）→ 从 git 取回，别重录：\n` +
+        `     git checkout 8ced46b -- openprint/src/contracts/golden/designer-v1.json\n` +
+        `\n` +
+        `② 确实要合法变更行为、因而要重录 → 必须**在 openprint/ 目录下**跑：\n` +
+        `     cd openprint && DESIGNER_CONTRACT_RECORD=1 npx vitest run src/design/stores/designer-contract.spec.ts\n` +
+        `   为什么强调 cwd：录制器里的 GOLDEN 按 process.cwd() 解析 ——\n` +
+        `   从别的目录跑会录出一份**副本**，并让 Vue 侧的断言退化成「自比自」。`,
     ).toBe(true)
   })
 
