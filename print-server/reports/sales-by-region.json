@@ -1,0 +1,489 @@
+{
+  "format": "openprint.report",
+  "version": 1,
+  "id": "sales-by-region",
+  "name": "地区销售汇总",
+  "description": "",
+  "updatedAt": "2026-09-13T02:24:57Z",
+  "template": {
+    "sheets": [
+      {
+        "name": "销售分组汇总",
+        "rows": [
+          {
+            "cells": [
+              {
+                "pos": null,
+                "value": "2026 年销售分组汇总表",
+                "model": null,
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": true
+              }
+            ]
+          },
+          {
+            "cells": [
+              {
+                "pos": null,
+                "value": "地区",
+                "model": null,
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": "城市",
+                "model": null,
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": "销售员",
+                "model": null,
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": "销售金额(元)",
+                "model": null,
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              }
+            ]
+          },
+          {
+            "cells": [
+              {
+                "pos": null,
+                "value": null,
+                "model": {
+                  "ds": "ds1",
+                  "field": "region",
+                  "agg": null,
+                  "expand_type": "r",
+                  "row_parent": null,
+                  "col_parent": null,
+                  "col_after": null,
+                  "value_expr": null,
+                  "expand_expr": null,
+                  "expand_min_count": null,
+                  "expand_max_count": null,
+                  "keep_expand_empty": null,
+                  "format": null,
+                  "format_expr": null,
+                  "dict": null,
+                  "row_test_expr": null,
+                  "col_test_expr": null,
+                  "export_formula": null
+                },
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": null,
+                "model": {
+                  "ds": "ds1",
+                  "field": "city",
+                  "agg": null,
+                  "expand_type": "r",
+                  "row_parent": "A3",
+                  "col_parent": null,
+                  "col_after": null,
+                  "value_expr": null,
+                  "expand_expr": null,
+                  "expand_min_count": null,
+                  "expand_max_count": null,
+                  "keep_expand_empty": null,
+                  "format": null,
+                  "format_expr": null,
+                  "dict": null,
+                  "row_test_expr": null,
+                  "col_test_expr": null,
+                  "export_formula": null
+                },
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": null,
+                "model": {
+                  "ds": "ds1",
+                  "field": "salesman",
+                  "agg": null,
+                  "expand_type": "r",
+                  "row_parent": "B3",
+                  "col_parent": null,
+                  "col_after": null,
+                  "value_expr": null,
+                  "expand_expr": null,
+                  "expand_min_count": null,
+                  "expand_max_count": null,
+                  "keep_expand_empty": null,
+                  "format": null,
+                  "format_expr": null,
+                  "dict": null,
+                  "row_test_expr": null,
+                  "col_test_expr": null,
+                  "export_formula": null
+                },
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": null,
+                "model": {
+                  "ds": "ds1",
+                  "field": "amount",
+                  "agg": null,
+                  "expand_type": null,
+                  "row_parent": "C3",
+                  "col_parent": null,
+                  "col_after": null,
+                  "value_expr": null,
+                  "expand_expr": null,
+                  "expand_min_count": null,
+                  "expand_max_count": null,
+                  "keep_expand_empty": null,
+                  "format": null,
+                  "format_expr": null,
+                  "dict": null,
+                  "row_test_expr": null,
+                  "col_test_expr": null,
+                  "export_formula": null
+                },
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              }
+            ]
+          },
+          {
+            "cells": [
+              {
+                "pos": null,
+                "value": null,
+                "model": null,
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": "城市小计",
+                "model": {
+                  "ds": "ds1",
+                  "field": null,
+                  "agg": null,
+                  "expand_type": null,
+                  "row_parent": "B3",
+                  "col_parent": null,
+                  "col_after": null,
+                  "value_expr": null,
+                  "expand_expr": null,
+                  "expand_min_count": null,
+                  "expand_max_count": null,
+                  "keep_expand_empty": null,
+                  "format": null,
+                  "format_expr": null,
+                  "dict": null,
+                  "row_test_expr": null,
+                  "col_test_expr": null,
+                  "export_formula": null
+                },
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": null,
+                "model": null,
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": null,
+                "model": {
+                  "ds": "ds1",
+                  "field": null,
+                  "agg": null,
+                  "expand_type": null,
+                  "row_parent": "B3",
+                  "col_parent": null,
+                  "col_after": null,
+                  "value_expr": "D3[B3:+0].sum()",
+                  "expand_expr": null,
+                  "expand_min_count": null,
+                  "expand_max_count": null,
+                  "keep_expand_empty": null,
+                  "format": null,
+                  "format_expr": null,
+                  "dict": null,
+                  "row_test_expr": null,
+                  "col_test_expr": null,
+                  "export_formula": null
+                },
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              }
+            ]
+          },
+          {
+            "cells": [
+              {
+                "pos": null,
+                "value": null,
+                "model": {
+                  "ds": "ds1",
+                  "field": null,
+                  "agg": null,
+                  "expand_type": null,
+                  "row_parent": "A3",
+                  "col_parent": null,
+                  "col_after": null,
+                  "value_expr": null,
+                  "expand_expr": null,
+                  "expand_min_count": null,
+                  "expand_max_count": null,
+                  "keep_expand_empty": null,
+                  "format": null,
+                  "format_expr": null,
+                  "dict": null,
+                  "row_test_expr": null,
+                  "col_test_expr": null,
+                  "export_formula": null
+                },
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": "地区合计",
+                "model": {
+                  "ds": "ds1",
+                  "field": null,
+                  "agg": null,
+                  "expand_type": null,
+                  "row_parent": "A3",
+                  "col_parent": null,
+                  "col_after": null,
+                  "value_expr": null,
+                  "expand_expr": null,
+                  "expand_min_count": null,
+                  "expand_max_count": null,
+                  "keep_expand_empty": null,
+                  "format": null,
+                  "format_expr": null,
+                  "dict": null,
+                  "row_test_expr": null,
+                  "col_test_expr": null,
+                  "export_formula": null
+                },
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": null,
+                "model": null,
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": null,
+                "model": {
+                  "ds": "ds1",
+                  "field": null,
+                  "agg": null,
+                  "expand_type": null,
+                  "row_parent": "A3",
+                  "col_parent": null,
+                  "col_after": null,
+                  "value_expr": "D3[A3:+0].sum()",
+                  "expand_expr": null,
+                  "expand_min_count": null,
+                  "expand_max_count": null,
+                  "keep_expand_empty": null,
+                  "format": null,
+                  "format_expr": null,
+                  "dict": null,
+                  "row_test_expr": null,
+                  "col_test_expr": null,
+                  "export_formula": null
+                },
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              }
+            ]
+          },
+          {
+            "cells": [
+              {
+                "pos": null,
+                "value": null,
+                "model": null,
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": "总计",
+                "model": null,
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": null,
+                "model": null,
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              },
+              {
+                "pos": null,
+                "value": null,
+                "model": {
+                  "ds": "ds1",
+                  "field": null,
+                  "agg": null,
+                  "expand_type": null,
+                  "row_parent": null,
+                  "col_parent": null,
+                  "col_after": null,
+                  "value_expr": "D3.sum()",
+                  "expand_expr": null,
+                  "expand_min_count": null,
+                  "expand_max_count": null,
+                  "keep_expand_empty": null,
+                  "format": null,
+                  "format_expr": null,
+                  "dict": null,
+                  "row_test_expr": null,
+                  "col_test_expr": null,
+                  "export_formula": null
+                },
+                "merge_across": 0,
+                "merge_down": 0,
+                "merge_to_end": false
+              }
+            ]
+          }
+        ],
+        "page": null
+      }
+    ],
+    "datasets": {
+      "ds1": [
+        {
+          "amount": 12000,
+          "city": "上海",
+          "region": "华东",
+          "salesman": "张三"
+        },
+        {
+          "amount": 8600,
+          "city": "上海",
+          "region": "华东",
+          "salesman": "李四"
+        },
+        {
+          "amount": 9900,
+          "city": "杭州",
+          "region": "华东",
+          "salesman": "王五"
+        },
+        {
+          "amount": 7400,
+          "city": "南京",
+          "region": "华东",
+          "salesman": "赵六"
+        },
+        {
+          "amount": 15300,
+          "city": "广州",
+          "region": "华南",
+          "salesman": "孙七"
+        },
+        {
+          "amount": 6200,
+          "city": "广州",
+          "region": "华南",
+          "salesman": "周八"
+        },
+        {
+          "amount": 18700,
+          "city": "深圳",
+          "region": "华南",
+          "salesman": "吴九"
+        },
+        {
+          "amount": 21400,
+          "city": "北京",
+          "region": "华北",
+          "salesman": "郑十"
+        },
+        {
+          "amount": 9800,
+          "city": "北京",
+          "region": "华北",
+          "salesman": "冯一"
+        },
+        {
+          "amount": 7100,
+          "city": "天津",
+          "region": "华北",
+          "salesman": "陈二"
+        }
+      ]
+    }
+  },
+  "sources": [
+    {
+      "name": "ds1",
+      "connId": null,
+      "engine": "sqlite",
+      "database": "/tmp/report-demo.db",
+      "table": "sales",
+      "fields": null,
+      "limit": null,
+      "where": "region = ?",
+      "params": [
+        "华东"
+      ]
+    }
+  ],
+  "options": {
+    "rowsPerPage": null,
+    "repeatHeaderRows": null,
+    "repeatFooterRows": null,
+    "exportFormula": null,
+    "expandMinCount": null,
+    "expandMaxCount": null,
+    "keepExpandEmpty": null,
+    "dump": null
+  }
+}

@@ -3,8 +3,19 @@
 
 ## 为什么需要这个脚本（它替代的是哪一句话）
 
-加 CI 的**唯一**目的就是让闸自己跑起来。但我（写这个 CI 的人）**证明不了
-GitHub Actions 真的会触发** —— 本机 `gh` 装了却没登录，也没法推一条分支去看结果。
+加 CI 的**唯一**目的就是让闸自己跑起来。而我（写这个 CI 的人）当时以为
+**证明不了 GitHub Actions 真的会触发** —— 本机 `gh` 装了却没登录。
+
+> **⚠️ 2026-09-28 更正：那个「证明不了」是错的。**
+> 这个仓库是 **public**，所以下面两条**裸 curl 就能读**，不需要任何 token：
+>
+> - `GET /repos/{owner}/{repo}/actions/runs` → 有没有触发、结论是什么
+> - `GET /repos/{owner}/{repo}/check-runs/{id}/annotations` → 失败原因
+>
+> **真正读不到的只有 job log 的内容**（`/actions/jobs/{id}/logs` → 403
+> 「Must have admin rights to Repository.」）。
+> ⇒ 教训：把「我这条命令做不到」当成「这件事做不到」之前，先问
+> **「是不是换一条路就能读」**。我为此多花了一轮才知道首次 CI 是红的。
 
 于是能给出的最诚实的保证是这一句：
 
@@ -14,7 +25,11 @@ GitHub Actions 真的会触发** —— 本机 `gh` 装了却没登录，也没�
 
 1. **静态校验**结构（是不是合法 workflow、有没有吞退出码、action 有没有钉版本…）；
 2. **逐条执行**那些在本地跑得动的步骤，把真实退出码报出来；
-3. **明说没验什么**（Actions 会不会触发、`npm ci` 在 ubuntu 上行不行…）。
+3. **明说没验什么**（job log 内容、`npm ci` 在 ubuntu 上行不行…）。
+
+另外它还要守住一条**可读性**要求：`check-all.sh` 必须把失败原因写成
+check-run **annotation** —— 因为那是我（以及任何没有 admin 的人）唯一读得到的通道。
+见 `annotation_channel_selftest()`。
 
 ## 为什么「不许吞退出码」是一条硬检查
 
@@ -57,6 +72,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -80,6 +96,9 @@ GATE_COMMAND = "bash scripts/check-all.sh"
 # 本地不执行、只静态校验的步骤：它们是**环境准备**，不是闸，
 # 而且会重装 node_modules（本机沙箱装不出依赖，跑了只会得到假红）。
 SKIP_LOCAL_PREFIXES = ("npm ci", "npm install")
+
+# 闸脚本里形如 `$ROOT/<相对路径>` 的引用 —— 用来查「干净检出跑不跑得起来」
+ROOT_PATH_LITERAL = re.compile(r"\$ROOT/([A-Za-z0-9_./\-]+)")
 
 
 class Unverifiable(Exception):
@@ -423,12 +442,157 @@ def fingerprint() -> str:
     return h.hexdigest()
 
 
+def _api(url: str):
+    """GET 一个公开的 GitHub API 端点（**不需要 token**）。"""
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
+                                               "User-Agent": "verify-ci-workflow"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def _repo_slug() -> str:
+    """从 `git remote get-url origin` 推 owner/repo —— 别把仓库名写死在脚本里。"""
+    out = subprocess.run(["git", "remote", "get-url", "origin"], cwd=str(ROOT),
+                         capture_output=True, text=True).stdout.strip()
+    m = re.search(r"github\.com[:/]+([^/]+)/([^/]+?)(?:\.git)?$", out)
+    if not m:
+        raise Unverifiable(f"从 origin 解析不出 owner/repo：{out!r}")
+    return f"{m.group(1)}/{m.group(2)}"
+
+
+def remote_diagnose(run_id: str | None, repo: str | None) -> int:
+    """读**远端**最近一次 CI 的结论与 annotations —— 即「CI 到底绿没绿、红在哪」。
+
+    ## 为什么这条路能走通（而 job log 走不通）
+
+    仓库是 **public**，所以下面两个端点**裸 curl 就能读**，不需要任何 token：
+
+    - `GET /repos/{o}/{r}/actions/runs` → 有没有触发、结论
+    - `GET /repos/{o}/{r}/check-runs/{id}/annotations` → 失败原因
+
+    而 **job log 正文**要 admin（`/actions/jobs/{id}/logs` → 403）。
+
+    ⇒ 这也是 `check-all.sh` 必须把失败原因写进 annotation 的原因：
+      那是**没有 admin 的人唯一读得到的通道**。
+    """
+    try:
+        slug = repo or _repo_slug()
+        if run_id:
+            run = _api(f"https://api.github.com/repos/{slug}/actions/runs/{run_id}")
+        else:
+            runs = _api(f"https://api.github.com/repos/{slug}/actions/runs?per_page=1")
+            if not runs.get("workflow_runs"):
+                print("⚠ 远端没有任何 workflow run —— 工作流可能还没被触发过。")
+                return 2
+            run = runs["workflow_runs"][0]
+    except Unverifiable as e:
+        print(f"⚠ 没跑成：{e}", file=sys.stderr)
+        return 2
+    except Exception as e:                                    # 网络/HTTP 一律算「没跑成」
+        print(f"⚠ 没跑成：读远端失败（{type(e).__name__}: {e}）", file=sys.stderr)
+        print("  （这条只依赖公开 API；失败通常是网络或速率限制，不代表 CI 红了。）", file=sys.stderr)
+        return 2
+
+    print(f"仓库：{slug}")
+    print(f"run ：#{run['run_number']} id={run['id']} sha={run['head_sha'][:8]} "
+          f"event={run['event']} 分支={run.get('head_branch')}")
+    print(f"状态：{run['status']} / 结论：{run['conclusion']}")
+    print(f"链接：{run['html_url']}")
+    if run["status"] != "completed":
+        print("\n（还没跑完 —— 过一会儿再问一次。）")
+        return 0
+
+    jobs = _api(f"https://api.github.com/repos/{slug}/actions/runs/{run['id']}/jobs")
+    for j in jobs.get("jobs", []):
+        print(f"\n作业「{j['name']}」：{j['conclusion']}")
+        for s in j.get("steps", []):
+            if s.get("conclusion") in ("failure", "cancelled", "timed_out"):
+                print(f"  ✗ 步骤 {s['number']}. {s['name']}")
+        # annotations —— **唯一**不需要 admin 就能读到的失败原因
+        try:
+            anns = _api(f"https://api.github.com/repos/{slug}/check-runs/{j['id']}/annotations")
+        except Exception as e:
+            print(f"  （读 annotations 失败：{type(e).__name__}: {e}）")
+            continue
+        errs = [a for a in anns if a.get("annotation_level") in ("failure", "error")]
+        # ⚠️ `::error::` 在 API 里的 level 是 **"failure"**，不是 "error" ——
+        #    第一版按 "error" 过滤，于是**明明有 12 条 annotation 却报「一条都没有」**，
+        #    还反过来怪 check-all.sh 没把原因写出来。**假阴性比没写更坏。**
+        if errs:
+            print(f"  annotations（{len(errs)} 条）—— 这就是「红在哪」：")
+            for a in errs:
+                print(f"    · {a.get('message','').rstrip()}")
+        elif j["conclusion"] == "failure":
+            print("  ⚠ 没有任何 error annotation —— 说明失败原因**没被写出来**，")
+            print("    只能靠有 admin 权限的人去看 job log。这正是 check-all.sh 要修的事。")
+
+    if run["conclusion"] == "success":
+        print("\n✓ 远端 CI 绿了。")
+        return 0
+    print(f"\n✗ 远端 CI：{run['conclusion']}（原因见上面的 annotation）。")
+    return 1
+
+
+def fresh_clone_checks() -> list[str]:
+    """**干净检出**跑得起来吗？—— 闸引用的文件必须在版本控制里。
+
+    ## 为什么需要这条（2026-09-28 首次 CI 跑红换来的）
+
+    `ts-test.sh` 会从 `print-server/reports/sales-by-region.json` 拷样本给 spec 用，
+    而 `print-server/reports/` **整个目录被 `.gitignore` 忽略** →
+    那个文件从来没进过版本控制。于是：
+
+    - **本机**：文件在磁盘上 → 闸绿；
+    - **干净检出（= CI）**：文件不存在 → `cp` 静默失败 → 用例抛
+      「找不到存盘报表样本」→ 闸红。
+
+    「本机能跑」和「干净检出能跑」**是两件事**，而且差别只在**别人的机器**上显形 ——
+    这类问题靠跑本地闸永远发现不了，只能靠一条专门盯它的检查。
+
+    判据：**`$ROOT/<相对路径>` 出现在闸脚本里，那个路径就必须是入库的。**
+    （跳过 `node_modules` / `target` / `dist` 这类产物目录 —— 它们本来就不入库。）
+    """
+    problems: list[str] = []
+    ignored_parts = {"node_modules", "target", "dist", "dist-sdk", "dist-ssr",
+                     "spool", ".shots", ".vite", "coverage"}
+    tracked = set(
+        subprocess.run(["git", "ls-files"], cwd=str(ROOT),
+                       capture_output=True, text=True).stdout.splitlines()
+    )
+    if not tracked:
+        return ["读不到 git 索引（不是 git 仓库？）—— 这条检查**没跑成**"]
+
+    for sh in sorted((ROOT / "scripts").glob("*.sh")):
+        text = sh.read_text(encoding="utf-8")
+        for m in ROOT_PATH_LITERAL.finditer(text):
+            rel = m.group(1).rstrip("/")
+            if set(Path(rel).parts) & ignored_parts:
+                continue
+            p = ROOT / rel
+            if p.is_file():
+                if rel not in tracked:
+                    problems.append(
+                        f"{sh.name} 引用了**未入库**的文件 `{rel}` —— "
+                        "本机能跑，干净检出里它不存在"
+                    )
+            elif p.is_dir():
+                if not any(t.startswith(rel + "/") for t in tracked):
+                    problems.append(f"{sh.name} 引用的目录 `{rel}` 里一个入库文件都没有")
+    return problems
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="校验 CI workflow，并执行它能跑的命令")
     ap.add_argument("--static", action="store_true", help="只静态校验，不执行任何命令")
     ap.add_argument("--self-test", action="store_true", help="故障注入：证明断言有牙齿")
     ap.add_argument("--fingerprint", action="store_true", help="打印被测源码树指纹后退出")
+    ap.add_argument("--remote", nargs="?", const="", metavar="RUN_ID",
+                    help="读远端最近一次（或指定 id 的）CI 的结论与 annotations（走公开 API）")
+    ap.add_argument("--repo", help="覆盖 owner/repo（默认从 git origin 推）")
     args = ap.parse_args()
+
+    if args.remote is not None:
+        return remote_diagnose(args.remote or None, args.repo)
 
     if args.fingerprint:
         print(fingerprint())
@@ -453,6 +617,16 @@ def main() -> int:
         print(f"\n静态校验：{len(problems)} 个问题")
         return 1
     print("  ✓ 结构 / 不吞退出码 / action 钉版本 / 路径存在 / 闸命令唯一且与本地相同")
+
+    # 干净检出检查：闸引用的文件必须入库（本机绿 ≠ 别人机器绿）
+    clone_problems = fresh_clone_checks()
+    if clone_problems:
+        print("\n── 1b. 干净检出 ──")
+        for p in clone_problems:
+            print(f"  ✗ {p}")
+        print("\n干净检出：跑不起来 —— 那 CI 上一定红。")
+        return 1
+    print("  ✓ 干净检出：闸引用的文件都在版本控制里")
 
     if args.static:
         print("\n（--static：不执行任何命令）")
@@ -479,9 +653,13 @@ def main() -> int:
             return 1
 
     print("\n── 3. 这个脚本**没有**验证什么（诚实标注）──")
-    print("  · GitHub Actions 是否真的会触发（本机 gh 未登录，推分支看结果也不可得）")
+    print("  · **job log 的内容**：走 API 要 admin（实测 403）。")
+    print("    ⚠️ 但「Actions 有没有触发、结论是什么」**是能验的**（2026-09-28 更正 ——")
+    print("    此前这里写「本机不可验」是错的）：仓库是 public，所以")
+    print("    `GET /repos/{o}/{r}/actions/runs` 与 `.../check-runs/{id}/annotations`")
+    print("    裸 curl 就能读，不需要 token。真正读不到的只有 log 正文。")
     print("  · `npm ci` 在 ubuntu 上能不能装成功（本机沙箱装不出依赖，没跑过）")
-    print("  · 设计器 UI 单测在 2 核 runner 上会不会因 CPU 争抢而超时（见 ci.yml 顶部）")
+    print("  · runner 的核数够不够跑设计器 UI 单测（见 ci.yml 顶部）")
     print("  · 20 个 fault-inject / 17 个 verify **不在 CI 里**，所以 CI 的保证")
     print("    不多不少就是 `check-all.sh` 的保证。")
     print("\n✓ CI 会跑的命令，就是本脚本在上面逐条跑通的那些。")

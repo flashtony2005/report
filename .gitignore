@@ -41,7 +41,16 @@ Thumbs.db
 .workbuddy/
 
 # 报表定义文件（用户数据：含本地库路径，可能含连接信息；origin 是公开仓库）
-print-server/reports/
+#
+# ⚠️ 但**内置样例必须入库**，否则干净检出里根本没有它，两处会红：
+#   ① `ts-test.sh` 会把样例拷进临时目录给 `grid-report.spec.ts` 当真实样本；
+#   ② 服务端的「内置样例」入口 / `--run-report sales-by-region` 也读它。
+#   2026-09-28 CI 首次跑红就是这个原因（闸依赖了**未入版本控制**的文件 ——
+#   本机绿、干净检出必红）。所以这里用 `*` 而不是忽略整个目录：
+#   **忽略目录会让 `!` 例外失效**（git 不允许重新包含被排除目录里的文件）。
+#   入库前已核过：只有 `/tmp/report-demo.db`，无本机路径 / 连接信息 / 凭据。
+print-server/reports/*
+!print-server/reports/sales-by-region.json
 
 # 本机覆盖配置（每台机器路径不同，例如 F:\... 这种，不该进公开仓库）
 *.local.json

@@ -85,8 +85,20 @@ fi
 # 存盘报表样本：`真实存盘报表的每一格经 = 方言往返` 那条用例要读真实文件。
 # 拷到 $WORK/reports/ 下 —— spec 的 findSavedReport() 会去 spec 同级的 reports/ 找，
 # 因为临时目录不在仓库里，靠 `import.meta.dirname` 上溯是找不到的。
+#
+# ⚠️ 这个文件**必须入版本控制**（`.gitignore` 里对它单独开了例外）。
+# 2026-09-28 CI 首次跑红正是这个：`print-server/reports/` 整个目录被忽略，
+# 干净检出里没有它 → 这里的 `cp` **静默失败** → 那条用例抛「找不到存盘报表样本」，
+# 而报错只列「找过这些路径」，**看不出根因是文件压根没被提交**。
+# 所以显式判存在并**大声失败**：退出码 2 = 没跑成（检出不全），不是「失败」。
+SAMPLE="$ROOT/print-server/reports/sales-by-region.json"
+if [[ ! -f "$SAMPLE" ]]; then
+  echo "缺少存盘报表样本：$SAMPLE" >&2
+  echo "（它是**入库**文件。没有它说明检出不全，或 .gitignore 里那条例外被改掉了。）" >&2
+  exit 2
+fi
 mkdir -p "$WORK/reports"
-cp "$ROOT/print-server/reports/sales-by-region.json" "$WORK/reports/"
+cp "$SAMPLE" "$WORK/reports/"
 
 # 临时目录里没有 tsconfig，故这里只给最朴素的配置
 cat > "$WORK/vitest.config.mjs" <<'EOF'

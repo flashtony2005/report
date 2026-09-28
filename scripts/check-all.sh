@@ -232,27 +232,43 @@ esac
 # 为什么值得占这一段代码：**读 CI 的人未必有 admin**（我这次就没有）。
 # 只有一条「Process completed with exit code 1」的红 CI，等于把诊断成本全推给下一个人。
 if [ "$GH_ANNOTATE" = 1 ] && [ "$worst" -ne 0 ]; then
+  # ⚠️ GitHub 每个 check-run 的 annotation **有上限**（实测 failure 级 10 条，
+  #    超出的会被**静默丢弃**）。所以顺序很关键：
+  #
+  #    第一版是「一个闸连头带尾发完再发下一个」，12 条额度被第一个红闸的输出吃光 →
+  #    后面红的闸**一条都不出现**。**诊断通道自己制造了「看不见的失败」** ——
+  #    比没有诊断更坏，因为它看着像「只有这一个闸红了」。
+  #
+  #    现在**两遍走**：先把**每个**红闸的名字报全（一行一个），再拿剩下的额度补输出尾部。
   _ann=0
   for _entry in "${FAIL_DETAIL[@]}"; do
     _nm="${_entry%%|*}"; _rest="${_entry#*|}"
-    _rc="${_rest%%|*}"; _log="${_rest#*|}"
+    _rc="${_rest%%|*}"
     if [ "$_rc" = 2 ]; then _kind="没跑成（环境缺东西，**不等于通过**）"; else _kind="失败"; fi
     printf '::error::闸「%s」%s，退出码 %s\n' "$_nm" "$_kind" "$_rc"
     _ann=$((_ann + 1))
-    # 尾部若干行足够定位：头部多半是启动噪声，而 annotation 数量有上限
-    if [ -n "$_log" ] && [ -f "$_log" ]; then
-      while IFS= read -r _l; do
-        # 跳过空行与纯颜色码的行（它们占名额但不带信息）
-        case "$(printf '%s' "$_l" | gh_strip_ansi | tr -d '[:space:]')" in
-          '') continue ;;
-        esac
-        printf '::error::  %s\n' "$(printf '%s' "$_l" | gh_strip_ansi | gh_escape)"
-        _ann=$((_ann + 1))
-        if [ "$_ann" -ge 12 ]; then break; fi
-      done < <(tail -n 15 "$_log")
-      rm -f "$_log"
-    fi
-    if [ "$_ann" -ge 12 ]; then break; fi
+  done
+
+  # 第二遍：补输出尾部。尾部比头部有用（头部多半是启动噪声），所以取 tail。
+  for _entry in "${FAIL_DETAIL[@]}"; do
+    [ "$_ann" -ge 10 ] && break
+    _log="${_entry#*|}"; _log="${_log#*|}"
+    [ -n "$_log" ] && [ -f "$_log" ] || continue
+    while IFS= read -r _l; do
+      # 跳过空行与纯颜色码的行（它们占名额但不带信息）
+      case "$(printf '%s' "$_l" | gh_strip_ansi | tr -d '[:space:]')" in
+        '') continue ;;
+      esac
+      printf '::error::  %s\n' "$(printf '%s' "$_l" | gh_strip_ansi | gh_escape)"
+      _ann=$((_ann + 1))
+      [ "$_ann" -ge 10 ] && break
+    done < <(tail -n 15 "$_log")
+  done
+
+  # 清理临时日志（无论是否用上）
+  for _entry in "${FAIL_DETAIL[@]}"; do
+    _log="${_entry#*|}"; _log="${_log#*|}"
+    [ -n "$_log" ] && rm -f "$_log"
   done
 fi
 
