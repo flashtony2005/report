@@ -110,6 +110,10 @@ done
 
 passed=0; failed=0; skipped=0; worst=0
 declare -a FAILED_NAMES=() SKIPPED_NAMES=()
+# **跑过的每一道**闸的明细：`名字|退出码|耗时秒`。成功路径也记 ——
+# 文件末尾在 Actions 上要用它发 `::notice::`，证明「这几道闸真的跑过了」。
+declare -a GATE_DETAIL=()
+T_START=$SECONDS
 
 # ------------------------------------------------------------------ 诊断通道
 #
@@ -126,6 +130,9 @@ if [ "${GITHUB_ACTIONS:-}" = "true" ]; then GH_ANNOTATE=1; fi
 
 # 失败/没跑成的闸的明细：`名字|退出码|日志文件`（日志文件仅 Actions 上存在）
 declare -a FAIL_DETAIL=()
+# **所有**闸的临时日志（成功路径也建了，见 run()）。清理要覆盖全部 ——
+# 只清失败的那些会把每个绿闸的日志留在 TMPDIR 里（只发生在 CI 上，本地是流式输出）。
+declare -a ALL_LOGS=()
 # annotation 正文里的 `%` 和 `\r` 必须转义，否则 GitHub 解析不出来（换行另走「一行一条」）
 # ⚠️ 这两个都是**读 stdin 的过滤器**，不是 `f "$x"` ——
 #    第一版把 gh_escape 写成 `printf '%s' "$1"` 却拿它当管道过滤器用，
@@ -143,12 +150,14 @@ run() {
     # ⚠️ 注意**不能**改成 `"$@" | tee` —— 那会让 `$?` 变成 tee 的（恒 0），
     #    正是本脚本最忌讳的「把失败读成通过」。
     out="$(mktemp "${TMPDIR:-/tmp}/check-all.XXXXXX")"
+    ALL_LOGS+=("$out")
     "$@" >"$out" 2>&1 || rc=$?
     cat "$out"
   else
     "$@" || rc=$?
   fi
   local dt=$((SECONDS - t0))
+  GATE_DETAIL+=("$name|$rc|$dt")
   case $rc in
     0) printf '   \033[32m✓ 通过\033[0m（%ss）\n' "$dt"; passed=$((passed + 1)) ;;
     2) printf '   \033[33m⚠ 没跑成\033[0m（%ss，退出码 2 = 环境缺东西，**不等于通过**）\n' "$dt"
@@ -250,6 +259,13 @@ esac
 # 放在最后：失败原因（哪个闸 + 退出码 + 输出尾部）写成 check-run annotation。
 # 为什么值得占这一段代码：**读 CI 的人未必有 admin**（我这次就没有）。
 # 只有一条「Process completed with exit code 1」的红 CI，等于把诊断成本全推给下一个人。
+#
+# **成功路径也要留痕**，而且理由和失败时一样硬：`job success` 只说明**脚本退出码是 0**，
+# 说明不了「这 8 道闸真的都跑了」。2026-09-28 实测踩到过这个盲区 —— 给作业新加了闸 8 之后，
+# step 耗时反而从 186s **降到** 165s，我**没有任何办法判断**闸 8 到底跑没跑
+# （job log 内容要 admin，我读不到）。耗时对不上是**歧义**，不是证据。
+# ⇒ 成功时发一条 `::notice::`，把「跑了几道闸 / 各道耗时 / 总共多久」写进 API 可读的地方。
+TOTAL=$((SECONDS - T_START))
 if [ "$GH_ANNOTATE" = 1 ] && [ "$worst" -ne 0 ]; then
   # ⚠️ GitHub 每个 check-run 的 annotation **有上限**（实测 failure 级 10 条，
   #    超出的会被**静默丢弃**）。所以顺序很关键：
@@ -283,12 +299,37 @@ if [ "$GH_ANNOTATE" = 1 ] && [ "$worst" -ne 0 ]; then
       [ "$_ann" -ge 10 ] && break
     done < <(tail -n 15 "$_log")
   done
-
-  # 清理临时日志（无论是否用上）
-  for _entry in "${FAIL_DETAIL[@]}"; do
-    _log="${_entry#*|}"; _log="${_log#*|}"
-    [ -n "$_log" ] && rm -f "$_log"
-  done
+else
+  if [ "$GH_ANNOTATE" = 1 ]; then
+    # 成功路径：一条 `::notice::` 证明闸真的跑过。
+    # ⚠️ 正文里**不能带 ANSI 色码** —— 闸名本身是干净的（`N/8 xxx`），
+    #    所以这里直接把 GATE_DETAIL 拼起来即可，**不要**去复用上面那个带 `\033[1m`
+    #    的标题格式（那会原样漏进 annotation）。
+    _summary=""
+    # `${arr[@]+…}` 的写法是给 bash 3.2 + `set -u` 兜底的：空数组直接展开会
+    # `unbound variable`（本机就是 bash 3.2）。虽然 worst=0 时 GATE_DETAIL 必然非空，
+    # 但这里不靠那个推理 —— 将来加闸/改顺序时不必再想一遍。
+    for _entry in ${GATE_DETAIL[@]+"${GATE_DETAIL[@]}"}; do
+      _nm="${_entry%%|*}"; _rest="${_entry#*|}"
+      _rc="${_rest%%|*}"; _dt="${_rest#*|}"
+      case "$_rc" in
+        0) _mark="✓" ;;
+        2) _mark="⚠" ;;
+        *) _mark="✗" ;;
+      esac
+      _summary="${_summary}${_summary:+ · }${_nm} ${_mark}${_dt}s"
+    done
+    # `gh_escape` 也要过一遍：GitHub 的 workflow command 正文里 `%` 必须写成 `%25`，
+    # 否则解析不出来。闸名是硬编码的、现在没有 `%` —— 但**不能靠这个**（"现在没有"
+    # 正是静默失败的开场白）。转义一次，将来加闸名就不必再想。
+    printf '::notice::check-all 全绿：跑完 %d 道闸，共 %ss。明细：%s\n' \
+      "${#GATE_DETAIL[@]}" "$TOTAL" "$_summary" | gh_escape
+  fi
 fi
+
+# 清理临时日志：**所有**闸的，不只失败的那些（成功路径同样建了文件）。
+for _log in ${ALL_LOGS[@]+"${ALL_LOGS[@]}"}; do
+  [ -n "$_log" ] && rm -f "$_log"
+done
 
 exit $worst

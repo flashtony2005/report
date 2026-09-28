@@ -284,6 +284,9 @@ INJECTIONS: list[tuple[str, str, str, str]] = [
 def annotation_channel_selftest() -> int:
     """证明 `check-all.sh` 的 `::error::` 诊断通道**真的会输出**，且**不篡改退出码**。
 
+    另外证明**成功路径**会发一条 `::notice::`（闸数 + 耗时）——
+    见下面 `want_notice` 那条断言的理由。
+
     ## 为什么非要这条（它替代的是哪一句话）
 
     2026-09-27 首次 CI 跑红，而 **job log 走 API 要 admin 权限**（403
@@ -300,16 +303,17 @@ def annotation_channel_selftest() -> int:
     往 `PATH` 最前面放一个假 `python3`，让它退 1 / 退 2 ——
     **不改仓库里任何文件**。比「就地改 + `finally` 还原」干净得多。
     """
-    print("\n  诊断通道（check-all.sh 的 ::error:: annotation）：")
+    print("\n  诊断通道（check-all.sh 的 ::error:: / ::notice:: annotation）：")
     missed = 0
-    # (假 python3 的退出码 or None, 期望 check-all 退出码, 期望 annotation 里出现的词 or None, 标签)
+    # (假 python3 的退出码 or None, 期望 check-all 退出码, 期望 annotation 里出现的词 or None,
+    #  标签, 是否期望出现 ::notice::)
     cases = [
-        (None, 0, None, "基线（不注入）"),
-        (1, 1, "失败", "假 python3 退 1"),
-        (2, 2, "没跑成", "假 python3 退 2"),
+        (None, 0, None, "基线（不注入）", True),
+        (1, 1, "失败", "假 python3 退 1", False),
+        (2, 2, "没跑成", "假 python3 退 2", False),
     ]
     with tempfile.TemporaryDirectory(prefix="ann-selftest-") as tmp:
-        for stub_rc, want_rc, want_text, label in cases:
+        for stub_rc, want_rc, want_text, label, want_notice in cases:
             env = dict(os.environ, GITHUB_ACTIONS="true")
             if stub_rc is not None:
                 d = Path(tmp) / f"stub{stub_rc}"
@@ -323,6 +327,7 @@ def annotation_channel_selftest() -> int:
                 cwd=str(ROOT), capture_output=True, text=True, env=env,
             )
             errs = [l for l in proc.stdout.splitlines() if l.startswith("::error::")]
+            notices = [l for l in proc.stdout.splitlines() if l.startswith("::notice::")]
             ok = proc.returncode == want_rc
             if want_text is None:
                 ok = ok and not errs
@@ -330,13 +335,22 @@ def annotation_channel_selftest() -> int:
                 ok = ok and any(want_text in l for l in errs)
                 # 光有「闸名」不够：正文里必须有闸自己的输出，否则诊断等于没做
                 ok = ok and any("注入：假 python3" in l for l in errs)
+            # 成功路径必须发**恰好一条** `::notice::`，且带上闸数 ——
+            # 理由：`job success` 只说明脚本退出码是 0，**说明不了这几道闸真的跑了**。
+            # 2026-09-28 实测踩过：给作业新加闸 8 之后 step 耗时反而从 186s 降到 165s，
+            # 而 job log 内容要 admin 才读得到 ⇒ 「闸 8 到底跑没跑」当时**无法判断**。
+            # `--fast` 恒跑 2 道闸，所以这里断言正文里写着「跑完 2 道闸」。
+            if want_notice:
+                ok = ok and len(notices) == 1 and "跑完 2 道闸" in notices[0]
+            else:
+                ok = ok and not notices
             print(
                 f"    {'✓' if ok else '✗'} {label}：退出码 {proc.returncode}"
-                f"（期望 {want_rc}），::error:: {len(errs)} 条"
+                f"（期望 {want_rc}），::error:: {len(errs)} 条，::notice:: {len(notices)} 条"
             )
             if not ok:
                 missed += 1
-                for l in errs[:6]:
+                for l in (errs + notices)[:6]:
                     print(f"        | {l}")
     return missed
 
