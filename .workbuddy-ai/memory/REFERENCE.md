@@ -1559,9 +1559,45 @@ V=abc; echo "测试 ${V}）"    # ✓
 
 #### 未验 / 已知风险
 
-- **「Actions 真会跑」没验过**（`gh` 未登录）。
-- **首次 CI 可能假红**：设计器 UI 套件在本机**文件级并行**下 16 条超时（CPU 饥饿），
-  串行 0 条；**2 核 runner 更紧张** → 缓解：调 `testTimeout`，或第 7 道闸只在 `main` 跑。
+- ~~「Actions 真会跑」没验过（`gh` 未登录）。~~ **← 2026-09-28 证伪，见下节。**
+- **设计器 UI 套件在 2 核 runner 上更紧张**：本机**文件级并行**下曾 16 条超时（CPU 饥饿），
+  串行 0 条 → 已用 `--no-file-parallelism`（见 §二十一.13）。**首次 CI 实测第 7 道闸未超时**
+  （整段闸步 169s，含冷 cargo 构建），所以这条**没兑现**，但仍留作观察项。
+
+#### 2026-09-28 首次 CI 实况（**「验不了」是错的**）
+
+**更正**：我先前反复写「Actions 会不会触发验不了」—— **错的**。根因是我假设要 `gh` 登录，
+**从没查过仓库可见性**。`GET api.github.com/repos/flashtony2005/report` → `"private": false`
+→ **`/actions/runs` 与 `/check-runs/{id}/annotations` 裸 `curl` 就能读，不需要 token**。
+**真正读不到的只有 job log 内容**（`/actions/jobs/{id}/logs` → 403 `Must have admin rights`）。
+
+> **可迁移判据**：把「我这条命令做不到」当成「这件事做不到」之前，
+> 先问「**是不是换一条路就能读**」。
+
+**run #1 `36307181284`**（`event=push`，sha `704cc94`）：`conclusion=failure`，job 234s。
+步骤 1–7（checkout / Node / Rust / **两次 `npm ci`** / cargo cache）**全绿**，
+**step 8「跑闸」红**（169s）。→ 两次 `npm ci` 成功**反证**上一轮的「可移植性」修复有效
+（仓库内 `node_modules` 优先、兄弟目录借用降级）。
+
+**真根因：闸依赖了未入库文件。** `ts-test.sh:89` 拷 `$ROOT/print-server/reports/sales-by-region.json`，
+但 `.gitignore:44` 忽略整个目录、`git ls-files print-server/reports/` = **0 个** →
+本机绿、**干净检出必红**。**同类**于「借绝对路径」那个 bug（本机绿 ≠ 干净检出绿）。
+且该文件**不只是测试夹具**：它是服务端**内置样例**（`--run-report sales-by-region` / UI「内置样例」入口）。
+
+四处修复：① `.gitignore` 用 `print-server/reports/*` + `!…/sales-by-region.json`
+（**忽略目录会让 `!` 失效** —— git 不允许重新包含被排除目录里的文件）；② `ts-test.sh` 缺样本**大声** `exit 2`；
+③ `check-all.sh` 两遍发 annotation；④ 新增 `fresh_clone_checks()`（**判据**：`$ROOT/<相对路径>`
+出现在闸脚本里 → 该路径必须入库）。
+
+**诊断通道**（Actions-only，住在 `check-all.sh` 而非 YAML —— **它**才知道哪个闸挂了；
+放 YAML 会放松 `run.strip() == GATE_COMMAND` 断言）：`check-all.sh` 失败时把**闸名 + 输出尾部**
+写成 `::error::` annotation。**两个自造坑**：① `gh_escape` 写成 `printf '%s' "$1"` 却当管道过滤器用
+→ `set -u` 下 `$1: unbound variable` → annotation 变空行；② **一闸连头带尾发完再发下一个**
+→ 10 条额度被第一个红闸的输出吃光 → **后面红的闸一条都不出现**（诊断通道自己制造「看不见的失败」）
+→ 改**两遍**：先全部闸名，再输出尾部。**注**：`::error::` 在 API 里 `annotation_level` 是
+**`"failure"` 不是 `"error"`**（按 `"error"` 过滤 → 明明 12 条却报 0，**假阴性比没写更坏**）。
+
+**读 CI 一条命令**：`python3 scripts/verify-ci-workflow.py --remote`（公开仓库无需 token）。
 
 #### 顺带发现
 
