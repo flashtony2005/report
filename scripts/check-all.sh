@@ -82,26 +82,25 @@ for a in "$@"; do
   4. bash    scripts/ts-project-check.sh               整项目类型检查 · designer-react
   5. bash    scripts/ts-project-check.sh openprint     整项目类型检查 · openprint（vue-tsc --build）
   6. cargo   test --bin print-server           Rust 单测
-  7. bash    scripts/ts-test-designer.sh grid-report-  设计器 UI 单测（jsdom，串行，12 文件 / 151 用例，~185s）
+  7. bash    scripts/ts-test-designer.sh       设计器 UI 单测（jsdom，串行，44 文件 / 390 用例，~349s）
   8. bash    scripts/ts-test-openprint.sh      引擎层单测（openprint 自己的 vitest，70 文件 / 915 用例，~120s）
 --fast 只跑 1、2。
 
-第 7 道**带过滤参数**（`grid-report-`，12 文件 / 151 用例），不是整套 designer-react：
-整套要 **~346s**（且必须 `--no-file-parallelism`，见 ts-test-designer.sh 顶部）。
-日常改的报表弹窗全在 `grid-report-*` 里，先用这个把「改了弹窗没人管」堵上；
-要全量就自己跑 `bash scripts/ts-test-designer.sh`（无参数 = 全部）。
-⚠️ 这是**已知的覆盖缺口**：`designer-react` 另外那 32 个 spec 文件（canvas / panels /
-toolbar / stores…）仍然不在本脚本里 —— 不是「没必要」，是那 346s 太贵。
+第 7 道**跑 designer-react 全部 44 个 spec**（2026-09-29 去掉了 `grid-report-` 过滤）。
+必须 `--no-file-parallelism`（**正确性**要求：并行下实测 16 条超时假红，见 ts-test-designer.sh 顶部）。
+只想跑一部分就自己带过滤参数：`bash scripts/ts-test-designer.sh grid-report-`。
 
-第 8 道补上的是**另一个**缺口（2026-09-28 补）：在此之前 openprint 的引擎层 spec
-只有 `src/report/` 那 3 个被跑到（闸 3），其余 **67 个 / 约 676 条用例一条闸都没有** ——
-而闸 7 当时还写着「那批由 ts-test.sh 用纯 node 环境跑」（**那句话是错的**）。
-现在闸 8 用 openprint **自己**的 vitest 跑全部 70 个 spec（915 用例），
-引擎层的闸从此长在引擎包里，不再借 designer-react 的配置。
+第 7 / 第 8 道补的是**同一个病**的两个器官：「**闸是绿的、但那个目录没有跑器**」。
+  · 第 8 道（2026-09-28）：openprint 引擎层 **67 个 spec / 约 676 条用例**一条闸都没有 ——
+    而闸 7 当时还写着「那批由 ts-test.sh 用纯 node 环境跑」（**那句话是错的**）。
+  · 第 7 道（2026-09-29）：designer-react 的 **32 个 spec**（canvas / panels / toolbar /
+    stores / modals…）不在跑器里，其中包括 React 侧的跨框架契约检查器。
+两处的共同点：**都把缺口写进了注释当「已知取舍」** —— 而写进注释**不等于**处理了。
+实测两边**全过**（676 条 + 239 条），缺的只是跑器，不是修不好的东西。
 
 ⚠️ 上面写的耗时都是**本机**实测。**CI 快得多**（同一份代码，run #9/#10 实测）：
-跑闸总计 **158s**（本机 363s）；闸 7 **96s**（本机 185s）；闸 8 **22s**（本机 ~120s）。
-⇒ **别拿本机耗时估 CI**（差 2~5 倍，机制未查明）。
+跑闸总计 **158s**（本机 363s）；闸 7 **96s**（本机 185s —— 那是**过滤版**的数）；
+闸 8 **22s**（本机 ~120s）。⇒ **别拿本机耗时估 CI**（差 2~5 倍，机制未查明）。
 EOT
       exit 0
       ;;
@@ -130,7 +129,7 @@ T_START=$SECONDS
 #      「有东西失败了」—— 读不到是哪个闸、为什么。那正是本项目最讨厌的那种
 #      「闸在跑、但结论不可用」。
 #
-# 只在 Actions 上启用：本地保持**实时流式**输出（缓冲会让 185s 的 UI 闸全程无输出）。
+# 只在 Actions 上启用：本地保持**实时流式**输出（缓冲会让 349s 的 UI 闸全程无输出）。
 GH_ANNOTATE=0
 if [ "${GITHUB_ACTIONS:-}" = "true" ]; then GH_ANNOTATE=1; fi
 
@@ -225,11 +224,19 @@ fi
 
 # ---------------------------------------------------- 7. 设计器 UI 单测（最贵，排在最后）
 
-# 排在最后是因为它 **~185s**（本机实测；耗时随负载浮动，别当回归判据），
+# 排在最后是因为它 **~349s**（本机实测；耗时随负载浮动，别当回归判据），
 # 比前面几道加起来还贵（「便宜的排前面」那条规则的直接后果）。
-# 只跑 `grid-report-`：整套 designer-react 要 ~346s，见 ts-test-designer.sh 顶部。
-run "7/8 ts-test-designer（报表弹窗 spec）" \
-  bash scripts/ts-test-designer.sh grid-report-
+#
+# ⚠️ 2026-09-29 改：**去掉 `grid-report-` 过滤，跑 designer-react 全部 44 个 spec**。
+# 在此之前它只跑 12 个（`grid-report-*`），另外 **32 个 spec 一条闸都没有**
+# —— 其中包括 `stores/designer-contract.spec.ts`（React 侧跨框架契约检查器！）
+# 和整个 `canvas/`（5 个文件）、`panels/`、`toolbar/`、`modals/ai-assistant`。
+# 当时把这件事**写进了注释当「已知覆盖缺口」**，理由「那 346s 太贵」——
+# **但写进注释不等于处理了**：注释让缺口看起来是「已经知道的、权衡过的」，
+# 于是没人再去动它。实测 44 文件 / 390 用例**全过**，缺的只是跑器，不是修不好的东西。
+# 代价：本机跑闸 363s → 527s（CI 从 158s → ~240s）。见 ts-test-designer.sh 顶部。
+run "7/8 ts-test-designer（designer-react 全部 spec）" \
+  bash scripts/ts-test-designer.sh
 
 # ---------------------------------------------------- 8. 引擎层单测（最贵，排最后）
 
@@ -273,6 +280,11 @@ esac
 # （job log 内容要 admin，我读不到）。耗时对不上是**歧义**，不是证据。
 # ⇒ 成功时发一条 `::notice::`，把「跑了几道闸 / 各道耗时 / 总共多久」写进 API 可读的地方。
 TOTAL=$((SECONDS - T_START))
+# runner 的**核数**：直接决定「本机 vs CI 耗时差」该怎么解读。
+# 注意闸 7 是 `--no-file-parallelism`（**串行**）→ 对它核数**不**影响耗时，
+# 差的是单核速度；而闸 8 是 vitest 默认（并行）→ 对它核数直接相关。
+# Linux 用 nproc、macOS 退到 sysctl；两个都没有就写 '?'（**绝不因此让脚本失败**）。
+RUNNER_CPUS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo '?')"
 if [ "$GH_ANNOTATE" = 1 ] && [ "$worst" -ne 0 ]; then
   # ⚠️ GitHub 每个 check-run 的 annotation **有上限**（实测 failure 级 10 条，
   #    超出的会被**静默丢弃**）。所以顺序很关键：
@@ -329,8 +341,8 @@ else
     # `gh_escape` 也要过一遍：GitHub 的 workflow command 正文里 `%` 必须写成 `%25`，
     # 否则解析不出来。闸名是硬编码的、现在没有 `%` —— 但**不能靠这个**（"现在没有"
     # 正是静默失败的开场白）。转义一次，将来加闸名就不必再想。
-    printf '::notice::check-all 全绿：跑完 %d 道闸，共 %ss。明细：%s\n' \
-      "${#GATE_DETAIL[@]}" "$TOTAL" "$_summary" | gh_escape
+    printf '::notice::check-all 全绿：跑完 %d 道闸，共 %ss（runner %s 核）。明细：%s\n' \
+      "${#GATE_DETAIL[@]}" "$TOTAL" "$RUNNER_CPUS" "$_summary" | gh_escape
   fi
 fi
 

@@ -8,18 +8,22 @@
 # （`environment: 'node'`、无 DOM、无 Univer）。而 `designer-react/src/**/*.spec.tsx`
 # 这批要 **jsdom + antd + React**，只能用它自己装的那份 vitest 跑。
 #
-# 于是出现过一个真空：**44 个 designer-react spec 文件，没有任何脚本会跑它们**。
-# 改一次 `GridReportModal`，`check-all.sh` 依然全绿 —— 因为根本没有闸在管这个文件。
+# 于是出现过**两次同一个真空**：一批 spec 文件没有任何脚本会跑它们。
+#   · 2026-09-27：44 个 designer-react spec 里只有 12 个（`grid-report-*`）进了闸，
+#     另外 **32 个**（canvas / panels / toolbar / stores / modals…）没有跑器 ——
+#     而这件事被**写进了 `check-all.sh` 的注释当「已知覆盖缺口」**（理由「346s 太贵」）。
+#   · 2026-09-29：去掉过滤，**44 个全跑**（44 文件 / 390 用例 / ~349s，**全过**）。
+# 教训：**写进注释 ≠ 处理了**。注释会让缺口看起来「已经权衡过」，于是没人再动它。
 # 这正是本项目反复吃过的「**没有跑器的闸比红的闸更坏**」。
 #
 # ## ⚠️ `--no-file-parallelism` 不是性能选项，是**正确性**要求
 #
-# 默认（文件级并行）下这套 UI 用例会**互相抢 CPU**，实测：
+# 默认（文件级并行）下这套 UI 用例会**互相抢 CPU**，实测（2026-09-27，当时 43 个文件）：
 #
 #   默认并行：43 文件 / 375 用例 → **16 失败 / 359 通过**（238s）
 #   串行：    43 文件 / 375 用例 → **0 失败 / 375 通过**（346s）
 #
-# （那两个 43 是**当时**的文件数；现在是 44。用例数没重测 —— 别把它当现状。）
+# 现状（2026-09-29 实测，串行）：**44 文件 / 390 用例 → 0 失败 / 390 通过（349s）**。
 #
 # 而且**同样的 4 个文件单独跑 4/4 全绿**（各 14~21s）——
 # 失败全是 `Test timed out` / `expected '' to contain '标签网格'` 这类
@@ -35,15 +39,15 @@
 # 96s 那次是**紧跟在另一次 vitest 之后**跑的，vite 的 transform 缓存是热的。
 # 冷一点就是 161s（check-all 里那道实测 162s，稳定复现）。
 # 2026-09-27 又见过 **230s**（同机同时还在跑别的命令）→ 这个数**随负载浮动**，
-# **别拿耗时当回归判据**（用例数才是；见「用法」里的 12 文件 / 151 用例）。
+# **别拿耗时当回归判据**（用例数才是）。**全量（44 文件）实测 349s**。
 # 顺手排除过一个嫌疑：**加不加那两个 preload 都是 161s**，
 # 所以 preload 不是拖慢的原因（留着是为了和 `fault-inject-*-ui.py` 一致）。
 # 写进注释的数字一律取**偏保守**的那个。
 #
 # ## 用法
 #
-#   bash scripts/ts-test-designer.sh                  # 全部 designer-react spec（~346s）
-#   bash scripts/ts-test-designer.sh grid-report-     # 按文件名过滤（12 文件 / 151 用例；~160s，负载重时见过 230s）
+#   bash scripts/ts-test-designer.sh                # **全部** spec（44 文件 / 390 用例；~349s）← 闸 7 用的就是这条
+#   bash scripts/ts-test-designer.sh grid-report-   # 按文件名过滤（12 文件 / 151 用例；~185s）—— 日常改弹窗的快通道
 #   bash scripts/ts-test-designer.sh grid-report-issues -t '看得见'   # 再按用例名过滤（参数透传）
 #
 # 退出码：0 通过 / 2 **没跑成**（designer-react 没装 node_modules）/ 其它 失败。

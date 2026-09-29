@@ -62,7 +62,7 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。UI
 （**自动转 `vue-tsc --build`**；openprint 的 tsconfig 是解决方案式，`tsc -p` **假绿**）。
 **长期红着的闸 = 没有闸**（曾红 116 条）。修法与坑见 §十七。
 
-**跑闸**：`bash scripts/check-all.sh`（8 道闸；全量**本机 ~6min / CI 158s**；`--fast` 只前两道 ~4s）。
+**跑闸**：`bash scripts/check-all.sh`（8 道闸；全量**本机 ~8.5min**；`--fast` 只前两道 ~4s）。
 ⚠️ **别拿本机耗时估 CI**（实测差 2~5 倍，机制未查明，别按猜的模型改）。
 退出码**三态**：0 通过 / 1 失败 / **2 没跑成（≠ 通过）**。**「没有跑器的闸」比「红的闸」更坏**（绿的 → 虚假信心）。
 **已挂 CI**（`.github/workflows/ci.yml`，2026-09-28 **首次真绿** run #4）：**覆盖 = 本脚本覆盖**（20 注入 / 17 探针仍在外；
@@ -71,7 +71,8 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。UI
 ⚠️ **本地全绿 ≠ CI 会绿**（两次「本地 7/7 → 推 → CI 红」）→ **推完必须 `--remote` 复核**。两形态：① 闸引用**未入库**文件
 （`fresh_clone_checks()`）；② 测试**依赖宿主可执行文件**（CUPS：macOS 自带 `lpstat`、ubuntu runner 不带）→ **测试只断言契约**。详见 §二十一.13。
 `mirror-check.py`：**形状 24 组字段 + 语义 8 条**（§二十一.9），**抽取失败计红**；**仍未闸**：`#RRGGBB` / 表头行数。
-闸 7 UI 单测只覆盖 `grid-report-`（另 32 个 spec 不在跑器里）；**闸 8** = openprint 自己的 vitest（70 spec / 915 用例）。
+闸 7 = designer-react **全部 44 spec / 390 用例**（2026-09-29 去掉 `grid-report-` 过滤，此前只 12 个）；
+**闸 8** = openprint 自己的 vitest（70 spec / 915 用例）。
 
 ## AI 层（**已有**，别当缺口）
 

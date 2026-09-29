@@ -294,14 +294,15 @@ pnpm preview
 
 ### 测试与覆盖边界
 
-本仓库有**四条**跑测试的入口，覆盖范围**互不相同**。别把任意一条的「绿」读成「全绿」。
+本仓库有**五条**跑测试的入口，覆盖范围**互不相同**。别把任意一条的「绿」读成「全绿」。
 
 | 入口 | 跑什么 | 覆盖边界 |
 | --- | --- | --- |
-| `cd openprint && npm test` | 本包自己的 vitest（`vitest.config.ts`） | 本包**全部 70 个 spec / 915 用例**。引擎层的**权威**闸。 |
-| `cd designer-react && npx vitest run` | React 应用自己的 vitest | designer-react 自己的 spec + `../openprint/src` 的 spec，但**排除** 4 个 Vue 状态层 spec。 |
+| `cd openprint && npm test` | 本包自己的 vitest（`vitest.config.ts`） | 本包**全部 70 个 spec / 915 用例**。引擎层的**权威**闸（= `check-all.sh` 闸 8）。 |
+| `bash scripts/ts-test-designer.sh` | designer-react 自己的 vitest，**串行**，并**排除** `../openprint/src/**` | designer-react 的**全部 44 个 spec / 390 用例**（= 闸 7）。 |
+| `cd designer-react && npx vitest run` | 同上，但**并行**、且**不排除** `../openprint/src` | ⚠️ **别用这条当闸**：默认并行下本机实测 **16 条超时假红**（串行 0 条）。 |
 | `bash scripts/ts-test.sh` | 借本仓 `node_modules` 的 vitest，把 `openprint/src/report/*.ts` **拷到临时目录**跑 | **只有** `openprint/src/report/`（3 文件 / 239 用例）。 |
-| `bash scripts/check-all.sh` | 以上这些 + 类型检查 + Rust 单测，共 **8 道闸** | 用 `bash scripts/check-all.sh --list` 看完整清单。 |
+| `bash scripts/check-all.sh` | 上面**闸化后的那些** + 类型检查 + Rust 单测，共 **8 道闸** | 用 `bash scripts/check-all.sh --list` 看完整清单。 |
 
 **⚠️ 「绿」的边界（别读多了）**
 
@@ -311,9 +312,15 @@ pnpm preview
 - 「引擎层的 spec 有没有被跑到」这件事**曾经**取决于 `designer-react` 的配置：
   谁 reorganize 一下 designer-react，整层覆盖就静默消失，而退出码照样 0。
   现在 `openprint` 有自己的 `test`（`check-all.sh` 闸 8），这条依赖已经断掉。
-- `scripts/ts-test-designer.sh` **默认带 `--exclude '../openprint/src/**'`**；
-  不带过滤参数时它跑 designer-react 的全部 spec，但**必须串行**
-  （`--no-file-parallelism` 是**正确性**要求，不是性能选项 —— 见该脚本顶部）。
+- **2026-09-29 关闭的另一个缺口**：闸 7 此前只跑 `grid-report-*`（12 个），
+  designer-react 另外 **32 个 spec 没有跑器** —— 其中包括 React 侧的跨框架契约检查器
+  `src/stores/designer-contract.spec.ts`（它守着与 `src/contracts/golden/designer-v1.json`
+  的等价性，却从未进过任何闸）。当时这件事被**写进了 `check-all.sh` 的注释**
+  当「已知覆盖缺口」。**写进注释 ≠ 处理了**：44 文件 / 390 用例实测**全过**，
+  缺的只是跑器。现在闸 7 跑全量。
+- `scripts/ts-test-designer.sh` **默认带 `--exclude '../openprint/src/**'`**（那批归闸 8，
+  再来一遍是重复劳动）；它**必须串行**（`--no-file-parallelism` 是**正确性**要求，
+  不是性能选项 —— 见该脚本顶部）。想快就自己带过滤参数：`grid-report-` 只跑 12 个。
 
 **契约 golden 是冻结的**
 
