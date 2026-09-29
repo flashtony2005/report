@@ -69,6 +69,21 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 2
 
+# ⚠️ 会话 artifact 探测（2026-09-29 加）：WorkBuddy 会话会给 `NODE_OPTIONS` 注入一个
+# `--require` shim（`…/cli/vendor/shim/node-language-shim.cjs`，959 B → 再 require
+# `node-safe-delete-shim.cjs` + `node-brokered-fs-shim.cjs`，**给每个 node 进程打 fs 补丁**）。
+# vitest **每个测试文件起一个进程** ⇒ 补丁成本 × 文件数，本机跑闸被放大约 **4 倍**：
+#
+#     带 shim：511s（闸 7 = 343s，闸 8 = 130s，闸 8 的 environment 累计 851.57s）
+#     清掉： 118s（闸 7 =  99s，闸 8 =   5s，闸 8 的 environment 累计  16.04s）
+#
+# **CI 上没有这个 shim** —— 所以「本机 vs CI」的耗时比较方向是反的
+# （真相：本机 118s < CI 234s）。这个坑已经骗过两次：文档里的「未定论」，
+# 以及我一度把 `--maxWorkers=1` 当成 3.4× 的优化（其实是我手写 `NODE_OPTIONS=` 把 shim 顶掉了）。
+#
+# 这里只**记下来 + 在汇总里打出来**，**不擅自去掉它** —— 那是沙箱的保护，不是我们的东西。
+INHERITED_NODE_OPTIONS="${NODE_OPTIONS:-}"
+
 FAST=0
 for a in "$@"; do
   case "$a" in
@@ -82,7 +97,7 @@ for a in "$@"; do
   4. bash    scripts/ts-project-check.sh               整项目类型检查 · designer-react
   5. bash    scripts/ts-project-check.sh openprint     整项目类型检查 · openprint（vue-tsc --build）
   6. cargo   test --bin print-server           Rust 单测
-  7. bash    scripts/ts-test-designer.sh       设计器 UI 单测（jsdom，串行，44 文件 / 390 用例，~349s）
+  7. bash    scripts/ts-test-designer.sh       设计器 UI 单测（jsdom，串行，44 文件 / 390 用例，~349s*）
   8. bash    scripts/ts-test-openprint.sh      引擎层单测（openprint 自己的 vitest，70 文件 / 915 用例，~120s）
 --fast 只跑 1、2。
 
@@ -98,9 +113,12 @@ for a in "$@"; do
 两处的共同点：**都把缺口写进了注释当「已知取舍」** —— 而写进注释**不等于**处理了。
 实测两边**全过**（676 条 + 239 条），缺的只是跑器，不是修不好的东西。
 
-⚠️ 上面写的耗时都是**本机**实测。**CI 快得多**（同一份代码，run #9/#10 实测）：
-跑闸总计 **158s**（本机 363s）；闸 7 **96s**（本机 185s —— 那是**过滤版**的数）；
-闸 8 **22s**（本机 ~120s）。⇒ **别拿本机耗时估 CI**（差 2~5 倍，机制未查明）。
+⚠️ 带 `*` 的本机耗时**被会话 artifact 放大了约 4 倍**（见文件顶部）：
+WorkBuddy 会给 `NODE_OPTIONS` 注入一个打 fs 补丁的 `--require` shim，vitest 每文件一进程 ⇒ 成本 × 文件数。
+**CI 上没有这个 shim**，所以「本机 vs CI」这个比较，方向是反的：
+真实本机跑闸 **118s**（闸 7 = 99s，闸 8 = 5s），而 CI（run #13）是 **234s** —— **本机更快**。
+⇒ 要拿真实本机耗时：`NODE_OPTIONS="" bash scripts/check-all.sh`。
+（旧版本这里写「CI 快 2~5 倍，机制未查明」—— 2026-09-29 查明，是被 shim 骗了。）
 EOT
       exit 0
       ;;
@@ -129,7 +147,7 @@ T_START=$SECONDS
 #      「有东西失败了」—— 读不到是哪个闸、为什么。那正是本项目最讨厌的那种
 #      「闸在跑、但结论不可用」。
 #
-# 只在 Actions 上启用：本地保持**实时流式**输出（缓冲会让 349s 的 UI 闸全程无输出）。
+# 只在 Actions 上启用：本地保持**实时流式**输出（缓冲会让那道最长的 UI 闸全程无输出）。
 GH_ANNOTATE=0
 if [ "${GITHUB_ACTIONS:-}" = "true" ]; then GH_ANNOTATE=1; fi
 
@@ -224,7 +242,7 @@ fi
 
 # ---------------------------------------------------- 7. 设计器 UI 单测（最贵，排在最后）
 
-# 排在最后是因为它 **~349s**（本机实测；耗时随负载浮动，别当回归判据），
+# 排在最后是因为它最长（本机 **~349s** 带会话 shim / **~99s** 真实；耗时随负载浮动，别当回归判据），
 # 比前面几道加起来还贵（「便宜的排前面」那条规则的直接后果）。
 #
 # ⚠️ 2026-09-29 改：**去掉 `grid-report-` 过滤，跑 designer-react 全部 44 个 spec**。
@@ -234,7 +252,7 @@ fi
 # 当时把这件事**写进了注释当「已知覆盖缺口」**，理由「那 346s 太贵」——
 # **但写进注释不等于处理了**：注释让缺口看起来是「已经知道的、权衡过的」，
 # 于是没人再去动它。实测 44 文件 / 390 用例**全过**，缺的只是跑器，不是修不好的东西。
-# 代价：本机跑闸 363s → 527s（CI 从 158s → ~240s）。见 ts-test-designer.sh 顶部。
+# 代价：本机跑闸 363s → 511s（**都带会话 shim**；真实本机 ≈ 118s，见文件顶部）。见 ts-test-designer.sh 顶部。
 run "7/8 ts-test-designer（designer-react 全部 spec）" \
   bash scripts/ts-test-designer.sh
 
@@ -268,6 +286,14 @@ case $worst in
   2) printf '\033[33m有闸没跑成 —— **不等于通过**，先把环境补齐再下结论\033[0m\n' ;;
 esac
 
+# 会话 shim 披露（见文件顶部）：**只在带 shim 时出现**；CI 上 `NODE_OPTIONS` 是空的 → 静默。
+# 刻意用普通 `printf` 而**不是** `::notice::` —— `verify-ci-workflow.py` 的 annotation 自检
+# 断言基线「恰好一条 `::notice::`」，这条要是也发 notice，自检当场变红。
+if [[ "$INHERITED_NODE_OPTIONS" == *"--require"* ]]; then
+  printf '\033[33mℹ️  本机 NODE_OPTIONS 带外部 --require（WorkBuddy 会话 shim）→ 上面的耗时被放大约 4 倍，别拿去和 CI 比。\033[0m\n'
+  printf '    真实本机耗时：`NODE_OPTIONS="" bash scripts/check-all.sh`（实测 511s → 118s，用例数不变）。\n'
+fi
+
 # ------------------------------------------------------------------ 写 annotation
 #
 # 放在最后：失败原因（哪个闸 + 退出码 + 输出尾部）写成 check-run annotation。
@@ -280,9 +306,10 @@ esac
 # （job log 内容要 admin，我读不到）。耗时对不上是**歧义**，不是证据。
 # ⇒ 成功时发一条 `::notice::`，把「跑了几道闸 / 各道耗时 / 总共多久」写进 API 可读的地方。
 TOTAL=$((SECONDS - T_START))
-# runner 的**核数**：直接决定「本机 vs CI 耗时差」该怎么解读。
-# 注意闸 7 是 `--no-file-parallelism`（**串行**）→ 对它核数**不**影响耗时，
-# 差的是单核速度；而闸 8 是 vitest 默认（并行）→ 对它核数直接相关。
+# runner 的**核数**：决定「并行那道闸（闸 8）耗时」该怎么解读。
+# 注意闸 7 是 `--no-file-parallelism`（**串行**）→ 对它核数**不**影响耗时，差的是单核速度。
+# ⚠️ 但「本机 vs CI」的耗时差**主要既不是核数、也不是机器快慢** —— 是本机那份会话 shim
+#    （见文件顶部，实测 4.3×）。所以看到本机数先问一句：`NODE_OPTIONS` 干净吗？
 # Linux 用 nproc、macOS 退到 sysctl；两个都没有就写 '?'（**绝不因此让脚本失败**）。
 RUNNER_CPUS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo '?')"
 if [ "$GH_ANNOTATE" = 1 ] && [ "$worst" -ne 0 ]; then

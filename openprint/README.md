@@ -304,6 +304,12 @@ pnpm preview
 | `bash scripts/ts-test.sh` | 借本仓 `node_modules` 的 vitest，把 `openprint/src/report/*.ts` **拷到临时目录**跑 | **只有** `openprint/src/report/`（3 文件 / 239 用例）。 |
 | `bash scripts/check-all.sh` | 上面**闸化后的那些** + 类型检查 + Rust 单测，共 **8 道闸** | 用 `bash scripts/check-all.sh --list` 看完整清单。 |
 
+> ⚠️ **本机耗时别和 CI 比**（2026-09-29 查明）：WorkBuddy 会话会给 `NODE_OPTIONS` 注入一个
+> 打 fs 补丁的 `--require` shim（`node-language-shim.cjs`），而 vitest **每个测试文件起一个进程**
+> ⇒ 本机耗时被放大约 **4 倍**（实测闸 7：343s → 99s；闸 8：130s → **5s**）。
+> **CI 上没有这个 shim** —— 所以「CI 比本机快」是个假象（真相：本机更快）。
+> 要真实本机耗时：`NODE_OPTIONS="" bash scripts/check-all.sh`。详见 `check-all.sh` 顶部。
+
 **⚠️ 「绿」的边界（别读多了）**
 
 - `scripts/ts-test.sh` 的绿**只**说明 `openprint/src/report/*.ts` 这几个纯函数对。

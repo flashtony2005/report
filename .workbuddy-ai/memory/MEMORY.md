@@ -3,8 +3,8 @@
 引擎：Rust `print-server`（展开 + 导出）+ TS `openprint`（引擎层，designer-react alias 引用）+ `designer-react`（UI）。
 
 > **细节在 `REFERENCE.md`**（验证方法论 / 沙箱 / 硬事实 / 单位换算 / 各特性）。需要时读，别凭记忆。
-> **引擎全貌看《报表引擎详解-功能与算法.md》**（每条结论带 `file:line`）。
-> 只放「每个任务都用得上」的，**必须 ≤12KB**（超了注入时会被截断）。
+> **引擎全貌看《报表引擎详解-功能与算法.md》**（结论带 `file:line`）。
+> 只放「每个任务都用得上」的，**≤12KB**（超了会被截断）。
 
 ## 三个「表格」不是一回事（问「能不能合到 Univer」前先分清）
 
@@ -35,7 +35,7 @@
 - 存/开/跑：`PUT /api/reports/save` · `GET /api/reports/:id` → `templateToGrid` · `POST /api/reports/:id/run`。模板**存原样**，`options` 单独存；`withExportFormula`/`withExpandControl` 渲染前才套（自由模板**刻意不套**后者）。
 - `id` 白名单 `[A-Za-z0-9_-]` ≤80 是安全边界（直接拼文件名）。样例 `reports/sales-by-region.json`。
 
-## 三条「静默失败」红线（改了必自查）
+## 四条「静默失败」红线（改了必自查）
 
 1. **报表目录跟着 cwd 走**：`store::reports_dir(config_path)` = 配置文件同级的 `reports/`，默认配置路径是**相对**的 `print-server.json`。从仓库根启动 → `/api/reports` 返回 `[]`，**无任何报错**。刻意设计，只披露（横幅/`/health`/响应头）；跨域默认读不到响应头（已 expose），**curl 证明不了浏览器能读**。中文路径 percent 编码（`HeaderValue` 只收可见 ASCII）。
 2. **预览与导出是两套口径**：`buildRenderRequest` 前端算 `headerRows`；xlsx 导出在 Rust 侧另算（`header_row_count()`：从头起连续「无 `expand_type=r` 且无 `row_parent`」的行，`row_parent:""` 也算没主格）。**不一致是静默的**。生成器模板首行是**标题**、次行才是列头 → 典型值 **2/2/2/3**（钉子 `sample_template_has_two_header_rows`）。也管 `repeat_header_rows`。
@@ -62,8 +62,9 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。UI
 （**自动转 `vue-tsc --build`**；openprint 的 tsconfig 是解决方案式，`tsc -p` **假绿**）。
 **长期红着的闸 = 没有闸**（曾红 116 条）。修法与坑见 §十七。
 
-**跑闸**：`bash scripts/check-all.sh`（8 道闸；全量**本机 ~8.5min**；`--fast` 只前两道 ~4s）。
-⚠️ **别拿本机耗时估 CI**（实测差 2~5 倍，机制未查明，别按猜的模型改）。
+**跑闸**：`bash scripts/check-all.sh`（8 道闸；本机 **118s**；`--fast` 前两道 ~4s）。
+⚠️ 本机耗时**带 WorkBuddy 会话 shim 会 ×4.3**（511s vs 118s）：它往 `NODE_OPTIONS` 注 `--require`，
+vitest 每文件一进程 ⇒ 成本×文件数。**CI 没它**（本机其实更快）。干净数加 `NODE_OPTIONS=""`。§11.6
 退出码**三态**：0 通过 / 1 失败 / **2 没跑成（≠ 通过）**。**「没有跑器的闸」比「红的闸」更坏**（绿的 → 虚假信心）。
 **已挂 CI**（`.github/workflows/ci.yml`，2026-09-28 **首次真绿** run #4）：**覆盖 = 本脚本覆盖**（20 注入 / 17 探针仍在外；
 `verify-ci-workflow.py` 刻意不进，会递归）。**读 CI 用 `--remote`**：公开仓库的 `/actions/runs` 与

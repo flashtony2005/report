@@ -26,8 +26,10 @@
 #
 # 用法：
 #   bash scripts/ts-test-openprint.sh                 # 全部（70 文件 / 915 用例）
-#                                                      # 实测 145s（在 check-all.sh 里顺跑）
-#                                                      # / 240s（独立跑，当时机器还在跑别的）
+#                                                      # ⚠️ 本机耗时**带 WorkBuddy 会话 shim**：
+#                                                      #   实测 145s（check-all 里顺跑）/ 240s（独立跑）
+#                                                      #   真实值 **5s**（2026-09-29 实测 `NODE_OPTIONS=""`）
+#                                                      #   —— **8 道闸里被 shim 影响最大的一道**（26×）
 #                                                      # 耗时随负载浮动 → 别拿它当回归判据
 #   bash scripts/ts-test-openprint.sh src/report      # 按路径过滤（参数透传给 vitest）
 #
