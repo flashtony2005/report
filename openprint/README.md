@@ -294,7 +294,7 @@ pnpm preview
 
 ### 测试与覆盖边界
 
-本仓库有**五条**跑测试的入口，覆盖范围**互不相同**。别把任意一条的「绿」读成「全绿」。
+本仓库有**六条**跑测试的入口，覆盖范围**互不相同**。别把任意一条的「绿」读成「全绿」。
 
 | 入口 | 跑什么 | 覆盖边界 |
 | --- | --- | --- |
@@ -303,6 +303,7 @@ pnpm preview
 | `cd designer-react && npx vitest run` | 同上，但**并行**、且**不排除** `../openprint/src` | ⚠️ **别用这条当闸**：默认并行下本机实测 **16 条超时假红**（串行 0 条）。 |
 | `bash scripts/ts-test.sh` | 借本仓 `node_modules` 的 vitest，把 `openprint/src/report/*.ts` **拷到临时目录**跑 | **只有** `openprint/src/report/`（3 文件 / 239 用例）。 |
 | `bash scripts/check-all.sh` | 上面**闸化后的那些** + 类型检查 + Rust 单测，共 **8 道闸** | 用 `bash scripts/check-all.sh --list` 看完整清单。 |
+| `bash scripts/fault-inject-all.sh` | **8/20** 个 `fault-inject-*.py`：故意改坏源码，要求**指定用例/探针变红**（CI 作业 `fault-inject`） | ⚠️ **它证明的是「闸有牙齿」，不是「闸是绿的」** —— 两者是**不同的问题**。只覆盖**不起真服务**的 8 个；另 12 个要 `cargo build` 再起 print-server 或原生驱动，见 `--list`。 |
 
 > ⚠️ **本机耗时别和 CI 比**（2026-09-29 查明）：WorkBuddy 会话会给 `NODE_OPTIONS` 注入一个
 > 打 fs 补丁的 `--require` shim（`node-language-shim.cjs`），而 vitest **每个测试文件起一个进程**
