@@ -32,7 +32,7 @@
 - 五种入口：内置样例 / 分组汇总 / 交叉表 / 画布表格 / 自由模板。前四种是**生成器**，自由模板是**通用表达** → `openReport` 一律 `setMode('free')`。
 - 一格 = `CellTpl` 两层：自身 `value` + 合并；`model?: CellModel` 二十余字段分四组（数据绑定 / 展开 / 主格 / 表达式）。
 - **主格关系不画进格子**：网格旁常显主格树 `parentTreeOf`，选中点亮 `parentChainOf`。
-- 存/开/跑：`PUT /api/reports/save` · `GET /api/reports/:id` → `templateToGrid` · `POST /api/reports/:id/run`。模板**存原样**，`options` 单独存；`withExportFormula`/`withExpandControl` 渲染前才套（自由模板**刻意不套**后者）。
+- 存/开/跑：`PUT /api/reports/save` · `GET /api/reports/:id` → `templateToGrid` · `POST /api/reports/:id/run`。模板**存原样**，`options` 单独存；`withExportFormula`/`withExpandControl` 渲染前才套（自由模板**不套**后者）。
 - `id` 白名单 `[A-Za-z0-9_-]` ≤80 是安全边界（直接拼文件名）。样例 `reports/sales-by-region.json`。
 
 ## 四条「静默失败」红线（改了必自查）
@@ -44,9 +44,7 @@
 
 ## 能力边界（**别再说「画布有、服务端没有」**）
 
-图片 / 条码二维码 / 图表格 / 样式 + 条件格式：**两边都有**（服务端全自研）。
-导出：客户端 PDF/SVG/图片，服务端 xlsx/docx/HTML/CSV。§六/§十/§十一/§十四
-
+图片/条码二维码/图表格/样式+条件格式、导出（客户端 PDF/SVG/图片；服务端 xlsx/docx/HTML/CSV）：**两边都有**（服务端全自研）。§六/§十/§十一/§十四
 **教训**：判断能力有没有，**先 grep 源码，别先看依赖清单**。
 
 ## 数据源现状
@@ -62,18 +60,14 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。UI
 （**自动转 `vue-tsc --build`**；openprint 的 tsconfig 是解决方案式，`tsc -p` **假绿**）。
 **长期红着的闸 = 没有闸**（曾红 116 条）。修法与坑见 §十七。
 
-**跑闸**：`bash scripts/check-all.sh`（8 道闸；本机 **118s**；`--fast` 前两道 ~4s）。
-⚠️ 本机耗时**带 WorkBuddy 会话 shim 会 ×4.3**（511s vs 118s）：它往 `NODE_OPTIONS` 注 `--require`，
-vitest 每文件一进程 ⇒ 成本×文件数。**CI 没它**（本机其实更快）。干净数加 `NODE_OPTIONS=""`。§11.6
-退出码**三态**：0 通过 / 1 失败 / **2 没跑成（≠ 通过）**。**「没有跑器的闸」比「红的闸」更坏**（绿的 → 虚假信心）。
-**已挂 CI**（`.github/workflows/ci.yml`，2026-09-28 **首次真绿** run #4）：**覆盖 = 本脚本覆盖**（20 注入 / 17 探针仍在外；
-`verify-ci-workflow.py` 刻意不进，会递归）。**读 CI 用 `--remote`**：公开仓库的 `/actions/runs` 与
-`/check-runs/{id}/annotations` **裸 curl 就能读**（只有 job log 要 admin）；红时把**闸名+输出尾部**写成 `::error::`；**绿时也发 `::notice::`（闸数+耗时）**——`job success` 说明不了「闸真的跑了」。
-⚠️ **本地全绿 ≠ CI 会绿**（两次「本地 7/7 → 推 → CI 红」）→ **推完必须 `--remote` 复核**。两形态：① 闸引用**未入库**文件
-（`fresh_clone_checks()`）；② 测试**依赖宿主可执行文件**（CUPS：macOS 自带 `lpstat`、ubuntu runner 不带）→ **测试只断言契约**。详见 §二十一.13。
+**跑闸**：`bash scripts/check-all.sh`（8 道闸；本机 **118s**；`--fast` 前两道 ~4s）。退出码**三态**：0/1/**2 没跑成（≠ 通过）**。
+⚠️ 本机耗时**带会话 shim ×4.3**（511 vs 118s）：它往 `NODE_OPTIONS` 注 `--require`，vitest 每文件一进程 ⇒ ×文件数。**CI 没它**。干净数加 `NODE_OPTIONS=""`。§11.6
+**「没有跑器的闸」比「红的闸」更坏**（绿的 → 虚假信心）。闸 7 = designer-react **全部 44 spec / 390 用例**；闸 8 = openprint 70 spec / 915 用例。
+**两个 CI 作业**（`.github/workflows/ci.yml`，2026-09-28 首绿）：`gates` = `check-all.sh` 覆盖；`fault-inject`（2026-10-02）=「闸是绿的、但没有跑器」的**第三个器官**：`scripts/fault-inject-all.sh` 跑 **8/20** 个 fault-inject（另 12 个要真服务/原生驱动，见其 `EXCLUDED`）+ `check-fault-inject-all.py`（证明**跑器自己**有牙齿）。**并行、不许 `continue-on-error`**。⚠️ 坑：① 清单写死必配**漂移守卫**；② `PIPESTATUS[0]` 与 `set -o pipefail` **冗余**（只拆一个不变绿）；③ bash **按字节偏移增量读脚本**（边跑边改报假 syntax error）；④ `python3 -u` 防块缓冲；⑤ 串行是正确性要求（5 个改同一文件）。§13
+**读 CI 用 `--remote`**：公开仓库的 `/actions/runs` 与 `.../annotations` **裸 curl 就能读**（只 job log 要 admin）；红发 `::error::`（闸名+输出尾部）、绿发 `::notice::`——`job success` 说明不了「闸真跑了」。
+⚠️ **本地全绿 ≠ CI 会绿**（两次「本地 7/7 → 推 → CI 红」）→ **推完必须 `--remote` 复核**。两形态：① 闸引用**未入库**文件；② 测试**依赖宿主可执行文件**（CUPS：macOS 有 `lpstat`、ubuntu 无）→ **测试只断言契约**。§二十一.13
 `mirror-check.py`：**形状 24 组字段 + 语义 8 条**（§二十一.9），**抽取失败计红**；**仍未闸**：`#RRGGBB` / 表头行数。
-闸 7 = designer-react **全部 44 spec / 390 用例**（2026-09-29 去掉 `grid-report-` 过滤，此前只 12 个）；
-**闸 8** = openprint 自己的 vitest（70 spec / 915 用例）。
+`verify-ci-workflow.py` 刻意不进 `check-all.sh`（会反过来执行它 → 递归）。
 
 ## AI 层（**已有**，别当缺口）
 
@@ -86,13 +80,13 @@ vitest 每文件一进程 ⇒ 成本×文件数。**CI 没它**（本机其实�
 - **格子样式 + 条件格式** `CellModel.style` → xlsx + HTML 都落地（无样式时输出**逐字节不变**）。**刻意不给边框**（Univer 不渲染）；颜色只认 `#RRGGBB`（认不出报 400）。条件格式**无新渲染代码**。§十四/十五
 - **格子图片** `CellTpl.image`/`CellModel.image`（两槽都认）→ xlsx 真嵌入 + HTML `<img>`。只收 data URI（收路径＝任意文件读取原语）。§六
 - **图表格** `CellTpl.chart`/`CellModel.chart`（两槽都认）→ HTML 内联 SVG + xlsx **原生图表**，声明**模板坐标**。一个声明只画一份 · 空值是空档不是 0 · 是导出那刻的快照。§十
-- **条码 / 二维码** `CellTpl.barcode`/`CellModel.barcode` → HTML 内联 SVG + xlsx **1 位灰度位图**（自研 PNG）。QR（**字节模式 + ECC M + v1~10**）+ Code128。**展开行 N 行出 N 个**（**反图表**）。判据收成 `GridCell::graphic()`。§十一
+- **条码 / 二维码** `CellTpl.barcode`/`CellModel.barcode` → HTML 内联 SVG + xlsx **1 位灰度位图**（自研 PNG）。QR（字节模式 + ECC M + v1~10）+ Code128。**展开行 N 行出 N 个**（反图表）。§十一
 - **ODBC** `db_odbc.rs`，可选 feature。**票据指令** `/print` 的 `esc`/`tsc`/`zpl` 已实现。
 - **报表参数** `ReportDef.params` + `RunRequest.values`（按名绑）；与老 `RunRequest.params`（数据集名 → 位置数组）**两条通道**。未知/必填缺失/解析不出值**一律报错**；**未知参数检查必须先于必填**（否则 typo 被报成「region 必填」）。
 - **报表页面设置** `PageConfig` 后 5 个 `Option` → HTML `@page` + xlsx `pageSetup`/`pageMargins`/`oddFooter`。**B5 = JIS 182×257**。**背景/水印没做**。§十六
 - **Word 导出** `POST /api/report/docx` → `docx.rs` + `zip.rs`（**只写 method 0**）。**本机没 Word/WPS** → 「能打开」**验不了**，只用**四条可判定不变量**替代；**失败全有全无**。§十八
 - **覆盖保护两道** `force`→409（授权）+ `?base=<updatedAt>`→412（版本，**`base` 压过 `force`**）。唯一写入口 `save(dir,def,Expect)`。§二十一.12
-- **数据文件 / 接口数据集（C 类）** `RenderRequest.datasets` 早通着。`dataset-import.ts`/`dataset-fetch.ts`（URL **前端直连**＝不造 SSRF）/`parseWorkbookFile`（xlsx 必须 **`raw:true`+`cellDates`**，否则货币格读成字符串 → **合计都错**）。§十九
+- **数据文件 / 接口数据集（C 类）** `RenderRequest.datasets` 早通着。`dataset-import.ts`/`dataset-fetch.ts`（URL **前端直连**＝不造 SSRF）/`parseWorkbookFile`（xlsx 必须 **`raw:true`+`cellDates`**，否则货币格读成字符串）。§十九
 
 ## 局限 / 已知取舍
 
@@ -101,9 +95,6 @@ vitest 每文件一进程 ⇒ 成本×文件数。**CI 没它**（本机其实�
 - 不是缺口（已核）：表达式函数全在；`CellModel` 无死字段；分页三配置都生效。
 - ⚠️ **5 个已复现缺陷** → `架构评审核验-逐条复现.md`（①②③④ 已修，⑤ 不按原注释实现）。**诊断已分级接进界面**（§二十四，Error 拦导出）。**跨数据集两条红线**：列主格跨数据集 = 拒绝 + `Error`；`join_view` 取组内全部键的**并集**。细节 §二十三。
 
-## 对照积木报表（`引擎差距分析-对照积木报表.md`；细节 §二十五）
+## 对照积木报表（细节 §二十五）
 
-对标 `jeecgboot/JimuReport`：**不是一个物种** —— 它做广度，我们做深度。
-A 类 5 项**不做**（填报/大屏/AI/权限分享/移动端）；**填报**唯一真会被问，口径是「按只读设计，**不支持回写**」，**不能说「暂未实现」**。
-B 类只剩 **B4 超链接**（打印用不上）+ **B5 子报表**不做；数据源**别追数量**（真差距是「没有非 SQL 数据集抽象」，信创库走 ODBC DSN）。
-**⚠️ 许可**：补充条款**禁止同类竞争** + 须保留版权标识 → **可读 README 对标功能，不能抄代码 / 兼容其模板格式**。想兼容先找法务。
+对标 `jeecgboot/JimuReport`：**不是一个物种** —— 它做广度，我们做深度。A 类 5 项**不做**（填报/大屏/AI/权限分享/移动端），填报口径「按只读设计，**不支持回写**」；B 类只剩 B4 超链接 / B5 子报表。**⚠️ 许可禁止同类竞争** → 可读 README 对标，**不能抄代码 / 兼容其模板格式**，想兼容先找法务。

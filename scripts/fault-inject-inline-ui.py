@@ -80,10 +80,13 @@ INJECTIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "存盘不提示「内联数据不会被保存」（静默丢数据）",
-        "      setSaveNotice(\n"
-        "        dataSourceKind === 'inline'\n",
-        "      setSaveNotice(\n"
-        "        false\n",
+        # ⚠️ 前导缩进是锚点的一部分：`setSaveNotice(...)` 曾从 6 空格被重新嵌到
+        # 8 空格，锚点当场失配（匹配 0 次）—— 由 `fault-inject-all.sh` 在 2026-10-02
+        # 的首次干净全跑里抓出来。**改这段代码的缩进时，要同步改这里。**
+        "        setSaveNotice(\n"
+        "          dataSourceKind === 'inline'\n",
+        "        setSaveNotice(\n"
+        "          false\n",
         "存盘要提示",
     ),
 ]

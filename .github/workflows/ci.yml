@@ -12,16 +12,29 @@ name: gates
 # ────────────────────────────────────────────────────────────────────────────
 # ⚠️ 覆盖边界（别把这条 CI 读成「全都验过了」）
 #
-#   覆盖 = `check-all.sh` 的覆盖：mirror-check（Rust↔TS 契约）· ts-check ·
+#   作业 `gates` 覆盖 = `check-all.sh` 的覆盖：mirror-check（Rust↔TS 契约）· ts-check ·
 #          ts-test（前端纯函数）· ts-project-check ×2 · cargo test ·
 #          设计器 UI 单测（**designer-react 全部 44 个 spec**）·
 #          **引擎层单测（openprint 全部 70 个 spec）**。
 #
-#   **不覆盖** 20 个 `fault-inject-*.py` 与 17 个 `verify-*.py`：前者要改源码再还原，
-#   后者要起真服务（还有的要 sqlite / postgres / odbc 驱动）。它们仍然只能按需手跑。
-#   （第 17 个是 `verify-ci-workflow.py` —— 它**刻意**不放进 `check-all.sh`，
-#    因为它会反过来执行 `check-all.sh`，放进去就是无限递归。）
-#   → 所以这条 CI 的保证**不多不少**就是 `check-all.sh` 的保证。
+#   作业 `fault-inject` 覆盖 = **8/20** 个 `fault-inject-*.py`（2026-10-01 加）：
+#          只改源码文本 + 跑一条**已经在上面的闸里**的命令（mirror-check / cargo test /
+#          designer-react 的 vitest），零服务、零原生依赖。
+#
+#   **仍然不覆盖**：
+#     · 12 个 `fault-inject-*.py` —— 门禁要 `cargo build` **再起一个 print-server**
+#       （探针打 127.0.0.1:18888 / :18907），或者要 `--features odbc` 那套原生驱动。
+#       逐条依据写在 `scripts/fault-inject-all.sh` 的 `EXCLUDED` 里。
+#     · 17 个 `verify-*.py` —— 多数要起真服务（还有的要 sqlite / postgres / odbc 驱动）。
+#       （其中 `verify-ci-workflow.py` **刻意**不放进 `check-all.sh`：它会反过来执行
+#        `check-all.sh`，放进去就是无限递归。）
+#     · 所以两个作业合起来，保证**仍然不是**「全都验过了」：20 个注入里还有 12 个没跑器。
+#
+#   ⚠️ 加 `fault-inject` 的理由就是本项目那条招牌病：**「闸是绿的、但没有跑器」**。
+#      前两个器官（openprint 引擎层 67 个 spec、designer-react 的 32 个 spec）已关；
+#      这是第三个，而且更隐蔽 —— 它是「**证明用例有牙齿的脚本**没人跑」。
+#      少了它，前面所有的绿都只是**未被检验的自信**。
+# ────────────────────────────────────────────────────────────────────────────
 #
 # ⚠️ `check-all.sh` 的退出码是**三态**：0 通过 / 1 失败 / **2 没跑成**（环境缺东西）。
 #   三者都必须让 job 红（非 0 即失败）——「没跑成」**绝不能**算通过，那正是本项目
@@ -122,3 +135,82 @@ jobs:
         #   读法：`python3 scripts/verify-ci-workflow.py --remote`
         #   为什么值得这么做：2026-09-28 加了第 8 道闸之后，step 耗时反而从 186s 降到 165s ——
         #   耗时对不上是**歧义**，当时我**没有任何办法**判断第 8 道到底跑了没有。
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 作业 2：**证明闸的断言真有牙齿**（fault injection）。
+  #
+  # 与 `gates` **并行**（`needs` 都不写）—— 两者没有先后依赖，串起来只会白白拉长墙钟时间。
+  #
+  # ⚠️ 覆盖边界：**只覆盖 8/20** 个 `fault-inject-*.py`。逐条分类依据（以及另 12 个
+  #    到底要什么）写在 `scripts/fault-inject-all.sh` 顶部与它的 `EXCLUDED` 里。
+  #    ⇒ 这个作业的绿，意思是「这 8 个脚本的每条注入都被**指定**用例抓到了」，
+  #      **不是**「20 个注入都验过了」。别读成后者。
+  #
+  # ⚠️ **不许加 `continue-on-error`**：这个作业的全部意义就是「红了要拦」。
+  #    加了它 = 红了也不算红 = 原样回到「闸是绿的、但没有跑器」那个病。
+  #    （`verify-ci-workflow.py` 的静态校验**明确禁止** `continue-on-error` / `|| true` /
+  #      把闸的输出接进管道 —— 三条各有一条故障注入证明它会红。）
+  #
+  # ⚠️ 它要装两份 node_modules + 编 Rust，和 `gates` 是**重复**的环境准备。
+  #    这是「独立作业」的代价，换来的是「闸红了不会顺带把注入也带红」和并行。
+  #
+  # ⚠️ 耗时主要在两处：`cargo test`（`fault-inject-table-pins.py` 会改 5 次源码
+  #    ⇒ 5 次增量重编）和 designer-react 的 vitest（5 个脚本各自跑若干次）。
+  #    本机（干净 `NODE_OPTIONS`）实测见 §13；timeout 留了 4 倍余量。
+  # ──────────────────────────────────────────────────────────────────────────
+  fault-inject:
+    name: fault-inject（8 个注入 · 证明闸有牙齿）
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # 与 `gates` 同样的两份依赖：注入脚本的门禁就是这些包自己的 vitest。
+      # （`npm ci` 要求 lock 与 package.json 同步，不同步就失败 —— 那是好事。）
+      - name: 装依赖（designer-react）
+        working-directory: designer-react
+        run: npm ci
+
+      - name: 装依赖（openprint）
+        working-directory: openprint
+        run: npm ci
+
+      # 与 `gates` 同一个 key：两个作业并行时谁先存谁生效，另一个靠 `restore-keys`
+      # 拿一份旧的，最坏情况是从头编一次 print-server（`fault-inject-table-pins.py`
+      # 本来就要编，所以这份缓存是纯赚）。
+      - name: 缓存 cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            print-server/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('print-server/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: 跑故障注入
+        run: bash scripts/fault-inject-all.sh
+        # 与 `check-all.sh` 同一套诊断纪律：失败原因写进 check-run 的 annotation
+        # （**唯一**不需要 admin 权限就能读到的输出），成功时发一条 `::notice::`
+        # 证明「这几个脚本真的跑了」。脚本自己负责发，这里不需要额外步骤。
+        # 退出码三态：0 通过 / 1 有注入漏网 / 2 没跑成（缺 node_modules / 缺 cargo /
+        # 工作树被上个脚本留在注入态）—— **三者都必须让 job 红**，所以这里不做任何
+        # `|| true`、不接管道、不吞退出码。
+
+      # 跑器自己也要有牙齿：拆掉 `fault-inject-all.sh` 的承重守卫，
+      # 要求它以**特定方式**变红（分类完整性 / 退出码捕获 / 前置缺失→没跑成 / 工作树守卫）。
+      # 没有这一步，上面那个作业就只是「一个没人验过的跑器」——
+      # 把「闸是绿的、但没有跑器」原样往上挪了一层。
+      # 快（造两个假脚本 + 跑几次 `--only`，不碰产品代码、不跑 vitest/cargo）。
+      - name: 证明这个跑器自己有牙齿
+        run: python3 scripts/check-fault-inject-all.py

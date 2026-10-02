@@ -1832,6 +1832,129 @@ shim 是**会话级**的（只有从 WorkBuddy 里跑才有）⇒ 它污染的�
 （`NODE_OPTIONS` 含 `--require` 时），给出干净命令。刻意用普通 `printf` 而非 `::notice::` ——
 否则 `verify-ci-workflow.py` 的「基线恰好一条 notice」自检会被打红。
 
+### §二十一.17 第三个器官：把 8 个 fault-inject 挂进 CI（2026-10-01/02）
+
+招牌病「**闸是绿的、但没有跑器**」的**第三个器官**（前两个：openprint 引擎层 67 spec 于 09-28、
+designer-react 32 spec 于 09-29）。第三个更隐蔽：前两个是「**用例**没人跑」，这个是
+「**证明用例有牙齿的脚本**没人跑」。20 个 `fault-inject-*.py` 在 10-01 之前**一条闸都不跑**
+（`check-all.sh` 里只有注释提到）。少了它，前面所有的绿都只是**未被检验的自信**。
+
+#### 分类：20 个脚本是**异构**的，只能逐个读 `main()` 得出
+
+grep 标记数是**噪声**（大多是注释里的提及）。逐个读源码后的真实划分：
+
+| 类 | 数量 | 判据 |
+| --- | --- | --- |
+| **可 CI 化** | **8** | 只改源码文本 + 跑一条**已经在 CI 里**的闸（`mirror-check.py` / `cargo test` / designer-react vitest）。零服务、零原生依赖 |
+| **不可** | **12** | 门禁要 `cargo build` **再起一个 print-server**（探针打 `127.0.0.1:18888` / `:18907`），或要 `--features odbc` 的原生驱动 |
+
+前置条件收成一个词表 `{none, cargo, designer, designer+openprint}`（`fault-inject-all.sh` 的 `CI_ABLE`）。
+**本脚本的保证只覆盖 8/20** —— 别把它的绿读成「20 个都验过了」。
+
+#### 跑器设计：`scripts/fault-inject-all.sh`
+
+- **串行是正确性要求**，不是性能选择：8 个里 **5 个改同一个文件**
+  （`designer-react/src/modals/GridReportModal.tsx`）⇒ 并行 = 互相读到对方注入到一半的源码。
+  同 `ts-test-designer.sh` 的 `--no-file-parallelism`。
+- **三态退出码**（同 `check-all.sh`）：0 通过 / 1 失败 / **2 没跑成**（缺 node_modules、缺 cargo、
+  或工作树被上个脚本留在注入态）。取**最坏**，1 优先于 2。
+- **分类漂移守卫**（本脚本最重要的一段）：清单**写死**（不用 glob，理由是「哪些被覆盖」要有
+  唯一事实来源），所以必须有反向检查 —— 任何 `fault-inject-*.py` 不落在两个清单里就**当场 rc=2**。
+  漂移方向恰好是最坏的：新脚本**永不跑**而脚本照样全绿 = 把那个病原样复制到这一层。
+- **`--list` 放在分类校验之后**：否则清单漂了时 `--list` 照样打印一份「看着挺全」的清单 ——
+  那正是最该消灭的「看着像检查过了」。
+- **工作树守卫**：每跑一个就比一次 `git status --porcelain` 指纹，变了就**停下并报 rc=2**
+  （**不自动还原** —— 本机可能有用户未提交的改动）。理由：脚本被强杀后源码停在注入态，
+  后面每个都会锚点失配、报一堆红，而那些红**指向的是错的方向**。
+- **`python3 -u`**：不加的话 python 往管道写会**块缓冲**（4KB 才吐一次）⇒ 长脚本全程黑屏，
+  日志 0 字节，看着像「卡住了」（实测撞过）。
+
+#### ⚠️ `PIPESTATUS` 与 `pipefail` 是**冗余**的（本轮的错注释更正）
+
+`fault-inject-all.sh` 顶部有 `set -o pipefail`，所以 `python3 … | tee` 之后 `$?`
+**并不**恒 0（管道返回最右的非零码）。⇒ `rc=${PIPESTATUS[0]}` 与 `pipefail` **任一**都够用；
+留 `PIPESTATUS[0]` 是因为它**更精确**（tee 自己失败时 `$?` 会拿到 tee 的码，把「没跑成(2)」
+误报成「失败(1)」）。原注释写「`$?` 恒 0」是**错的**，已更正。
+
+**这条是被 `check-fault-inject-all.py` 的 B2 用例顶出来的**：原断言「只把那一行换成 `rc=$?`
+⇒ rc=0」实测 **rc 仍是 1** —— 单拆一个不变绿，必须**两个一起拆**。
+
+#### 跑器自己也要有牙齿：`scripts/check-fault-inject-all.py`
+
+`fault-inject-all.sh` 的全部作用是「证明别的闸有牙齿」。那它自己呢？它里面有几条断言**承重**：
+守卫失效时输出会**从「有失败」变成「全绿」** —— 那不是漏报，是**反向撒谎**。所以逐条拆掉它们，
+要求它以**特定方式**变红：
+
+| # | 断言 | 期望 |
+| --- | --- | --- |
+| A | 分类完整性守卫 | `--list` **rc=2** 且报「新增脚本没有分类」 |
+| B1 | 正确实现下的退出码传递 | 注入失败 ⇒ 汇总 **rc=1** |
+| B2 | 退出码捕获（`PIPESTATUS[0]` **+** `pipefail`） | **两个一起拆**后 **rc=0** |
+| C | 前置缺失 → 「没跑成」(2) | **rc=2** 且报「PATH 里没有 cargo」 |
+| D | 工作树守卫 | **rc=2** 且报「工作树在…变了」 |
+
+手法：临时造两个 `fault-inject-zzz-*.py` 假脚本（`sys.exit(1)` / 写一个脏文件），跑完删掉 ——
+**一个字节的产品代码都不动**。唯一被临时改的是 `fault-inject-all.sh` 自己（B2 要注入），
+改前存哈希、`finally` 里逐字节还原并复核。开头用 `pgrep` 拒绝「另一个实例在跑」
+（bash **按字节偏移增量读脚本**，边跑边改会让它读到新旧拼接的内容）。
+
+**第一次真跑，它抓到自己的两个 bug（都没粉饰成绿）**：
+
+1. **`with_entries()` 把 `CI_ABLE` 的最后一条顶掉了**：原写法 `replace(ANCHOR, ins + ")")`
+   是**替换**不是**追加** ⇒ `ai-dropped` 变「未分类」⇒ 分类守卫在 B/D 里先红、rc=2，
+   **看着像「如期」**。修：`LAST_ENTRY + ins + ")"`。
+2. **B2 的前提本身是错的**（见上）。
+
+> 教训：**跑器的脚手架自己也会坏，而且坏的时候常常伪装成「如期变红」。**
+> 所以「真跑一次、逐条看清 rc 和输出」不是走过场 —— 两次都是「基线必须先绿」这条纪律
+> （`fault-injection-verify` 纪律 1）把脚手架自己的 bug 顶出来的。
+
+#### 第一次干净全跑抓到**一个真实缺陷**（本作业存在的意义）
+
+`fault-inject-inline-ui.py` 的第 5 条注入**锚点失配**（匹配 0 次）：它盯的 `setSaveNotice(...)`
+调用点被**重新嵌了一层**（缩进 6 → 8 空格），而锚点是按字节匹配的。
+**这个注入已经静默失效了一段时间，而在此之前没有任何东西会发现它。**
+修法：同步缩进，并把「改这段代码的缩进要同步改锚点」写进脚本。这是**脚本自身的腐坏**，
+不是本次改动引入的 —— 但它正好证明了「跑器」的价值。
+
+#### 实测耗时（干净 `NODE_OPTIONS`，本机 M4）
+
+| 脚本 | 耗时 | 前置 |
+| --- | --- | --- |
+| `fault-inject-mirror-semantics.py` | 8s | none |
+| `fault-inject-table-pins.py` | 56s | cargo |
+| `fault-inject-inline-dataset.py` | 18s | designer |
+| `fault-inject-save-confirm.py` | **331s** | designer |
+| `fault-inject-issues-ui.py` | 80s | designer |
+| `fault-inject-ui-panel.py` | 172s | designer |
+| `fault-inject-inline-ui.py` | 164s | designer |
+| `fault-inject-ai-dropped.py` | 30s | designer+openprint |
+| **合计** | **≈ 860s（14 min）** | |
+
+`timeout-minutes: 40` 按这个量级留的余量（CI 上没 shim，但 `npm ci` + 编 Rust 要另算）。
+⚠️ `fault-inject-save-confirm.py` 走 `ts-test-designer.sh`，而那个脚本是
+`NODE_OPTIONS="${NODE_OPTIONS:-}…"`（**追加**）⇒ 保留会话 shim ⇒ 本机被放大约 4 倍（§二十一.16）。
+另 7 个自己**覆盖** `NODE_OPTIONS`，天然免疫。
+
+#### CI 作业：独立、并行、**不许 `continue-on-error`**
+
+`.github/workflows/ci.yml` 新增作业 `fault-inject`，与 `gates` **并行**（不写 `needs`）：
+`npm ci ×2` + 缓存 cargo → `bash scripts/fault-inject-all.sh` → `python3 scripts/check-fault-inject-all.py`。
+
+1. **并行**：两者无先后依赖，串起来只拉长墙钟时间；代价是重复装两份 node_modules + 编 Rust。
+2. **不许 `continue-on-error`**：这个作业的全部意义就是「红了要拦」。加了它 = 原样回到那个病。
+   （`verify-ci-workflow.py` 的静态校验**明确禁止**。）
+3. **跑器自己也要挂上**（第 2 步）：否则 `check-fault-inject-all.py` 自己就成了「一个没人跑的脚本」——
+   同一个病再往上爬一层。
+
+#### 诚实边界
+
+- **只覆盖 8/20**。另 12 个仍只能按需手跑。
+- **本机绿 ≠ CI 绿**：这 8 个脚本从没在 ubuntu 上跑过（`npm ci` 能不能装成、jsdom/antd 差异未知）
+  ⇒ 推完**必须** `--remote` 复核（§二十一.13）。
+- **`check-fault-inject-all.py` 不进 `check-all.sh`**：它要改 `fault-inject-all.sh`，
+  而 `check-all.sh` 的定位是「日常入口」；两者各管一摊。
+
 ---
 
 ## 二十二、《报表引擎详解-功能与算法.md》（2026-09-26，仓库根，1738 行）

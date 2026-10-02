@@ -674,8 +674,12 @@ def main() -> int:
     print("    裸 curl 就能读，不需要 token。真正读不到的只有 log 正文。")
     print("  · `npm ci` 在 ubuntu 上能不能装成功（本机沙箱装不出依赖，没跑过）")
     print("  · runner 的核数够不够跑设计器 UI 单测（见 ci.yml 顶部）")
-    print("  · 20 个 fault-inject / 17 个 verify **不在 CI 里**，所以 CI 的保证")
-    print("    不多不少就是 `check-all.sh` 的保证。")
+    print("  · **12/20** 个 `fault-inject-*.py` 与 17 个 `verify-*.py` 不在 CI 里 ——")
+    print("    它们要 `cargo build` 再起一个 print-server（探针打 127.0.0.1:18888 / :18907）")
+    print("    或要 `--features odbc` 的原生驱动，仍然只能按需手跑。")
+    print("    （另 8 个 fault-inject 在作业 `fault-inject` 里，**在上面第 2 步被执行过**；")
+    print("      分类依据见 `scripts/fault-inject-all.sh` 的 CI_ABLE / EXCLUDED。）")
+    print("  · 所以两个作业合起来，保证**仍然不是**「全都验过了」。")
     print("\n✓ CI 会跑的命令，就是本脚本在上面逐条跑通的那些。")
     return 0
 

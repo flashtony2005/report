@@ -49,6 +49,14 @@
 #   ls scripts/fault-inject-*.py   # 注入：证明某条闸真的有牙齿
 #   ls scripts/verify-*.py         # 探针：对活服务做端到端验证
 #
+# ⚠️ 2026-10-01 起，**其中 8 个 fault-inject 有了自己的跑器**：
+#    `scripts/fault-inject-all.sh`（CI 里的第二个作业 `fault-inject`）。
+#    那 8 个只改源码文本 + 跑一条**已经在本脚本里**的命令（mirror-check / cargo test /
+#    designer-react 的 vitest），零服务、零原生依赖。另 12 个仍然只能手跑。
+#    ⚠️ 本脚本**刻意不调用它**：那 8 个会改源码再还原，混进本脚本的「按顺序跑闸」里
+#    会让失败原因变得难以归因；而且它要几十分钟，会把本脚本从「日常入口」变成「不敢跑」。
+#    ⇒ 两个入口，各管一摊；覆盖边界各自写在各自顶部。
+#
 # ⚠️ 有一个例外，**刻意不放进来**：`verify-ci-workflow.py` 不需要服务，
 # 但它会**反过来执行 `check-all.sh`**（证明 CI 要跑的命令真的跑得通）——
 # 放进来就是无限递归。想校验 CI 就单独跑 `python3 scripts/verify-ci-workflow.py`。
@@ -279,6 +287,7 @@ printf '通过 %d · 失败 %d · 没跑成 %d\n' "$passed" "$failed" "$skipped"
 [ "${#SKIPPED_NAMES[@]}" -gt 0 ] && printf '没跑成：%s\n' "${SKIPPED_NAMES[*]}"
 
 printf '\n（不含 20 个 fault-inject / 17 个 verify —— 要改源码 / 起服务，按需单独跑：`ls scripts/fault-inject-*.py`）\n'
+printf '（其中 8 个 fault-inject 有独立跑器：`bash scripts/fault-inject-all.sh`，也是 CI 的第二个作业。）\n'
 printf '（CI 跑的就是本脚本：`.github/workflows/ci.yml`。覆盖边界与它一致，别读成「全都验过了」。）\n'
 
 case $worst in
