@@ -63,9 +63,9 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。UI
 **跑闸**：`bash scripts/check-all.sh`（8 道闸；本机 **118s**；`--fast` 前两道 ~4s）。退出码**三态**：0/1/**2 没跑成（≠ 通过）**。
 ⚠️ 本机耗时**带会话 shim ×4.3**（511 vs 118s）：它往 `NODE_OPTIONS` 注 `--require`，vitest 每文件一进程 ⇒ ×文件数。**CI 没它**。干净数加 `NODE_OPTIONS=""`。§11.6
 **「没有跑器的闸」比「红的闸」更坏**（绿的 → 虚假信心）。闸 7 = designer-react **全部 44 spec / 390 用例**；闸 8 = openprint 70 spec / 915 用例。
-**两个 CI 作业**（`.github/workflows/ci.yml`，2026-09-28 首绿）：`gates` = `check-all.sh` 覆盖；`fault-inject`（2026-10-02）=「闸是绿的、但没有跑器」的**第三个器官**：`scripts/fault-inject-all.sh` 跑 **8/20** 个 fault-inject（另 12 个要真服务/原生驱动，见其 `EXCLUDED`）+ `check-fault-inject-all.py`（证明**跑器自己**有牙齿）。**并行、不许 `continue-on-error`**。⚠️ 坑：① 清单写死必配**漂移守卫**；② `PIPESTATUS[0]` 与 `set -o pipefail` **冗余**（只拆一个不变绿）；③ bash **按字节偏移增量读脚本**（边跑边改报假 syntax error）；④ `python3 -u` 防块缓冲；⑤ 串行是正确性要求（5 个改同一文件）。§13
-**读 CI 用 `--remote`**：公开仓库的 `/actions/runs` 与 `.../annotations` **裸 curl 就能读**（只 job log 要 admin）；红发 `::error::`（闸名+输出尾部）、绿发 `::notice::`——`job success` 说明不了「闸真跑了」。
-⚠️ **本地全绿 ≠ CI 会绿**（两次「本地 7/7 → 推 → CI 红」）→ **推完必须 `--remote` 复核**。两形态：① 闸引用**未入库**文件；② 测试**依赖宿主可执行文件**（CUPS：macOS 有 `lpstat`、ubuntu 无）→ **测试只断言契约**。§二十一.13
+**两个 CI 作业**（`ci.yml`）：`gates` = `check-all.sh` 覆盖；`fault-inject` =「闸是绿的、但没有跑器」的**第三个器官**：`fault-inject-all.sh` 跑 **8/20** 个 fault-inject（另 12 个要真服务/原生驱动，见 `EXCLUDED`）+ `check-fault-inject-all.py`（证明**跑器自己**有牙齿）。**并行、不许 `continue-on-error`**。⚠️ 坑：① 清单写死必配**漂移守卫**；② `PIPESTATUS[0]` 与 `pipefail` **冗余**；③ bash **按字节偏移增量读脚本**（边跑边改报假错）；④ `python3 -u` 防块缓冲；⑤ **串行是正确性要求**（5 个改同一文件）；⑥ 工作树守卫会**误报**。§13
+**读 CI 用 `--remote`**：`/actions/runs` + **`/check-runs/{id}/annotations`**（**不是** `/actions/runs/{id}/annotations`，那个 404）**裸 curl 就能读**；只 job log 要 admin。红发 `::error::`（闸名+尾部）、绿发 `::notice::`——`job success` 说明不了「闸真跑了」。**annotation 上限 10 条**。
+⚠️ **本地全绿 ≠ CI 会绿**（三次）→ **推完必须 `--remote` 复核**。三形态：① 闸引用**未入库**文件；② 测试**依赖宿主可执行文件**（CUPS：macOS 有 `lpstat`、ubuntu 无）→ **测试只断言契约**；③ **`CI` 改变被测工具的输出格式**（picocolors `|| !!env.CI`，**与 TTY 无关**）⇒ **解析测试输出前必须剥 ANSI**，否则「抓到」被报成「漏网」。本机复现 `CI=true`。§13.7 / §二十一.13
 `mirror-check.py`：**形状 24 组字段 + 语义 8 条**（§二十一.9），**抽取失败计红**；**仍未闸**：`#RRGGBB` / 表头行数。
 `verify-ci-workflow.py` 刻意不进 `check-all.sh`（会反过来执行它 → 递归）。
 
@@ -82,19 +82,20 @@ sqlite ✅ / postgres ✅ / **odbc ✅（可选 feature，默认不编）**。UI
 - **图表格** `CellTpl.chart`/`CellModel.chart`（两槽都认）→ HTML 内联 SVG + xlsx **原生图表**，声明**模板坐标**。一个声明只画一份 · 空值是空档不是 0 · 是导出那刻的快照。§十
 - **条码 / 二维码** `CellTpl.barcode`/`CellModel.barcode` → HTML 内联 SVG + xlsx **1 位灰度位图**（自研 PNG）。QR（字节模式 + ECC M + v1~10）+ Code128。**展开行 N 行出 N 个**（反图表）。§十一
 - **ODBC** `db_odbc.rs`，可选 feature。**票据指令** `/print` 的 `esc`/`tsc`/`zpl` 已实现。
-- **报表参数** `ReportDef.params` + `RunRequest.values`（按名绑）；与老 `RunRequest.params`（数据集名 → 位置数组）**两条通道**。未知/必填缺失/解析不出值**一律报错**；**未知参数检查必须先于必填**（否则 typo 被报成「region 必填」）。
+- **报表参数** `ReportDef.params` + `RunRequest.values`；与老 `RunRequest.params`（数据集名 → 位置数组）**两条通道**。未知/必填缺失/解析不出值**一律报错**；**未知参数检查必须先于必填**。
 - **报表页面设置** `PageConfig` 后 5 个 `Option` → HTML `@page` + xlsx `pageSetup`/`pageMargins`/`oddFooter`。**B5 = JIS 182×257**。**背景/水印没做**。§十六
 - **Word 导出** `POST /api/report/docx` → `docx.rs` + `zip.rs`（**只写 method 0**）。**本机没 Word/WPS** → 「能打开」**验不了**，只用**四条可判定不变量**替代；**失败全有全无**。§十八
 - **覆盖保护两道** `force`→409（授权）+ `?base=<updatedAt>`→412（版本，**`base` 压过 `force`**）。唯一写入口 `save(dir,def,Expect)`。§二十一.12
-- **数据文件 / 接口数据集（C 类）** `RenderRequest.datasets` 早通着。`dataset-import.ts`/`dataset-fetch.ts`（URL **前端直连**＝不造 SSRF）/`parseWorkbookFile`（xlsx 必须 **`raw:true`+`cellDates`**，否则货币格读成字符串）。§十九
+- **数据文件 / 接口数据集** `RenderRequest.datasets` 早通着。`dataset-fetch.ts`（URL **前端直连**＝不造 SSRF）/`parseWorkbookFile`（xlsx 必须 **`raw:true`+`cellDates`**，否则货币格读成字符串）。§十九
 
 ## 局限 / 已知取舍
 
 - **分页不认分组**：`paginate()` 按固定行数切拍平网格，不知哪几行同组 → 一组明细跨页时第二页只有重复表头，**补不出主格**。
-- **`GridCell` 字段很少**：`text/pos/rowspan/colspan/raw_number/num_format/formula` + 后补 `style`/`image`/`chart`/`barcode`。设计器里的彩色是**语义高亮**（标角色不标长相）。xlsx 基础样靠导出器写死。
+- **`GridCell` 字段很少**：`text/pos/rowspan/colspan/raw_number/num_format/formula` + 后补 `style`/`image`/`chart`/`barcode`。设计器里的彩色是**语义高亮**。xlsx 基础样靠导出器写死。
 - 不是缺口（已核）：表达式函数全在；`CellModel` 无死字段；分页三配置都生效。
-- ⚠️ **5 个已复现缺陷** → `架构评审核验-逐条复现.md`（①②③④ 已修，⑤ 不按原注释实现）。**诊断已分级接进界面**（§二十四，Error 拦导出）。**跨数据集两条红线**：列主格跨数据集 = 拒绝 + `Error`；`join_view` 取组内全部键的**并集**。细节 §二十三。
+- ⚠️ **5 个已复现缺陷** → `架构评审核验-逐条复现.md`（①②③④ 已修，⑤ 不按原注释实现）。**诊断分级接进界面**（§二十四，Error 拦导出）。**跨数据集红线**：列主格跨数据集 = 拒绝 + `Error`；`join_view` 取组内全部键**并集**。§二十三
 
-## 对照积木报表（细节 §二十五）
+## 对照积木报表（§二十五）
 
-对标 `jeecgboot/JimuReport`：**不是一个物种** —— 它做广度，我们做深度。A 类 5 项**不做**（填报/大屏/AI/权限分享/移动端），填报口径「按只读设计，**不支持回写**」；B 类只剩 B4 超链接 / B5 子报表。**⚠️ 许可禁止同类竞争** → 可读 README 对标，**不能抄代码 / 兼容其模板格式**，想兼容先找法务。
+对标 `jeecgboot/JimuReport`：**不是一个物种**（它做广度、我们做深度）。A 类 5 项**不做**（填报/大屏/AI/权限分享/移动端），填报口径「按只读设计，**不支持回写**」。
+**⚠️ 许可禁止同类竞争** → 可读 README 对标，**不能抄代码 / 兼容其模板格式**，想兼容先找法务。

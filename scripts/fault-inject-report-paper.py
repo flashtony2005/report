@@ -46,6 +46,10 @@ GR_TS = ROOT / "openprint/src/report/grid-report.ts"
 REQ_TS = ROOT / "designer-react/src/modals/grid-report-request.ts"
 # node 路径**不写死**：版本后缀是环境发的，写死过一次就整个跑不起来（见 node_bin.py）
 NODE = resolve_node()
+# ⚠️ 摘录失败用例前**必须先去 ANSI**。`picocolors` 的判据里有 `|| "CI" in env`，
+# 所以 GitHub Actions（`CI=true`）下 vitest 会带色，`startswith("FAIL")` 就匹配不上 ——
+# 症状是「闸红着，但摘要那行是空的」，看着像没失败。本机默认不设 `CI`，复现不了。
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # vitest 走 vite 工具链，不挂这两个 preload 会被 broker 拦（见 skill sandbox-broker-workarounds）
 PRELOAD = (
     f"--require {ROOT / 'scripts/vite-safe-delete-bypass.cjs'} "
@@ -253,7 +257,7 @@ def gate_probe() -> tuple[bool, str]:
 def gate_ts_engine() -> tuple[bool, str]:
     """openprint 纯函数层（`grid-report.spec.ts`）—— `pageSetupProblem` 那类预检在这层。"""
     r = run(["bash", "scripts/ts-test.sh"])
-    out = r.stdout + r.stderr
+    out = ANSI.sub("", r.stdout + r.stderr)
     first = next((l.strip() for l in out.splitlines() if l.startswith("FAIL")), "")
     return r.returncode == 0, first
 
@@ -271,7 +275,7 @@ def gate_ts_designer() -> tuple[bool, str]:
         capture_output=True,
         text=True,
     )
-    out = r.stdout + r.stderr
+    out = ANSI.sub("", r.stdout + r.stderr)
     first = next((l.strip() for l in out.splitlines() if l.startswith("FAIL")), "")
     return r.returncode == 0, first
 

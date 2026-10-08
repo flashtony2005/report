@@ -65,11 +65,53 @@
 #   bash scripts/fault-inject-all.sh --list     # 只列出会跑哪些、跳过了哪些
 #   bash scripts/fault-inject-all.sh --only ui  # 只跑名字含 ui 的
 #
+# ## ⚠️ 碰「解析测试输出」的改动，本机必须带 `CI=true` 再验一次
+#
+# 2026-10-08 实测：`fault-inject-save-confirm.py` 漏了剥 ANSI ⇒
+# **本机全绿、CI 全红**（run #17/#18）。链路：GitHub Actions 默认设 `CI=true`
+# → `picocolors` 的判据里有 `|| !!env.CI`（`picocolors.js:4`，**与 TTY 无关**，
+# 重定向到文件也照样上色）→ vitest 把 `FAIL ` 包成 `c.bgRed(c.bold(...))`
+# → 按行首匹配的判据一条都认不出来 ⇒ 14 条注入全被报成「红了但不是期望的用例」。
+# 详见《架构体检》§13.7。复现 CI 的那一条命令：
+#
+#   CI=true bash scripts/fault-inject-all.sh --only save-confirm
+#
+# ## 日志
+#
+# 设了 `FAULT_INJECT_LOG_DIR` 就把每个脚本的**完整日志**留在那个目录里（CI 上会整包
+# 上传成 artifact）。没设就退回 `mktemp`，跑完即删。
+# 为什么值得多这么一条路：job log 走 API 要 admin（403），而 check-run 的 annotation
+# 只有 **10 条**额度 —— 一个失败脚本的头+尾就吃光了，根因根本读不到。
+#
 # 退出码：0 / 1 / 2，语义见上。
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 2
+
+# ─────────────────────────────────────────────────────────────── 并发守卫
+#
+# 8 个脚本里 **5 个改的是同一个文件**（`designer-react/src/modals/GridReportModal.tsx`）。
+# 两个实例同时跑会互相读到对方的注入态，甚至把对方的注入当成「原文」写回去 ——
+# 结果全是垃圾，而且**有可能真的把注入态提交进仓库**。（2026-10-08 差一点自己踩上。）
+#
+# 用 **PID 文件**而不是 `pgrep`：`pgrep -f fault-inject-all.sh` 会连**父 shell 的命令行**
+# 一起命中（工具链里是 `zsh -c '… bash scripts/fault-inject-all.sh …'`），必然误报。
+# PID 文件 + `kill -0` 既准确又能自愈：上一个被强杀留下的过期锁会被自动接管。
+LOCK="${TMPDIR:-/tmp}/fault-inject-all.lock"
+if [ -s "$LOCK" ]; then
+  _prev="$(cat "$LOCK" 2>/dev/null || true)"
+  if [ -n "$_prev" ] && kill -0 "$_prev" 2>/dev/null; then
+    printf '\033[31m✗ 已经有实例在跑（pid %s）—— 5 个脚本改同一个文件，并发跑结果全是垃圾。\033[0m\n' "$_prev" >&2
+    printf '  等它跑完再来。锁文件：%s\n' "$LOCK" >&2
+    exit 2
+  fi
+  printf '\033[33m（发现过期锁 pid=%s，它已经不在了 —— 接管。）\033[0m\n' "$_prev" >&2
+fi
+printf '%s\n' "$$" > "$LOCK"
+# 退出时**清空**而不是删除：删要走 brokered 的 `rm`（那会把文件搬进废纸篓，
+# 每跑一次就多一件垃圾）。清空之后 `[ -s ]` 为假，等价于「没有锁」。
+trap ': > "$LOCK"' EXIT
 
 # ─────────────────────────────────────────────────────────────── 清单
 #
@@ -245,7 +287,12 @@ for entry in ${CI_ABLE[@]+"${CI_ABLE[@]}"}; do
     continue
   fi
 
-  log="$(mktemp "${TMPDIR:-/tmp}/fi-all.XXXXXX")"
+  if [ -n "${FAULT_INJECT_LOG_DIR:-}" ]; then
+    mkdir -p "$FAULT_INJECT_LOG_DIR"
+    log="$FAULT_INJECT_LOG_DIR/${name%.py}.log"
+  else
+    log="$(mktemp "${TMPDIR:-/tmp}/fi-all.XXXXXX")"
+  fi
   t0=$SECONDS
   # `-u`：python 往管道写时会**块缓冲**（4KB 才吐一次）⇒ 长脚本全程黑屏。
   # 这个坑 2026-10-01 实测撞过：日志文件一直是 0 字节，看着像「卡住了」。
@@ -272,6 +319,9 @@ for entry in ${CI_ABLE[@]+"${CI_ABLE[@]}"}; do
     printf '\033[31m✗ 工作树在 %s 跑完之后变了 —— 它可能被中断、没还原干净。\033[0m\n' "$name"
     printf '  后面的结果**不可信**，就此停下。变动的文件：\n'
     printf '%s\n' "$NOW_FP" | sed 's/^/    /'
+    printf '  \033[33m⚠️ 若变动的文件与注入无关\033[0m（例如你就是在它跑的时候改了文档/别的脚本），\n'
+    printf '     那是这条守卫的**误报**：它比的是**整棵树**的指纹，分不清是谁改的。\n'
+    printf '     重新跑一次即可（跑的过程中别动仓库）。\n'
     [ "$worst" -lt 2 ] && worst=2
     break
   fi
@@ -286,6 +336,8 @@ printf '通过 %d · 失败 %d · 没跑成 %d\n' "$passed" "$failed" "$skipped"
 
 printf '\n（本脚本只覆盖 %d/%d 个 fault-inject；另 %d 个要起真服务或原生驱动，见 --list。）\n' \
   "${#CI_ABLE[@]}" "$(( ${#CI_ABLE[@]} + ${#EXCLUDED[@]} ))" "${#EXCLUDED[@]}"
+[ -n "${FAULT_INJECT_LOG_DIR:-}" ] && \
+  printf '日志留档：%s（每个脚本一份完整输出）\n' "$FAULT_INJECT_LOG_DIR"
 
 case $worst in
   # 用实际跑过的条数，**不写死 8** —— `--only` 时会少跑，写死就成了一句假话
@@ -331,9 +383,13 @@ if [ "$GH_ANNOTATE" = 1 ]; then
   fi
 fi
 
-for _l in ${FAIL_LOG[@]+"${FAIL_LOG[@]}"}; do
-  _p="${_l#*|}"; _p="${_p#*|}"
-  [ -n "$_p" ] && rm -f "$_p"
-done
+# 只有 `mktemp` 出来的临时日志才删。`FAULT_INJECT_LOG_DIR` 里的是**留档**，
+# 要留着给 CI 上传 artifact —— 失败时那份日志才是唯一能读到的证据。
+if [ -z "${FAULT_INJECT_LOG_DIR:-}" ]; then
+  for _l in ${FAIL_LOG[@]+"${FAIL_LOG[@]}"}; do
+    _p="${_l#*|}"; _p="${_p#*|}"
+    [ -n "$_p" ] && rm -f "$_p"
+  done
+fi
 
 exit $worst

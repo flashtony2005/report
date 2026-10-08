@@ -1955,6 +1955,75 @@ grep 标记数是**噪声**（大多是注释里的提及）。逐个读源码�
 - **`check-fault-inject-all.py` 不进 `check-all.sh`**：它要改 `fault-inject-all.sh`，
   而 `check-all.sh` 的定位是「日常入口」；两者各管一摊。
 
+### §二十一.18 ⚠️ CI 首次真跑红了：`CI` 这个环境变量会**改变被测工具的输出格式**（2026-10-08）
+
+CI run #17（`c2c38b3`）与 #18（`fae340b`）**连红两次**：`gates` 绿、`fault-inject` 红。
+annotation 只读到「漏网清单」的尾巴（`- 3 …` 到 `- 11 …`）—— **14 条注入几乎全被报成漏网**，
+而本机同一条命令 **331s 全绿**。
+
+#### 根因（源码级四环，每环可单独验）
+
+| # | 事实 | 位置 |
+| --- | --- | --- |
+| 1 | GitHub Actions 默认设 **`CI=true`**；本机默认不设 | — |
+| 2 | **只要有 `CI` 就上色，与 TTY 无关** | `designer-react/node_modules/picocolors/picocolors.js:4`：`… && (!!env.FORCE_COLOR \|\| argv.includes("--color") \|\| p.platform === "win32" \|\| ((p.stdout \|\| {}).isTTY && env.TERM !== "dumb") \|\| !!env.CI)` |
+| 3 | vitest 把 `FAIL ` 包成颜色 | `vitest/dist/chunks/index.VByaPkjc.js:510`：`` this.ctx.logger.error(`${c.bgRed(c.bold(" FAIL "))} …`) `` |
+| 4 | 脚本按**行首**匹配 ⇒ 一条都认不出 | `fault-inject-save-confirm.py` 的 `s.startswith("FAIL ")` / `startswith("×")` |
+
+⇒ 失败清单恒空 ⇒ 每条注入落进「红了，但**不是**期望的那条用例」⇒ **14 条全算漏网** ⇒ rc=1。
+
+**本机实测判据**（`picocolors` 直接问）：
+`node -e "console.log(require('picocolors').isColorSupported)"` ——
+无 `CI` → `false`；`CI=true` → `true`。⚠️ **重定向到文件也照样上色**，
+所以「CI 上输出进了管道就没色」是错的。**复现 CI 的那一条命令**：
+
+```bash
+CI=true bash scripts/fault-inject-all.sh --only save-confirm
+```
+
+#### 为什么**只有这一个**脚本红（最值得记的一条）
+
+8 个 CI 化脚本里，另外 7 个**要么早有 `ANSI.sub`**（mirror-semantics / inline-dataset /
+issues-ui / inline-ui / ai-dropped），**要么判据根本不读用例名**（`table-pins` 只看 `cargo test`
+退出码、`ui-panel` 只看 vitest 退出码）⇒ 对 ANSI 免疫，**不是运气好**。
+另有 `fault-inject-report-paper.py` **有同样的毛病**，但它在 `EXCLUDED`（要真服务）——
+**所以永远不会在 CI 上暴露**。这正好解释了「为什么只有一个红」。
+
+> **教训**：同一类判据在同一批脚本里**漂了**（7 个有一层保护、1 个没有），
+> 漂出来的那个正好是唯一会在 CI 上跑的 —— 不是巧合，是「**只有被跑到的才暴露**」。
+> 这是「闸是绿的、但没有跑器」的**第三个面**：不是没跑器，是**跑器里的判据不一致**。
+
+#### 修法 + 防复发
+
+- 两个脚本补 `ANSI = re.compile(r"\x1b\[[0-9;]*m")`，**解析前** `ANSI.sub("", out)`。
+- `check-fault-inject-all.py` 新增 **`static_ansi_lint()`**，排在**牙齿注入之前**（「基线必须先绿」）：
+  跑 vitest 且源码含 `FAIL`/`×` ⇒ 必须有 `ANSI = re.compile`，否则 **rc=1** 并打印修法。
+  判据刻意**从宽**（注释里提到也算）：多要求一次无害，漏一次就是上面那种红。
+- **已做故障注入证明 lint 有牙齿**：造一个「跑 vitest + 按 `FAIL` 判定 + 不剥 ANSI」的探针
+  ⇒ lint 报出它；删掉 ⇒ 恢复干净。
+
+#### 同轮补的三个洞（都不在产品代码里）
+
+1. **跑器并发守卫**（`fault-inject-all.sh`）：5 个脚本改同一个文件，两个实例同时跑会互相读到
+   对方的注入态。用 **PID 文件 + `kill -0`**；**不用 `pgrep`** —— 它会连**父 shell 的命令行**
+   一起命中（工具链是 `zsh -c '… bash scripts/fault-inject-all.sh …'`），必然误报。
+   退出时**清空**而不是删除（删要走 brokered `rm` ⇒ 进废纸篓）。**已实测**：第二个实例 rc=2。
+2. **日志留档** `FAULT_INJECT_LOG_DIR`（CI 上 `upload-artifact`）：因为 **job log 走 API 要 admin
+   （403）、annotation 只有 10 条额度** —— 这次根因**完全读不到**，最后靠读 picocolors/vitest
+   源码还原。有 artifact 同样情况 2 分钟定位。
+3. **工作树守卫会误报**：它比**整棵树**的 `git status` 指纹，所以**跑的过程中人改任何文件**
+   都会被判成「脚本没还原干净」。2026-10-08 我自己踩了（跑的时候改脚本 → 4 个脚本后 rc=2 中断）。
+   拦得对（结果确实不可信），但提示词指向「脚本被中断」这个**错方向** ⇒ 已补说明。
+   **操作纪律：跑 `fault-inject-all.sh` 期间不要动仓库。**
+
+#### 读 CI 的端点（踩过一次 404）
+
+- ✅ `GET /repos/{o}/{r}/check-runs/{check_run_id}/annotations`
+- ❌ `GET /repos/{o}/{r}/actions/runs/{run_id}/annotations` —— **404**
+- check_run_id 从 `GET /repos/{o}/{r}/commits/{sha}/check-runs` 拿。
+- annotation 上限实测 **failure 级 10 条**（warning/notice 另算）。
+  ⇒ 一个失败脚本的「1 行头 + 11 行尾部」就吃光；**先报名字、再报尾部**的顺序是承重的。
+
 ---
 
 ## 二十二、《报表引擎详解-功能与算法.md》（2026-09-26，仓库根，1738 行）

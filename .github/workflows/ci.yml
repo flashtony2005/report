@@ -162,6 +162,14 @@ jobs:
     name: fault-inject（8 个注入 · 证明闸有牙齿）
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # 让跑器把**每个脚本的完整日志**落在这个目录里，最后由「留档」那一步整包上传。
+    # 为什么非做不可（2026-10-08 实测的教训）：job log 走 API 要 admin（403），
+    # 而 annotation 只有 **10 条**额度 —— 一个失败脚本的「1 行头 + 11 行尾部」就吃光了。
+    # 那次 CI 红了，我只能看到「漏网清单」的尾巴，**读不到任何一条失败原因**，
+    # 根因最后是靠读 `picocolors` / `vitest` 的源码还原的（见《架构体检》§13.7）。
+    # 有了 artifact，同样的情况 2 分钟就能定位。
+    env:
+      FAULT_INJECT_LOG_DIR: ${{ github.workspace }}/fault-inject-logs
 
     steps:
       - uses: actions/checkout@v4
@@ -214,3 +222,15 @@ jobs:
       # 快（造两个假脚本 + 跑几次 `--only`，不碰产品代码、不跑 vitest/cargo）。
       - name: 证明这个跑器自己有牙齿
         run: python3 scripts/check-fault-inject-all.py
+
+      # ⚠️ `if: always()`：上面任一步红了都要上传 —— **失败时才是这份日志唯一有用的时候**。
+      # `if-no-files-found: ignore`：前面（比如 `npm ci`）就挂了的话这个目录是空的，
+      # 那不是错误，别让它再报一个红来盖住真正的红。
+      - name: 留档：每个脚本的完整日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fault-inject-logs
+          path: fault-inject-logs/
+          if-no-files-found: ignore
+          retention-days: 14

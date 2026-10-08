@@ -88,6 +88,7 @@
 """
 
 import hashlib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -95,6 +96,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MODAL = ROOT / "designer-react" / "src" / "modals" / "GridReportModal.tsx"
 SPEC = "src/modals/grid-report-save-confirm.spec.tsx"
+
+# ⚠️ **必须先去 ANSI 再解析**，否则这条脚本**只在 CI 上红**（2026-10-08 实测）。
+#
+# 机理：`picocolors` 的判据里有 `|| "CI" in env` —— 只要有 `CI` 环境变量，
+# **哪怕 stdout 是管道也照样上色**（本机实测：无 `CI` → `isColorSupported=false`；
+# `CI=true` → `true`）。GitHub Actions 默认就设 `CI=true`，本机默认不设。
+# 于是同一条 `FAIL  src/… > …` 在 CI 上变成 `\x1b[31mFAIL\x1b[39m  src/…`，
+# 下面按 `startswith("FAIL ")` / `startswith("×")` 的解析**一条都匹配不上** ⇒
+# 失败清单恒为空 ⇒ 每条注入都被报成「红了，但不是期望的那条用例」⇒ **14 条全漏网**。
+#
+# 这是本项目最怕的那种「静默失败」：脚本给出了**错误结论**（不是崩溃），
+# 而且本机永远复现不出来。想在本机复现 CI，加 `CI=true` 跑。
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 # 判据 + 落盘那一句。`mine` / `base` 两个实参就是乐观锁的携带方式。
 COND = """    if (id !== lastSavedId && (!reportsListKnown || savedReports.some((r) => r.id === id))) {
@@ -303,7 +317,9 @@ def run_spec(name_filter: str):
         ["bash", "scripts/ts-test-designer.sh", name_filter],
         cwd=ROOT, capture_output=True, text=True,
     )
-    out = r.stdout + r.stderr
+    # 先剥 ANSI 再解析 —— 理由见文件顶部 ANSI 常量那段（CI 上 vitest 会带色，
+    # 不剥就一条失败用例都认不出来，脚本会**报错结论**而不是报错）。
+    out = ANSI.sub("", r.stdout + r.stderr)
     ran = ("Test Files" in out) and ("Tests " in out)
     failed: list[str] = []
     for ln in out.splitlines():

@@ -20,6 +20,8 @@ print-server/tgt/
 # 日志
 logs/
 *.log
+# 跑 fault-inject-all.sh 时设 FAULT_INJECT_LOG_DIR 产生的留档目录（CI 上会传成 artifact）
+fault-inject-logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

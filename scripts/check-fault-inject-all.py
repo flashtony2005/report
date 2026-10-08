@@ -129,6 +129,33 @@ def with_entries(text: str, entries: list[str]) -> str | None:
     return text.replace(ANCHOR_LIST_END, LAST_ENTRY + ins + ")")
 
 
+# ── 静态 lint：按用例名读 vitest 输出前，必须先剥 ANSI ────────────────────
+#
+# 这一条**不是**「跑器有没有牙齿」，而是「语料里有没有一个会让结论反过来的坑」。
+#
+# 2026-10-08 实测：`fault-inject-save-confirm.py` 漏了 `ANSI.sub` ——
+# `picocolors` 的判据里有 `|| !!env.CI`（见 node_modules/picocolors/picocolors.js:4），
+# **只要有 `CI` 环境变量就上色，哪怕 stdout 是管道**；而 vitest 把 `FAIL ` 这个
+# token 包成 `c.bgRed(c.bold(" FAIL "))`（vitest/dist/chunks/index.VByaPkjc.js:510）。
+# GitHub Actions 默认设 `CI=true` ⇒ 行首多出转义序列 ⇒ `startswith("FAIL ")` 一条都
+# 匹配不上 ⇒ **14 条注入全被报成「红了，但不是期望的那条」**⇒ 作业红、本机绿、根因看不见。
+#
+# 判据刻意**从宽**：只要这个脚本跑 vitest，且源码里出现过 `FAIL` 或 `×`
+# （注释里提到也算），就要求它有 ANSI 正则。多要求一次无害；
+# 漏掉一次就是上面那种「本机永远复现不出来」的红。
+def static_ansi_lint() -> list[str]:
+    bad: list[str] = []
+    for p in sorted((ROOT / "scripts").glob("fault-inject-*.py")):
+        t = p.read_text(encoding="utf-8")
+        runs_vitest = any(
+            k in t for k in ("vitest", "ts-test-designer", "ts-test.sh", "ts-test-openprint")
+        )
+        matches_names = ("FAIL" in t) or ("×" in t)
+        if runs_vitest and matches_names and "ANSI = re.compile" not in t:
+            bad.append(p.name)
+    return bad
+
+
 def main() -> int:
     # ⚠️ 本脚本会**临时改写 `fault-inject-all.sh`**（B 那条要注入 `rc=$?`）。
     # 而 bash 是**按字节偏移增量读脚本**的：改一个正在跑的脚本，它会从旧偏移继续读
@@ -153,6 +180,19 @@ def main() -> int:
     before_hash = sha(RUNNER)
     rows: list[tuple[str, str, str]] = []
     missed = 0
+
+    # 静态 lint 放在**牙齿注入之前**：它是「基线必须先绿」的一部分 ——
+    # 语料本身有坑时，后面那些「如期变红」的结论也没有意义。
+    lint_bad = static_ansi_lint()
+    if lint_bad:
+        print("✗ 这些脚本按用例名读 vitest 输出，却没有先剥 ANSI：")
+        for n in lint_bad:
+            print("   ", n)
+        print('  CI 上（`CI=true`）vitest 会带色，`startswith("FAIL ")` 一条都匹配不上 ⇒')
+        print("  结论反过来（把「抓到」报成「漏网」），而本机默认没有 CI ⇒ 复现不出来。")
+        print('  修法：加 `ANSI = re.compile(r"\\x1b\\[[0-9;]*m")`，解析前 `ANSI.sub("", out)`。')
+        return 1
+    print("静态 lint ✓（跑 vitest 的脚本都剥了 ANSI）")
 
     def record(label: str, ok: bool, detail: str) -> None:
         nonlocal missed
