@@ -21,6 +21,7 @@
       会自己起 / 停 print-server（占用 18888，跑之前先确保没别的实例）
 退出码：0 = 每条注入都如期变红；1 = 有注入没抓到（那就是探针的漏网）。
 """
+import argparse
 import subprocess
 import sys
 import time
@@ -30,7 +31,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER_DIR = ROOT / "print-server"
-BIN = Path.home() / ".cargo/target/debug/print-server"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from server_bin import resolve_server_bin  # noqa: E402
+BIN = Path(resolve_server_bin())
 XLSX = SERVER_DIR / "src/report/xlsx.rs"
 ENGINE = SERVER_DIR / "src/report/engine.rs"
 SVG = SERVER_DIR / "src/report/chart_svg.rs"
@@ -68,14 +71,33 @@ CASES = [
     (
         "图表格被当成占位空格丢掉（整格消失）",
         ENGINE,
-        "    cell.value.is_none() && cell.model.is_none() && cell.image.is_none() && cell.chart.is_none()",
-        "    cell.value.is_none() && cell.model.is_none() && cell.image.is_none()",
+        # 锚点**覆盖整个函数体**（含收尾的 `}`）：只截第一行的话，以后往中间
+        # 插入一个 `&& cell.xxx.is_none()`（条码格那次就是这么加的）会让锚点
+        # 变成一个**更短的前缀**，照样匹配 1 处 → 只注入一半、还不报警。
+        # 带上首尾行，任何中途插入都会让它匹配 0 处 —— 宁可吵，不要静默。
+        "fn is_placeholder(cell: &CellTpl) -> bool {\n"
+        "    cell.value.is_none()\n"
+        "        && cell.model.is_none()\n"
+        "        && cell.image.is_none()\n"
+        "        && cell.chart.is_none()\n"
+        "        && cell.barcode.is_none()\n"
+        "}",
+        "fn is_placeholder(cell: &CellTpl) -> bool {\n"
+        "    cell.value.is_none()\n"
+        "        && cell.model.is_none()\n"
+        "        && cell.image.is_none()\n"
+        "}",
     ),
     (
         "图表声明没从模板拷到实例（图静默不出）",
         ENGINE,
+        # 锚点横跨 chart → barcode → value 三行：条码那次就是在 chart 和 value
+        # **中间**插了一行，两行锚点当场匹配 0 处。带上中间的 barcode 行之后，
+        # 以后再加一种声明（`inst.xxx = ...`）插在中间同样会匹配 0 处 —— 吵，不静默。
         "            inst.chart = cell.chart.clone().or_else(|| model.chart.clone());\n"
+        "            inst.barcode = cell.barcode.clone().or_else(|| model.barcode.clone());\n"
         "            inst.value = match &model.field {",
+        "            inst.barcode = cell.barcode.clone().or_else(|| model.barcode.clone());\n"
         "            inst.value = match &model.field {",
     ),
     (
@@ -95,10 +117,12 @@ CASES = [
     (
         "图表格跟着展开行复制（Excel 里 N 张图叠在同一格）",
         ENGINE,
-        "        decls.sort_by_key(|(r, c, _, _)| (*r, *c));\n"
         "        let mut seen: BTreeSet<String> = BTreeSet::new();\n"
-        "        decls.retain(|(_, _, pos, _)| seen.insert(pos.clone()));",
-        "        decls.sort_by_key(|(r, c, _, _)| (*r, *c));",
+        "        decls.retain(|(_, _, pos, _, _)| seen.insert(pos.clone()));",
+        # 两行**一起**删掉才是「不去重」。只删 `let mut seen` 会留下一个用到
+        # 不存在变量的 `retain` ⇒ 编译不过 ⇒ 被 runner 判「不算验过」（这是对的），
+        # 白跑一轮。新文本为空串 = 整段消失。
+        "",
     ),
     (
         "数据块不隐藏（混进报表正文）",
@@ -155,7 +179,46 @@ def probe() -> tuple[int, str]:
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
+def anchor_report(cases) -> int:
+    """只校验每条锚点在源文件里**恰好匹配 1 处**，不编译、不注入，秒级。
+
+    为什么要单独这一档：锚点失效以前要等一轮 cargo build（几十秒）才报，
+    而它报的形态是「跳过（**没验过**）」—— 一眼看容易被当成「这条过了」。
+    在这里先跑一遍，腐坏的锚点在 CI 上前几十秒就红，不用等真注入。
+    """
+    bad = 0
+    for name, path, old, _new in cases:
+        n = path.read_text(encoding="utf-8").count(old)
+        if n == 1:
+            print(f"  ok   {name}  锚点唯一")
+        else:
+            bad += 1
+            print(f"  BAD  {name}  锚点匹配 {n} 处（应恰好 1 处）")
+    if bad:
+        print(f"\n{bad} 条锚点失效 —— 它们现在**没被验过**，先修锚点再跑注入")
+    return 1 if bad else 0
+
+
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--list", action="store_true", help="只列出注入，不执行")
+    ap.add_argument(
+        "--check-anchors",
+        action="store_true",
+        help="只校验每条锚点恰好匹配 1 处（不编译、不注入，秒级）",
+    )
+    ap.add_argument("--only", help="只跑名字含该子串的注入")
+    args = ap.parse_args()
+
+    if args.list:
+        for name, _p, old, _n in CASES:
+            print(f"  {name}")
+        return 0
+
+    picked = [c for c in CASES if not args.only or args.only in c[0]]
+    if args.check_anchors:
+        return anchor_report(picked)
+
     if not build():
         return 1
     srv = start_server()
@@ -168,10 +231,14 @@ def main() -> int:
         print("基线 ✓（未注入时探针通过）\n")
 
         missed = []
-        for name, path, old, new in CASES:
+        for name, path, old, new in picked:
             src = path.read_text(encoding="utf-8")
-            if old not in src:
-                print(f"✗ 锚点没找到，跳过（**没验过**）：{name}")
+            n = src.count(old)
+            # 0 处 = 锚点腐坏；>1 处 = replace(..., 1) 只会改第一处，
+            # 另一处留着 ⇒ **只注入一半**，而探针可能照样红（看着像抓到了）。
+            # 两种都算「没验过」，宁可当场红。
+            if n != 1:
+                print(f"✗ 锚点匹配 {n} 处（**没验过**）：{name}")
                 missed.append(name)
                 continue
             path.write_text(src.replace(old, new, 1), encoding="utf-8")

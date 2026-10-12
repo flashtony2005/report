@@ -48,9 +48,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SERVER = REPO / "print-server"
-BIN = Path.home() / ".cargo/target/debug/print-server"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from server_bin import resolve_server_bin  # noqa: E402
+BIN = Path(resolve_server_bin())
 PORT = 18903
-PY = "/Users/lushaohui/.workbuddy-ai/binaries/python/envs/default/bin/python"
+PY = os.environ.get("PY_BIN", sys.executable)
 
 # (名字, 类别, 说明, 文件, 原文, 替换)
 INJECTIONS = [

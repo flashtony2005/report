@@ -11,14 +11,15 @@
 32 个 spec、20 个 fault-inject 脚本）。这一层是第四次：**「跑器的守卫没人验」**。
 所以本脚本逐条拆掉那些守卫，要求 `fault-inject-all.sh` **以特定方式变红**。
 
-## 五条断言（A / B1 / B2 / C / D），各拆一次
+## 六条断言（A / B1 / B2 / C / D / E），各拆一次
 
 | # | 断言 | 拆掉之后会怎样 | 期望 |
 | --- | --- | --- | --- |
-| A | **分类完整性守卫**：`fault-inject-*.py` 必须落在 CI_ABLE 或 EXCLUDED | 新脚本既不跑、也不报，`--list` 照样打印一份「看着挺全」的清单 | `--list` 必须 **rc=2** 且报「新增脚本没有分类」 |
+| A | **分类完整性守卫**：`fault-inject-*.py` 必须落在 CI_ABLE / SERVICE_ABLE / EXCLUDED 之一（且只落一张） | 新脚本既不跑、也不报，`--list` 照样打印一份「看着挺全」的清单 | `--list` 必须 **rc=2** 且报「没有分类」 |
 | B | **退出码捕获**：`set -o pipefail` **与** `rc=${PIPESTATUS[0]}` | 少了它，`$?` 拿到 **tee** 的 0 ⇒ 脚本失败被读成**通过** | 正确时 rc=1；**两个一起拆**后 rc=0 ⇒ **证明这一对承重** |
 | C | **前置条件缺失 → 「没跑成」(2)** | 缺 cargo 时报成「通过」或「失败」都是在误导 | 必须 **rc=2** 且报「PATH 里没有 cargo」 |
-| D | **工作树守卫**：脚本跑完工作树变了就停 | 上一个脚本被中断、源码停在注入态，后面每个都会锚点失配 → 那些红**指向错的方向** | 必须 **rc=2** 且报「工作树在 … 跑完之后变了」 |
+| D | **工作树守卫**：脚本跑完 src/ 三处变了就停 | 上一个脚本被中断、源码停在注入态，后面每个都会锚点失配 → 那些红**指向错的方向** | 必须 **rc=2** 且报「工作树在 … 跑完之后变了」 |
+| E | **守卫的圈定范围**：只拦 `designer-react/src`、`openprint/src`、`print-server/src` | 换成整棵树的指纹 ⇒ 跑器在跑的时候改了文档/别的脚本也被当成注入残留，**误报**停在错的方向 | 脏文件落在 src/ 之外时必须 **rc=0** 照常跑完（不拦） |
 
 > ⚠️ **B 为什么是「一对」**：`fault-inject-all.sh` 顶部有 `set -o pipefail`，所以
 > `$?` **并不**恒 0（管道会返回最右的非零码）。2026-10-02 实测：**只**把
@@ -39,6 +40,7 @@ B / D 需要「一个会失败的注入脚本」和「一个不还原的注入�
   · A 造出第一个假脚本（**故意不分类**）；
   · B 把它补进 CI_ABLE（否则守卫先红，B1/B2 都验不到退出码）；
   · D 再造第二个，并把**两个都**补进 CI_ABLE。
+  · E 再造第三个，并把**三个都**补进 CI_ABLE（磁盘上有未分类的假脚本 ⇒ 守卫先红）。
 （第一版把造脚本放在最前面、几个用例共用，于是 B/C/D 全被守卫提前拦掉 ——
  「基线必须先绿」这条纪律当场把这个 bug 抓了出来。
  第二次真跑又抓到**本脚本自己的第二个 bug**：`with_entries` 把 CI_ABLE 的
@@ -53,7 +55,7 @@ B / D 需要「一个会失败的注入脚本」和「一个不还原的注入�
 「看着像检查过了」。这里就把它钉死。
 
 用法：python3 scripts/check-fault-inject-all.py
-退出码：0 = 五条断言都如期变红（守卫有牙齿）；1 = 有守卫拆了也不红（那是摆设）；
+退出码：0 = 六条断言都如期变红（守卫有牙齿）；1 = 有守卫拆了也不红（那是摆设）；
         2 = **没跑成**（`fault-inject-all.sh` 正在跑，改它会自毁 —— 等它跑完）。
 """
 
@@ -70,7 +72,9 @@ ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "scripts" / "fault-inject-all.sh"
 PROBE_FAIL = ROOT / "scripts" / "fault-inject-zzz-teeth-probe.py"
 PROBE_DIRTY = ROOT / "scripts" / "fault-inject-zzz-dirty-probe.py"
+PROBE_SCOPE = ROOT / "scripts" / "fault-inject-zzz-scope-probe.py"
 DIRT = ROOT / "designer-react" / "src" / "__teeth_dirty__.tmp"
+SCOPE_FILE = ROOT / "scripts" / "__teeth_out_of_scope__.tmp"
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -105,6 +109,16 @@ DIRTY_PROBE_SRC = (
     "raise SystemExit(0)\n"
 )
 
+SCOPE_PROBE_SRC = (
+    "#!/usr/bin/env python3\n"
+    '"""临时假注入脚本：脏文件落在 src/ 之外。由 check-fault-inject-all.py 生成，跑完即删。"""\n'
+    "from pathlib import Path\n"
+    "print('（假脚本）模拟「跑器在跑的时候顺手改了 scripts/ 下的东西」')\n"
+    "Path(__file__).resolve().parent.joinpath(\n"
+    "    '__teeth_out_of_scope__.tmp').write_text('out of scope\\n', encoding='utf-8')\n"
+    "raise SystemExit(0)\n"
+)
+
 
 def sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
@@ -129,7 +143,7 @@ def with_entries(text: str, entries: list[str]) -> str | None:
     return text.replace(ANCHOR_LIST_END, LAST_ENTRY + ins + ")")
 
 
-# ── 静态 lint：按用例名读 vitest 输出前，必须先剥 ANSI ────────────────────
+# ── 静态 lint：按内容读 vitest 输出前，必须先剥 ANSI ────────────────────
 #
 # 这一条**不是**「跑器有没有牙齿」，而是「语料里有没有一个会让结论反过来的坑」。
 #
@@ -140,9 +154,11 @@ def with_entries(text: str, entries: list[str]) -> str | None:
 # GitHub Actions 默认设 `CI=true` ⇒ 行首多出转义序列 ⇒ `startswith("FAIL ")` 一条都
 # 匹配不上 ⇒ **14 条注入全被报成「红了，但不是期望的那条」**⇒ 作业红、本机绿、根因看不见。
 #
-# 判据刻意**从宽**：只要这个脚本跑 vitest，且源码里出现过 `FAIL` 或 `×`
-# （注释里提到也算），就要求它有 ANSI 正则。多要求一次无害；
-# 漏掉一次就是上面那种「本机永远复现不出来」的红。
+# ⚠️ 2026-10-12 把判据从「出现 FAIL / ×」**放宽**到「出现 vitest 的输出词汇」：
+#    `fault-inject-conditional.py` 按 `Tests\s+(\d+) passed` 数用例数 —— 它既没有
+#    `FAIL` 也没有 `×`，却是同一个 bug 类（而且这次是**逐脚本读源码**准备把它挂进
+#    CI 时才发现的 —— 又一条「只在真的上 CI 时才暴露」）。判据按宽的不按窄的：
+#    多要求一次无害，漏掉一次就是上面那种「本机永远复现不出来」的红。
 def static_ansi_lint() -> list[str]:
     bad: list[str] = []
     for p in sorted((ROOT / "scripts").glob("fault-inject-*.py")):
@@ -150,8 +166,9 @@ def static_ansi_lint() -> list[str]:
         runs_vitest = any(
             k in t for k in ("vitest", "ts-test-designer", "ts-test.sh", "ts-test-openprint")
         )
-        matches_names = ("FAIL" in t) or ("×" in t)
-        if runs_vitest and matches_names and "ANSI = re.compile" not in t:
+        # vitest 的输出词汇：失败清单（FAIL / ×）、摘要行（Tests / passed）、按行首判
+        parses_output = any(k in t for k in ("FAIL", "×", "Tests", "passed", "startswith"))
+        if runs_vitest and parses_output and "ANSI = re.compile" not in t:
             bad.append(p.name)
     return bad
 
@@ -192,7 +209,7 @@ def main() -> int:
         print("  结论反过来（把「抓到」报成「漏网」），而本机默认没有 CI ⇒ 复现不出来。")
         print('  修法：加 `ANSI = re.compile(r"\\x1b\\[[0-9;]*m")`，解析前 `ANSI.sub("", out)`。')
         return 1
-    print("静态 lint ✓（跑 vitest 的脚本都剥了 ANSI）")
+    print("静态 lint ✓（按内容读 vitest 输出的脚本都先剥了 ANSI）")
 
     def record(label: str, ok: bool, detail: str) -> None:
         nonlocal missed
@@ -280,13 +297,40 @@ def main() -> int:
                     print(out[-800:])
             finally:
                 RUNNER.write_text(original, encoding="utf-8")
+        # ── E：守卫的圈定范围（脏文件在 src/ 之外 → 不能拦） ─────────────
+        # 与 D 是**反向的牙齿**：D 证明「该拦时拦得住」，E 证明「不该拦时不乱拦」。
+        # 少了 E，「守卫只圈 src/ 三处」这件事本身没人守 —— 哪天有人把指纹改回
+        # 整棵树，所有用例照旧绿着（误报只在**人**编辑文件时出现，CI 上永远不复现）。
+        # ⚠️ 三个假脚本此刻都在磁盘上，必须**全都**补进 CI_ABLE，否则分类守卫先红。
+        PROBE_SCOPE.write_text(SCOPE_PROBE_SRC, encoding="utf-8")
+        text = with_entries(original, [
+            "fault-inject-zzz-teeth-probe.py|none",
+            "fault-inject-zzz-dirty-probe.py|none",
+            "fault-inject-zzz-scope-probe.py|none",
+        ])
+        if text is None:
+            record("E 守卫的圈定范围", False, "锚点失效")
+        else:
+            RUNNER.write_text(text, encoding="utf-8")
+            try:
+                rc, out = run_runner(["--only", "zzz-scope"])
+                record(
+                    "E 脏文件在 src/ 之外 → 照样跑完（rc=0，不误报）",
+                    rc == 0 and "全绿" in out and "工作树在" not in out,
+                    f"rc={rc}（期望 0），{'没误报' if '工作树在' not in out else '**误报了**'}",
+                )
+                if rc != 0:
+                    print(out[-800:])
+            finally:
+                RUNNER.write_text(original, encoding="utf-8")
     finally:
         RUNNER.write_text(original, encoding="utf-8")
-        for p in (PROBE_FAIL, PROBE_DIRTY, DIRT):
+        for p in (PROBE_FAIL, PROBE_DIRTY, PROBE_SCOPE, DIRT, SCOPE_FILE):
             p.unlink(missing_ok=True)
 
     restored = sha(RUNNER) == before_hash
-    leftovers = [p.name for p in (PROBE_FAIL, PROBE_DIRTY, DIRT) if p.exists()]
+    leftovers = [p.name for p in (PROBE_FAIL, PROBE_DIRTY, PROBE_SCOPE, DIRT, SCOPE_FILE)
+                 if p.exists()]
 
     print("\n" + "=" * 72)
     for label, verdict, detail in rows:

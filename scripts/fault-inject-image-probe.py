@@ -20,7 +20,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER_DIR = ROOT / "print-server"
-BIN = Path.home() / ".cargo/target/debug/print-server"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from server_bin import resolve_server_bin  # noqa: E402
+BIN = Path(resolve_server_bin())
 XLSX = SERVER_DIR / "src/report/xlsx.rs"
 HEALTH = "http://127.0.0.1:18888/health"
 

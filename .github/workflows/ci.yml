@@ -20,15 +20,22 @@ name: gates
 #   作业 `fault-inject` 覆盖 = **8/20** 个 `fault-inject-*.py`（2026-10-01 加）：
 #          只改源码文本 + 跑一条**已经在上面的闸里**的命令（mirror-check / cargo test /
 #          designer-react 的 vitest），零服务、零原生依赖。
+#   作业 `fault-inject-service` 覆盖 = 另外 **7/20** 个（2026-10-12 加）：门禁要
+#          `cargo build` **再起一个 print-server**（docx 导出 / HTML 样式 / 页面设置 /
+#          图表 / 图片 / 条件格式 / 条码）。每个脚本自己起停服务，作业只补三样环境：
+#          预热 cargo（脚本跑 `--offline` 构建）、两份 node_modules（report-paper 的
+#          UI 门禁要设计师的 vitest）、条码解码 oracle（zxingcpp + rsvg-convert）。
 #
 #   **仍然不覆盖**：
-#     · 12 个 `fault-inject-*.py` —— 门禁要 `cargo build` **再起一个 print-server**
-#       （探针打 127.0.0.1:18888 / :18907），或者要 `--features odbc` 那套原生驱动。
-#       逐条依据写在 `scripts/fault-inject-all.sh` 的 `EXCLUDED` 里。
+#     · 5 个 `fault-inject-*.py` —— odbc 要 `--features odbc` 那套原生驱动；
+#       atomic-save 的门禁要 RLIMIT_FSIZE 造「写一半被杀」；optimistic-lock /
+#       save-conflict 的门禁是**有状态**的 HTTP 序列（真服务）；inline-probe 的门禁
+#       要求「服务已经在跑」而它自己不起服务。逐条依据写在
+#       `scripts/fault-inject-all.sh` 的 `EXCLUDED` 里 —— 那些依赖是真实的，不许含糊。
 #     · 17 个 `verify-*.py` —— 多数要起真服务（还有的要 sqlite / postgres / odbc 驱动）。
 #       （其中 `verify-ci-workflow.py` **刻意**不放进 `check-all.sh`：它会反过来执行
 #        `check-all.sh`，放进去就是无限递归。）
-#     · 所以两个作业合起来，保证**仍然不是**「全都验过了」：20 个注入里还有 12 个没跑器。
+#     · 所以三个作业合起来，保证**仍然不是**「全都验过了」：20 个注入里还有 5 个没跑器。
 #
 #   ⚠️ 加 `fault-inject` 的理由就是本项目那条招牌病：**「闸是绿的、但没有跑器」**。
 #      前两个器官（openprint 引擎层 67 个 spec、designer-react 的 32 个 spec）已关；
@@ -67,9 +74,16 @@ permissions:
   contents: read
 
 jobs:
+  # ⚠️ **三个作业都钉死 ubuntu-24.04，不用 ubuntu-latest**：GitHub 已公告 ubuntu-latest
+  #    将于 **2026-10-19 ~ 11-19 渐进迁移**到 Ubuntu 26.04（changelog 2026-09-17 GA）。
+  #    迁移窗口内，同一条流水线会在不同 run 里落到不同镜像 —— 工具版本 / 预装包的
+  #    差异会变成「没改代码却红了」，那是最难查的一类。等 deliberately 在 24.04 上
+  #    对 26.04 跑过对照 run 再换，别让镜像漂移替我们做决定。
+  #    （写这条的当天是 2026-10-12，离窗口开始还有 7 天。）
+
   gates:
     name: check-all（8 道闸）
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 冷启动要装两份 node_modules + 编译 Rust，再加跑闸。
     # **run #13 实测**（闸 7 已是全量）：作业 304s = 装依赖 + 缓存 + **跑闸 234s**。
     # 30 分钟的余量主要就是给「闸 7 全量」的（CI 实测值见 `::notice::`）。
@@ -83,10 +97,10 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 装 Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -115,7 +129,7 @@ jobs:
       # 注意本机那份 `~/.cargo/config.toml` 把 target-dir 指到了仓库外，
       # CI 上没有那个文件 → 走默认的 `print-server/target`，所以缓存这个路径。
       - name: 缓存 cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -160,7 +174,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────────
   fault-inject:
     name: fault-inject（8 个注入 · 证明闸有牙齿）
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     # 让跑器把**每个脚本的完整日志**落在这个目录里，最后由「留档」那一步整包上传。
     # 为什么非做不可（2026-10-08 实测的教训）：job log 走 API 要 admin（403），
@@ -172,10 +186,10 @@ jobs:
       FAULT_INJECT_LOG_DIR: ${{ github.workspace }}/fault-inject-logs
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 装 Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -196,7 +210,7 @@ jobs:
       # 拿一份旧的，最坏情况是从头编一次 print-server（`fault-inject-table-pins.py`
       # 本来就要编，所以这份缓存是纯赚）。
       - name: 缓存 cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -228,9 +242,123 @@ jobs:
       # 那不是错误，别让它再报一个红来盖住真正的红。
       - name: 留档：每个脚本的完整日志
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fault-inject-logs
+          path: fault-inject-logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 作业 3：证明「要起服务」的那 7 个注入脚本的闸有牙齿（2026-10-12 加）。
+  #
+  # 覆盖 = `fault-inject-all.sh --service`：docx 导出 · HTML 样式 · 报表页面设置 ·
+  #        图表 · 图片 · 条件格式 · 条码。这些脚本 2026-10-12 之前**一条 CI 都没进过**
+  #        （EXCLUDED 里躺着），本机也没跑过几轮 —— 典型的「闸是绿的、但没有跑器」。
+  #
+  # 迁出 EXCLUDED 的前提**不是**「想跑」，而是逐个消掉了本机写死：
+  #   · 二进制路径 `~/.cargo/target/debug/print-server` → `server_bin.resolve_server_bin()`
+  #     （本机有 `~/.cargo/config.toml` 把 target-dir 指到仓库外，CI 没有那个文件）；
+  #   · `PY` 写死本机 venv 绝对路径 → 默认 `sys.executable`（三个探针脚本只用标准库）；
+  #   · conditional.py 的 NODE_OPTIONS 写死本机绝对路径 → 仓库相对路径；
+  #   · conditional.py 按 `Tests N passed` 读 vitest 输出却没剥 ANSI —— 与
+  #     save-confirm 2026-10-08 在 CI 上红掉是**同一个根因**（`CI=true` ⇒ picocolors
+  #     上色，与 TTY 无关）。它由 `check-fault-inject-all.py` 的静态 lint 兜住。
+  #
+  # 每个脚本**自己起停 print-server**（18888 / 18903 / 18905 / 18907），所以本作业
+  # 与另外两个作业并行也不会撞端口；串行跑 7 个脚本是**正确性**要求（改同一批 .rs）。
+  #
+  # ⚠️ 覆盖边界：三个作业合起来 15/20。剩下 5 个要原生驱动（odbc）或**有状态**门禁
+  #    （RLIMIT_FSIZE 磁盘满注入、乐观锁/覆盖冲突的状态码序列、要求服务已在跑的
+  #    inline-probe）—— 依据见 `fault-inject-all.sh` 的 EXCLUDED。别把本作业的绿
+  #    读成「20 个都验过了」。
+  #
+  # ⚠️ 不许加 continue-on-error、不许 `|| true`、不许接管道 —— 与作业 2 同一条理由：
+  #    这个作业的全部意义就是「红了要拦」。
+  # ──────────────────────────────────────────────────────────────────────────
+  fault-inject-service:
+    name: fault-inject-service（7 个注入 · 要真服务）
+    runs-on: ubuntu-24.04
+    # ~90 条注入，每条一次 cargo 增量编译 + 一次探针；本机（M4，热缓存）实测见
+    # 《架构体检》§13.8，CI 共享 runner 按 2 倍估。timeout 按估算值再留一倍。
+    timeout-minutes: 150
+    env:
+      FAULT_INJECT_LOG_DIR: ${{ github.workspace }}/fault-inject-logs
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 装 Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: 装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # report-paper 的门禁矩阵含 openprint 的 ts-test；conditional 的 UI 侧门禁是
+      # designer 的 vitest spec。两份都装（`npm ci` 要求 lock 同步 —— 那是好事）。
+      - name: 装依赖（designer-react）
+        working-directory: designer-react
+        run: npm ci
+
+      - name: 装依赖（openprint）
+        working-directory: openprint
+        run: npm ci
+
+      # 与另外两个作业同一个 key：并行时谁先存谁生效，另一个靠 restore-keys 兜底。
+      - name: 缓存 cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            print-server/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('print-server/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      # 脚本里跑的是 `cargo build --offline`（html-style / conditional / barcode /
+      # report-paper / chart-probe 先 offline 再回退普通 build）。冷缓存下 --offline
+      # 必然失败，那不是「闸没牙」，是环境没就绪 —— 先连网编一次把 registry 缓存
+      # 和 target 都建起来。（restore-keys 拿到旧缓存的场景同样靠这一步补齐。）
+      - name: 预热 cargo（让脚本里的 --offline 构建有缓存可用）
+        working-directory: print-server
+        run: cargo build --bin print-server
+
+      # 只有条码探针要这两个，而且都是**独立实现**这个原则的一部分：
+      #   · zxingcpp —— 第三方解码器。自己解自己的条码不算数（Univer 那次「橙色
+      #     边框过了 11 条单测」的同款风险），必须由不知道我们实现的 oracle 说
+      #     「读出来是这串」。
+      #   · rsvg-convert —— 第三方 SVG 渲染器。验的是「path 语法写错了」这类问题。
+      # 用 venv 而不是系统 python：ubuntu-24.04 的 python3 是 PEP 668 外部管理的，
+      # 且 venv 的路径正好通过 PY_BIN 传进 fault-inject-barcode-probe.py
+      # （三个探针驱动都收 PY_BIN，默认 sys.executable —— 本机怎么跑都行）。
+      # zxing-cpp 与 pillow 都有 manylinux wheel，不需要编译工具链。
+      - name: 装条码解码 oracle（zxingcpp + Pillow + rsvg）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq librsvg2-bin
+          python3 -m venv /tmp/barcode-oracle
+          /tmp/barcode-oracle/bin/pip install -q zxing-cpp pillow
+          echo "PY_BIN=/tmp/barcode-oracle/bin/python" >> "$GITHUB_ENV"
+
+      - name: 跑故障注入（要服务）
+        run: bash scripts/fault-inject-all.sh --service
+        # 与作业 2 同一套诊断纪律：失败原因进 annotation（10 条额度内的分配见
+        # fault-inject-all.sh 的「annotation」一节：先报全每个失败脚本的名字），
+        # 完整日志由最后一步上传。退出码三态 0/1/2 都必须让 job 红。
+
+      # 跑器自己也要有牙齿：注入 `--service` 也共用那六条承重守卫（分类完整性 /
+      # 退出码捕获 / 前置缺失 / 工作树守卫 / 守卫圈定范围）。快，不碰产品代码。
+      - name: 证明这个跑器自己有牙齿
+        run: python3 scripts/check-fault-inject-all.py
+
+      - name: 留档：每个脚本的完整日志
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fault-inject-service-logs
           path: fault-inject-logs/
           if-no-files-found: ignore
           retention-days: 14

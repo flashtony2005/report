@@ -52,13 +52,24 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SERVER = REPO / "print-server"
-BIN = Path.home() / ".cargo/target/debug/print-server"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from server_bin import resolve_server_bin  # noqa: E402
+BIN = Path(resolve_server_bin())
 PORT = 18905
-PY = "/Users/lushaohui/.workbuddy-ai/binaries/python/envs/default/bin/python"
-# 沙箱里 vite 工具链必须挂这两个 preload，否则 vitest 卡死或 SIGKILL
+PY = os.environ.get("PY_BIN", sys.executable)
+# 摘录 vitest 输出前**必须先去 ANSI**。`picocolors` 的判据里有 `|| !!env.CI`，
+# 所以 GitHub Actions（`CI=true`）下 vitest 会带色（与 TTY 无关）——
+# `Tests\s+(\d+) passed` 这类按字面匹配的判据可能一条都对不上，
+# 于是「真的跑了用例」被误报成「vitest 没跑出用例」。本机默认不设 `CI`，复现不了。
+# （与 fault-inject-save-confirm.py 2026-10-08 在 CI 上红掉的是同一个根因。）
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+# vite 工具链要挂的两个 preload 用**仓库相对路径**：原是写死的本机绝对路径，
+# 在 CI 上会让 `node` 直接起不来。两个文件都在 scripts/ 下、已入版本控制。
+# 它们是沙箱专用补丁（broker 限流 / vite safe-delete），CI 上没有 broker，
+# 挂着只是把 mkdir 串行化、把 `.vite/deps_temp_*` 的删除直通 —— 无害。
 NODE_OPTIONS = (
-    "--require /Users/lushaohui/project/report/scripts/vite-safe-delete-bypass.cjs "
-    "--require /Users/lushaohui/project/report/scripts/broker-mkdir-throttle.cjs"
+    f"--require {REPO / 'scripts/vite-safe-delete-bypass.cjs'} "
+    f"--require {REPO / 'scripts/broker-mkdir-throttle.cjs'}"
 )
 SPEC = "src/modals/grid-report-cell-conditional.spec.tsx"
 
@@ -289,7 +300,7 @@ def run_ui() -> list[str]:
         cwd=REPO / "designer-react",
         env=env,
     )
-    out = r.stdout + r.stderr
+    out = ANSI.sub("", r.stdout + r.stderr)
     if r.returncode == 0:
         # 退出码 0 也要确认**真的跑了用例**（0 个用例时 vitest 也可能退 0）
         m = re.search(r"Tests\s+(\d+) passed", out)

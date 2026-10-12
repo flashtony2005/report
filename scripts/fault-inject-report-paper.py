@@ -33,10 +33,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from node_bin import resolve_node  # noqa: E402  （必须在 sys.path 之后）
+from server_bin import resolve_server_bin  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER_DIR = ROOT / "print-server"
-BIN = Path.home() / ".cargo/target/debug/print-server"
+BIN = Path(resolve_server_bin())
 MODEL = SERVER_DIR / "src/report/model.rs"
 STORE = SERVER_DIR / "src/report/store.rs"
 MOD = SERVER_DIR / "src/report/mod.rs"

@@ -54,7 +54,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 SERVER = REPO / "print-server"
 MOD = "print-server/src/report/mod.rs"
-BIN = Path.home() / ".cargo/target/debug/print-server"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from server_bin import resolve_server_bin  # noqa: E402
+BIN = Path(resolve_server_bin())
 
 PROBE_PORT = 18907
 
@@ -178,15 +180,28 @@ INJECTIONS = [
         "pages-drop-style",
         "接线错（仅探针）",
         "分页那条路把样式清掉 → 既有单测只断言 pages_html 里有 `<table`，抓不住",
-        '        for p in &all_pages {\n            v.push(to_html(std::slice::from_ref(p))?);\n        }',
-        '        for p in &all_pages {\n'
+        # 锚点覆盖**整个 for 循环体**（含收尾 `}`）：这次腐坏就是因为原先只写了
+        # 循环体第一行 `for p in &all_pages {`，而源代码后来重构成了
+        # `for (p, i, n, effective) in &all_pages {` ⇒ 匹配 0 处、当场报了出来。
+        # 那个形状是好的（吵），但要连**中途变形**也防住：带上首尾行，
+        # 以后往循环体里插任何语句都会让它匹配 0 处，不会变成更短的前缀。
+        '        for (p, i, n, effective) in &all_pages {\n'
+        '            // 没真正分页时不传页码 —— `page_no` 就是「服务端知道共几页」这个信号，\n'
+        '            // 传 `None` 等于承认不知道，于是 `to_html` 不印页脚。\n'
+        '            let pno = if *effective { Some((*i, *n)) } else { None };\n'
+        '            v.push(to_html(std::slice::from_ref(p), pno)?);\n'
+        '        }',
+        '        for (p, i, n, effective) in &all_pages {\n'
+        '            // 没真正分页时不传页码 —— `page_no` 就是「服务端知道共几页」这个信号，\n'
+        '            // 传 `None` 等于承认不知道，于是 `to_html` 不印页脚。\n'
+        '            let pno = if *effective { Some((*i, *n)) } else { None };\n'
         '            let mut p2 = p.clone();\n'
         '            for r in p2.rows.iter_mut() {\n'
         '                for c in r.iter_mut() {\n'
         '                    c.style = None;\n'
         '                }\n'
         '            }\n'
-        '            v.push(to_html(std::slice::from_ref(&p2))?);\n'
+        '            v.push(to_html(std::slice::from_ref(&p2), pno)?);\n'
         '        }',
     ),
 ]

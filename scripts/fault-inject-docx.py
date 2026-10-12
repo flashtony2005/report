@@ -26,6 +26,7 @@ docx 的失败是**全有或全无**的：Word 遇到结构错不是「排版有
 退出码：0 = 每条注入都被至少一道闸抓到，且基线两闸都绿；1 = 有漏网。
 """
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -35,11 +36,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER_DIR = ROOT / "print-server"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from server_bin import resolve_server_bin  # noqa: E402
 DOCX = SERVER_DIR / "src/report/docx.rs"
-BIN = Path.home() / ".cargo/target/debug/print-server"
-PY = os.environ.get(
-    "PY_BIN", "/Users/lushaohui/.workbuddy-ai/binaries/python/envs/default/bin/python"
-)
+BIN = Path(resolve_server_bin())
+# verify-docx.py 只用标准库（zipfile / ElementTree）—— 用哪个 python 跑都行，
+# 所以默认就是**当前这个**解释器，别再写死本机 venv 路径（CI 上没有）。
+PY = os.environ.get("PY_BIN", sys.executable)
 # ⚠️ 沙箱里 HTTP_PROXY 指向本地代理，探 127.0.0.1 会被拦成 502 —— 必须绕过
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 HEALTH = "http://127.0.0.1:18888/health"
@@ -179,6 +182,11 @@ def run_all_gates(srv) -> tuple[bool, list[str], list[str]]:
 def kill_port() -> None:
     """先把 18888 上可能还活着的实例清掉 —— 否则探针打的是**旧进程**，
     注入看起来就永远不生效（这是最容易骗过自己的一种假绿）。"""
+    if shutil.which("lsof") is None:
+        # CI 的 ubuntu 镜像不保证有 lsof；那儿本来也不会有别的实例占着 18888。
+        # **明说跳过**，不静默 —— 静默跳过就是把这条防护骗没了。
+        print("（没有 lsof，跳过清 18888 —— 这条防护在本环境不生效）")
+        return
     subprocess.run(["sh", "-c", "lsof -ti:18888 | xargs kill -9 2>/dev/null"], check=False)
     time.sleep(0.5)
 

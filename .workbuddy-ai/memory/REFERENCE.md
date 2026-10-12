@@ -2026,6 +2026,67 @@ issues-ui / inline-ui / ai-dropped），**要么判据根本不读用例名**（
 
 ---
 
+## §二十一.19 第三个作业：7 个「要真服务」的 fault-inject 也挂上 CI（2026-10-12）
+
+15/20 有跑器（8 免服务 + 7 要服务）。剩 5 个理由真实（odbc 原生驱动 / 有状态门禁），不许含糊。
+
+### 三处本机写死逐个消掉（迁出的前提不是「想跑」）
+
+| 写死的 | 现在 | 为什么 |
+| --- | --- | --- |
+| `Path.home()/".cargo/target/debug/print-server"` | `scripts/server_bin.py:resolve_server_bin()` | 本机 `~/.cargo/config.toml` 把 target-dir 指到仓库外，CI 没这文件 ⇒ **两条路径都对不了**。权威答案是 `cargo metadata --no-deps` 的 `target_directory`；`PRINT_SERVER_BIN` 显式覆盖，给了不存在就抛 |
+| `PY = "/Users/lushaohui/…/python"` | `os.environ.get("PY_BIN", sys.executable)` | 三个探针只用标准库 |
+| `NODE_OPTIONS` 绝对路径 | `REPO/"scripts/…"` 相对 | CI 上不存在 |
+| `lsof` 无条件调用 | `shutil.which` 探一次，没有就**明说跳过** | ubuntu 镜像不保证有；静默跳过 = 骗没这条防护 |
+
+### 🔴 抓到第二个 ANSI 实例（`conditional.py` 的 `Tests\s+(\d+) passed`）
+
+- `static_ansi_lint()` 判据加宽：`FAIL|×|Tests|passed|startswith` 任一 + 跑 vitest ⇒ 必须有 `ANSI = re.compile`。
+- **加宽后当场用一次性探针证明有牙齿**（造 zzz 脚本 → 红；删 → 绿）。
+- 记账纠错：`report-paper.py` 在 `e4850a1` 里**早就修了**，不是「潜伏的第二次」。
+
+### 🔴 首跑 4 过 3 挂，2 个是**锚点腐坏**（4 条失效注入静默了一段时间）
+
+| 锚点 | 源码变了什么 | 症状 |
+| --- | --- | --- |
+| 占位判据**第一行**（4 个 `&&`） | 条码那次加了第 5 个 `&&` | 匹配 **1 处**（更短前缀）⇒ 只注入一半还可能照样红 |
+| `inst.chart` 紧接 `inst.value` | 中间插了 `inst.barcode` | 匹配 **0 处** |
+| `sort`+`seen`+`retain` 三行 | 元组 4 字段 → 5 字段 | 匹配 **0 处** |
+| `for p in &all_pages {` | 重构成 `for (p, i, n, effective) in …` | 匹配 **0 处** |
+
+修法（治己 + 治本）：
+1. **锚点覆盖完整语法单元**（带首尾 + 收尾 `}`）—— 中间被插任何东西 ⇒ 0 处 ⇒ 吵。
+2. runner 从「0 处才报」升级为「**恰好 1 处**」（chart-probe 原来 `replace(...,1)` 匹配 2 处时只改第一处 = 注入打一半）+ 秒级 `--check-anchors`。
+
+⚠️ 我自己也写错一条注入（删了 `let mut seen` 留下用到它的 `retain`）⇒ 编译不过。
+被「编译不过 ≠ 算验过」兜住，**不是**被「探针红了」兜住。
+
+### 工作树守卫误报 → 圈定到 `(designer-react|openprint|print-server)/src/`
+
+🔴 **改完当场翻车，meta-check 的 D 案例抓出来的**：`INJECT_SCOPE` 自带 `^` + `tree_fp` 又拼 `^.. ` ⇒
+正则 `^.. ^(designer…)/src/` **永远 0 匹配 = 守卫 inert**。去掉 `^` 后 D 绿。
+⇒ **E 案例此前是假绿**（验「src/ 外不拦」，而守卫什么都没匹配，当然不拦）。
+⇒ `check-fault-inject-all.py` 五条 → **六条**断言；三个假脚本都要补进 `CI_ABLE`（否则分类守卫先红）。
+**教训：危险的不是守卫错了，是它看起来在工作（不拦 = 一切照常）而实际什么都没判。**
+
+### 清单三张表：`CI_ABLE` 8 / `SERVICE_ABLE` 7 / `EXCLUDED` 5
+
+守卫数每个脚本在**三张表**里出现几次：**0 次（漏分类）和 ≥2 次（分了两次类）都红**。
+
+### 镜像与 action（时间盒内的债）
+
+- 三个作业都钉 **`ubuntu-24.04`**：`ubuntu-latest` 将于 **2026-10-19~11-19 迁 26.04**（changelog 2026-09-17 GA）。窗口内随机落镜像 = 「没改代码却红了」。等对照 run 再换。
+- `checkout@v7` · `setup-node@v7` · `cache@v6` · `upload-artifact@v7`（输入名从 raw `action.yml` 核实，不靠记忆）。
+- 新作业 `fault-inject-service`：钉 24.04 · `timeout-minutes: 150`（本机 88 条注入 ≈974s；CI 按 2 倍估 + 冷编译；**第一次绿了要按实测收紧**）· 两份 node_modules · cargo 缓存同 key · 预热 `cargo build`（脚本里是 `--offline`）· oracle：`librsvg2-bin` + venv `zxing-cpp`/`pillow` → `PY_BIN` 写进 `$GITHUB_ENV`。
+- 端口：4 个脚本共用 18888，另三个 18903 / 18905 / 18907。
+
+### 仍未验
+
+CI 上一次都没跑过（本机全绿 ≠ CI 会绿，§二十一.13 / .18 各有一次代价）。
+「三个作业并行不撞端口」只在设计上成立。
+
+---
+
 ## 二十二、《报表引擎详解-功能与算法.md》（2026-09-26，仓库根，1738 行）
 
 用户要「详细说明功能及算法」的引擎报告。**纯文档，没动源码。**

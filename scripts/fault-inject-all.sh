@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# 跑所有「**不需要起真服务**」的 fault-inject 脚本。
+# 跑 fault-inject 脚本：默认跑「**不需要起真服务**」的 8 个，`--service` 跑「自己起停
+# print-server」的 7 个。两个模式共用同一套退出码语义、守卫与日志机制。
 #
 # ## 为什么要有这个脚本
 #
@@ -15,22 +16,25 @@
 # 第三个器官更隐蔽：前两个是「用例没人跑」，这个是「**证明用例有牙齿的脚本**没人跑」。
 # 少了它，前面所有的绿都只是**未被检验的自信**。
 #
-# ## 为什么只跑一部分 —— 分类依据（2026-10-01 逐个读源码得出，不是猜的）
+# ## 为什么只跑一部分 —— 分类依据（逐个读源码得出，不是猜的）
 #
-# 20 个脚本**异构**，只有 8 个能在「不起服务、不装原生依赖」的环境里跑完：
+# 20 个脚本**异构**，按「跑它需要什么」分三组：
 #
-#   · **可 CI 化（8 个，见 CI_ABLE）**：只改源码文本 + 跑一条**已经在 CI 里**的闸
+#   · **免服务（8 个，见 CI_ABLE）**：只改源码文本 + 跑一条**已经在 CI 里**的闸
 #     （`mirror-check.py` / `cargo test` / designer-react 的 vitest）。零服务、零平台依赖。
-#   · **不可（12 个，见 EXCLUDED）**：门禁要 `cargo build` **再起一个 print-server**
-#     （探针打 127.0.0.1:18888 / :18907），或者要 `--features odbc` 那套原生驱动。
-#     它们的依赖是**真实**的，不是保守估计 —— 每个的理由都写在 EXCLUDED 里。
+#   · **要服务（7 个，见 SERVICE_ABLE）**：门禁要 `cargo build` **再起一个 print-server**
+#     （探针打 127.0.0.1:18888 / :1890x）。它们**自己起停服务**，所以只要 cargo 就能跑
+#     —— 2026-10-12 起由第三个 CI 作业（`fault-inject-service`）覆盖。
+#   · **CI 化不了（5 个，见 EXCLUDED）**：要 `--features odbc` 那套原生驱动，
+#     或者门禁是**有状态**的（乐观锁 / 覆盖冲突 / 磁盘满注入 RLIMIT_FSIZE）。
+#     每个的理由都写在 EXCLUDED 里 —— 必须是**真实**的依赖，不许写「太慢」。
 #
-# ⚠️ 所以本脚本的保证**只覆盖 8/20**。别把它的绿读成「20 个都验过了」。
-#    剩下 12 个仍然只能按需手跑（改哪个特性跑哪一个）。
+# ⚠️ 所以单个模式的保证**不覆盖全部 20 个**。别把任一模式的绿读成「20 个都验过了」。
+#    两个模式都绿 = 15/20 有跑器；剩下 5 个仍然只能按需手跑（改哪个特性跑哪一个）。
 #
 # ## 三种结果，与 `check-all.sh` 同一套语义
 #
-#   0  通过      —— 8 个脚本都跑了、都 rc=0（每条注入都被指定用例抓到）
+#   0  通过      —— 当前模式的脚本都跑了、都 rc=0（每条注入都被指定用例/探针抓到）
 #   1  失败      —— 至少一个脚本 rc≠0（有注入漏网，或锚点失效）
 #   2  没跑成    —— 环境缺东西（缺 node_modules / 缺 cargo）**或工作树被弄脏**，
 #                   **根本没检查**。绝不能算通过。
@@ -39,9 +43,11 @@
 #
 # ## ⚠️ 必须**串行**，这是正确性要求，不是性能选择
 #
-# 8 个脚本里 **5 个改的是同一个文件**（`designer-react/src/modals/GridReportModal.tsx`），
-# 另外几个改 `openprint/src/report/grid-report.ts` / `print-server/src/report/chart.rs`。
-# 并行 = 互相读到对方注入到一半的源码 = 结果全是垃圾。所以这里**逐个跑**。
+# 免服务模式里 **5 个脚本改同一个文件**（`designer-react/src/modals/GridReportModal.tsx`），
+# 另外几个改 `openprint/src/report/grid-report.ts` / `print-server/src/report/chart.rs`；
+# 要服务模式改的是 `print-server/src/report/{docx,xlsx,engine,model,mod,store}.rs`，
+# 而且 6 个脚本共用 18888 端口。两种并行都会互相读到对方注入到一半的源码
+# = 结果全是垃圾。所以**逐个跑**（同一时刻只允许一个实例，见下面的锁）。
 # （同 `ts-test-designer.sh` 的 `--no-file-parallelism`：串行是正确性要求。）
 #
 # ## ⚠️ `rc=${PIPESTATUS[0]}` 不能省
@@ -61,9 +67,11 @@
 #    「失败读成通过」。这也说明这两者是**冗余**的，而非单行承重。
 #
 # 用法：
-#   bash scripts/fault-inject-all.sh            # 跑全部 8 个（串行，几十分钟）
-#   bash scripts/fault-inject-all.sh --list     # 只列出会跑哪些、跳过了哪些
-#   bash scripts/fault-inject-all.sh --only ui  # 只跑名字含 ui 的
+#   bash scripts/fault-inject-all.sh            # 跑免服务的 8 个（串行，几十分钟）
+#   bash scripts/fault-inject-all.sh --service  # 跑要服务的 7 个（自己起停 print-server）
+#   bash scripts/fault-inject-all.sh --list     # 三组清单：会跑哪些、为什么跳过哪些
+#   bash scripts/fault-inject-all.sh --only ui  # 只跑名字含 ui 的（配合上面任一模式）
+#   bash scripts/fault-inject-all.sh --ci       # 等价于在前面写 CI=true（见下节）
 #
 # ## ⚠️ 碰「解析测试输出」的改动，本机必须带 `CI=true` 再验一次
 #
@@ -72,9 +80,10 @@
 # → `picocolors` 的判据里有 `|| !!env.CI`（`picocolors.js:4`，**与 TTY 无关**，
 # 重定向到文件也照样上色）→ vitest 把 `FAIL ` 包成 `c.bgRed(c.bold(...))`
 # → 按行首匹配的判据一条都认不出来 ⇒ 14 条注入全被报成「红了但不是期望的用例」。
-# 详见《架构体检》§13.7。复现 CI 的那一条命令：
+# 详见《架构体检》§13.7。复现 CI 的那两条命令（后者等价于前者，`--ci` 只是省事）：
 #
 #   CI=true bash scripts/fault-inject-all.sh --only save-confirm
+#   bash scripts/fault-inject-all.sh --ci --only save-confirm
 #
 # ## 日志
 #
@@ -91,9 +100,10 @@ cd "$ROOT" || exit 2
 
 # ─────────────────────────────────────────────────────────────── 并发守卫
 #
-# 8 个脚本里 **5 个改的是同一个文件**（`designer-react/src/modals/GridReportModal.tsx`）。
-# 两个实例同时跑会互相读到对方的注入态，甚至把对方的注入当成「原文」写回去 ——
-# 结果全是垃圾，而且**有可能真的把注入态提交进仓库**。（2026-10-08 差一点自己踩上。）
+# 免服务模式里 **5 个脚本改同一个文件**（`designer-react/src/modals/GridReportModal.tsx`），
+# 要服务模式 6 个脚本共用 18888。两个实例同时跑会互相读到对方的注入态，
+# 甚至把对方的注入当成「原文」写回去 —— 结果全是垃圾，而且**有可能真的把
+# 注入态提交进仓库**。（2026-10-08 差一点自己踩上。）
 #
 # 用 **PID 文件**而不是 `pgrep`：`pgrep -f fault-inject-all.sh` 会连**父 shell 的命令行**
 # 一起命中（工具链里是 `zsh -c '… bash scripts/fault-inject-all.sh …'`），必然误报。
@@ -102,7 +112,7 @@ LOCK="${TMPDIR:-/tmp}/fault-inject-all.lock"
 if [ -s "$LOCK" ]; then
   _prev="$(cat "$LOCK" 2>/dev/null || true)"
   if [ -n "$_prev" ] && kill -0 "$_prev" 2>/dev/null; then
-    printf '\033[31m✗ 已经有实例在跑（pid %s）—— 5 个脚本改同一个文件，并发跑结果全是垃圾。\033[0m\n' "$_prev" >&2
+    printf '\033[31m✗ 已经有实例在跑（pid %s）—— 注入脚本就地改源码再还原，并发跑结果全是垃圾。\033[0m\n' "$_prev" >&2
     printf '  等它跑完再来。锁文件：%s\n' "$LOCK" >&2
     exit 2
   fi
@@ -113,18 +123,21 @@ printf '%s\n' "$$" > "$LOCK"
 # 每跑一次就多一件垃圾）。清空之后 `[ -s ]` 为假，等价于「没有锁」。
 trap ': > "$LOCK"' EXIT
 
-# ─────────────────────────────────────────────────────────────── 清单
-#
-# 格式：`脚本名|前置条件`。前置条件 ∈ {none, cargo, designer, designer+openprint}
-#   cargo    = PATH 里有 cargo（脚本跑 `cargo test`）
-#   designer = designer-react 装好了 vitest
-#   openprint= openprint 装好了 vitest
+# ─────────────────────────────────────────────────────────────── 清单（三组）
 #
 # ⚠️ **刻意写死，不用 glob** —— 理由有两层，第二层更重要：
 #   1. glob 会把将来新增的、**要起服务**的脚本也吸进来 → CI 上红，而原因难查；
 #   2. 写死之后「哪些被 CI 覆盖」才有唯一的事实来源。而为了不让它**漂**，
-#      下面有 `check_classification()`：任何 `fault-inject-*.py` 只要不在这两个清单里，
-#      本脚本**当场红**。新增脚本时忘了分类 = 不可能静默漏掉。
+#      下面有 `check_classification()`：任何 `fault-inject-*.py` 只要不在这三张
+#      清单里（或在里面出现两次），本脚本**当场红**。新增脚本时忘了分类 =
+#      不可能静默漏掉。
+#
+# 格式：`脚本名|前置条件`。前置条件是 `+` 分隔的组合，元素 ∈ {none, cargo, designer, openprint}：
+#   cargo    = PATH 里有 cargo（脚本跑 `cargo test` 或自己 `cargo build`）
+#   designer = designer-react 装好了 vitest
+#   openprint= openprint 装好了 vitest
+
+# 第一组：免服务。只改源码文本 + 跑一条**已经在 CI 里**的闸。
 CI_ABLE=(
   "fault-inject-mirror-semantics.py|none"
   "fault-inject-table-pins.py|cargo"
@@ -136,19 +149,32 @@ CI_ABLE=(
   "fault-inject-ai-dropped.py|designer+openprint"
 )
 
-# 格式：`脚本名|不可 CI 化的依据`。依据必须写**它到底要什么**，不能写「太慢」之类。
+# 第二组：要服务。每个脚本**自己起停 print-server**（占用 18888 / 18903 / 18905 / 18907），
+# 所以前置条件就是「有 cargo（+ 跑 UI 侧门禁的那份 node_modules）」。
+# 2026-10-12 从 EXCLUDED 迁出来 —— 迁出条件**不是**「我想跑」，而是逐个消掉了
+# 三处本机写死：① 二进制路径改 `server_bin.resolve_server_bin()`（原来写死
+# `~/.cargo/target/debug/print-server`，CI 上 cargo 用默认的 `print-server/target`）；
+# ② `PY` 默认 `sys.executable`（原来写死本机 venv 绝对路径）；
+# ③ conditional.py 的 NODE_OPTIONS 改仓库相对路径 + 补剥 ANSI（它按
+#   `Tests N passed` 读 vitest 输出，与 save-confirm 2026-10-08 红掉的是同一个根因）。
+# 判据见 `scripts/server_bin.py` 顶部与《架构体检》§13.8。
+SERVICE_ABLE=(
+  "fault-inject-image-probe.py|cargo"
+  "fault-inject-chart-probe.py|cargo"
+  "fault-inject-docx.py|cargo"
+  "fault-inject-html-style.py|cargo"
+  "fault-inject-conditional.py|designer+cargo"
+  "fault-inject-barcode-probe.py|cargo"
+  "fault-inject-report-paper.py|designer+openprint+cargo"
+)
+
+# 第三组：CI 化不了。格式：`脚本名|依据`。依据必须写**它到底要什么**，
+# 不能写「太慢」之类 —— 这条纪律和「闸必须能失败」是同一条。
 EXCLUDED=(
-  "fault-inject-inline-probe.py|门禁是 verify-inline-dataset.py，打 /api/report/render → 要真服务"
-  "fault-inject-atomic-save.py|门禁含 verify-atomic-save.py（起服务 + RLIMIT_FSIZE/SIGXFSZ）"
+  "fault-inject-inline-probe.py|门禁 verify-inline-dataset.py 要一个**已经在跑**的服务；注入脚本自己不起服务（按需手跑）"
+  "fault-inject-atomic-save.py|门禁含 verify-atomic-save.py（起服务 + RLIMIT_FSIZE/SIGXFSZ 造「写一半被杀」）"
   "fault-inject-optimistic-lock.py|L8–L13 门禁是 verify-optimistic-lock.py（要真服务，状态码只有真发请求才验得到）"
   "fault-inject-save-conflict.py|S1/S3/S4/S5/S6 门禁是 verify-save-conflict.py（要真服务）"
-  "fault-inject-docx.py|自起 print-server:18888；且 PY_BIN 默认值是 macOS 绝对路径"
-  "fault-inject-html-style.py|自起 print-server:18907"
-  "fault-inject-report-paper.py|自起 print-server:18888"
-  "fault-inject-chart-probe.py|自起 print-server:18888"
-  "fault-inject-image-probe.py|自起 print-server:18888"
-  "fault-inject-conditional.py|门禁是 verify-xlsx-conditional.py --port（要真服务）"
-  "fault-inject-barcode-probe.py|门禁是 verify-xlsx-barcode.py --port（要真服务）"
   "fault-inject-odbc-probe.py|要 cargo build --features odbc（unixODBC + sqliteodbc 原生驱动）"
 )
 
@@ -156,6 +182,10 @@ ONLY=""; MODE="run"
 for a in "$@"; do
   case "$a" in
     --list) MODE="list" ;;
+    --service) MODE="service" ;;
+    # 把本机也变成 CI 的输出格式（等价于 `CI=true bash …`）。凡是改过
+    # 「解析测试输出」的代码，必须带着它再验一次（§13.7 那条链路）。
+    --ci) export CI=true ;;
     --only) ONLY="__NEXT__" ;;
     -h|--help) MODE="help" ;;
     *)
@@ -166,7 +196,14 @@ for a in "$@"; do
   esac
 done
 [ "$ONLY" = "__NEXT__" ] && { echo "--only 后面要跟一个子串" >&2; exit 2; }
-[ "$MODE" = "help" ] && { sed -n '2,68p' "$0"; exit 0; }
+[ "$MODE" = "help" ] && { sed -n '2,/^# 退出码：0 \/ 1 \/ 2，语义见上。$/p' "$0"; exit 0; }
+
+# 当前模式跑哪一组（`--list` 不走这条，它三组都打印）。
+if [ "$MODE" = "service" ]; then
+  ACTIVE=("${SERVICE_ABLE[@]}")
+else
+  ACTIVE=("${CI_ABLE[@]}")
+fi
 
 # ─────────────────────────────────────────────────────────────── 分类完整性
 #
@@ -174,23 +211,31 @@ done
 # ——新脚本既不在 CI_ABLE 也不在 EXCLUDED → 它**永远不跑**，而本脚本照样全绿。
 # 那就是把「闸是绿的、但没有跑器」原样复制到这一层。所以：**必须当场红**。
 check_classification() {
-  local bad=0 f base
+  local bad=0 f base e found
   for f in scripts/fault-inject-*.py; do
     [ -e "$f" ] || continue
     base="$(basename "$f")"
-    local found=0 e
-    for e in ${CI_ABLE[@]+"${CI_ABLE[@]}"}; do [ "${e%%|*}" = "$base" ] && found=1; done
-    for e in ${EXCLUDED[@]+"${EXCLUDED[@]}"}; do [ "${e%%|*}" = "$base" ] && found=1; done
+    found=0
+    for e in ${CI_ABLE[@]+"${CI_ABLE[@]}"} \
+             ${SERVICE_ABLE[@]+"${SERVICE_ABLE[@]}"} \
+             ${EXCLUDED[@]+"${EXCLUDED[@]}"}; do
+      [ "${e%%|*}" = "$base" ] && found=$((found + 1))
+    done
     if [ "$found" = 0 ]; then
       printf '\033[31m✗ 新增脚本没有分类：%s\033[0m\n' "$base" >&2
-      printf '  它既不在 CI_ABLE 也不在 EXCLUDED ⇒ 永远不会被跑。\n' >&2
-      printf '  请在本脚本顶部把它归入其中一个，并写明前置条件 / 不可 CI 化的依据。\n' >&2
+      printf '  它不在 CI_ABLE / SERVICE_ABLE / EXCLUDED 任何一张里 ⇒ 永远不会被跑。\n' >&2
+      printf '  请在本脚本顶部把它归入其中一组，并写明前置条件 / 不可 CI 化的依据。\n' >&2
+      bad=1
+    elif [ "$found" -gt 1 ]; then
+      printf '\033[31m✗ 脚本被分了两次类：%s（%d 次）\033[0m\n' "$base" "$found" >&2
+      printf '  在两个模式里各跑一遍 = 双倍耗时，且「唯一的事实来源」不再唯一。\n' >&2
       bad=1
     fi
   done
   # 反向：清单里写了但文件不在（改名/删除了），同样是漂移
-  local e
-  for e in ${CI_ABLE[@]+"${CI_ABLE[@]}"} ${EXCLUDED[@]+"${EXCLUDED[@]}"}; do
+  for e in ${CI_ABLE[@]+"${CI_ABLE[@]}"} \
+           ${SERVICE_ABLE[@]+"${SERVICE_ABLE[@]}"} \
+           ${EXCLUDED[@]+"${EXCLUDED[@]}"}; do
     if [ ! -f "scripts/${e%%|*}" ]; then
       printf '\033[31m✗ 清单里的脚本不存在：%s\033[0m\n' "${e%%|*}" >&2
       bad=1
@@ -208,36 +253,53 @@ fi
 # `--list` 放在分类校验**之后**：否则清单漂了的时候，`--list` 会照样打印一份
 # 「看着挺全」的清单 —— 那正是本脚本最想消灭的那种「看着像检查过了」。
 if [ "$MODE" = "list" ]; then
-  printf '会跑（%d 个，串行）：\n' "${#CI_ABLE[@]}"
+  printf '① 免服务（%d 个，串行）—— 默认模式跑这组：\n' "${#CI_ABLE[@]}"
   for e in ${CI_ABLE[@]+"${CI_ABLE[@]}"}; do printf '  ✓ %-38s [%s]\n' "${e%%|*}" "${e##*|}"; done
-  printf '\n不跑（%d 个）—— 每个都写明了它到底要什么：\n' "${#EXCLUDED[@]}"
+  printf '\n② 要服务（%d 个，串行）—— `--service` 跑这组；每个脚本自己起停 print-server：\n' "${#SERVICE_ABLE[@]}"
+  for e in ${SERVICE_ABLE[@]+"${SERVICE_ABLE[@]}"}; do printf '  ✓ %-38s [%s]\n' "${e%%|*}" "${e##*|}"; done
+  printf '\n③ 不跑（%d 个）—— 每个都写明了它到底要什么：\n' "${#EXCLUDED[@]}"
   for e in ${EXCLUDED[@]+"${EXCLUDED[@]}"}; do printf '  · %-38s %s\n' "${e%%|*}" "${e##*|}"; done
-  printf '\n⚠️ 本脚本的保证只覆盖上面那 %d 个。别读成「20 个都验过了」。\n' "${#CI_ABLE[@]}"
+  printf '\n⚠️ ① 的绿 = 这 %d 个验过了；② 的绿 = 另外 %d 个验过了。\n' "${#CI_ABLE[@]}" "${#SERVICE_ABLE[@]}"
+  printf '   两个都绿才是 %d/%d 有跑器 —— 任何单独一个都**不是**「全都验过了」。\n' \
+    "$(( ${#CI_ABLE[@]} + ${#SERVICE_ABLE[@]} ))" "$(( ${#CI_ABLE[@]} + ${#SERVICE_ABLE[@]} + ${#EXCLUDED[@]} ))"
   exit 0
 fi
 
 # ─────────────────────────────────────────────────────────────── 前置条件
+#
+# 前置条件是 `+` 分隔的组合（如 `designer+cargo`）：逐项查，任何一项不满足就算没跑成。
 prereq_ok() {
-  case "$1" in
-    none) return 0 ;;
-    cargo) command -v cargo >/dev/null 2>&1 ;;
-    designer) [ -x "$ROOT/designer-react/node_modules/.bin/vitest" ] ;;
-    openprint) [ -e "$ROOT/openprint/node_modules/vitest/vitest.mjs" ] ;;
-    designer+openprint)
-      [ -x "$ROOT/designer-react/node_modules/.bin/vitest" ] \
-        && [ -e "$ROOT/openprint/node_modules/vitest/vitest.mjs" ] ;;
-    *) return 1 ;;
-  esac
+  local ok=0 t
+  local -a need
+  IFS='+' read -ra need <<< "$1"
+  for t in "${need[@]}"; do
+    case "$t" in
+      none) ;;
+      cargo) command -v cargo >/dev/null 2>&1 || ok=1 ;;
+      designer) [ -x "$ROOT/designer-react/node_modules/.bin/vitest" ] || ok=1 ;;
+      openprint) [ -e "$ROOT/openprint/node_modules/vitest/vitest.mjs" ] || ok=1 ;;
+      *) ok=1 ;;
+    esac
+  done
+  return $ok
 }
 
 prereq_why() {
-  case "$1" in
-    cargo) printf 'PATH 里没有 cargo' ;;
-    designer) printf 'designer-react 没装 node_modules（缺 vitest）' ;;
-    openprint) printf 'openprint 没装 node_modules（缺 vitest）' ;;
-    designer+openprint) printf 'designer-react 或 openprint 没装 node_modules' ;;
-    *) printf '前置条件未知：%s' "$1" ;;
-  esac
+  local why="" t
+  local -a need
+  IFS='+' read -ra need <<< "$1"
+  for t in "${need[@]}"; do
+    case "$t" in
+      none) ;;
+      cargo) command -v cargo >/dev/null 2>&1 || why="${why:+$why；}PATH 里没有 cargo" ;;
+      designer) [ -x "$ROOT/designer-react/node_modules/.bin/vitest" ] \
+        || why="${why:+$why；}designer-react 没装 node_modules（缺 vitest）" ;;
+      openprint) [ -e "$ROOT/openprint/node_modules/vitest/vitest.mjs" ] \
+        || why="${why:+$why；}openprint 没装 node_modules（缺 vitest）" ;;
+      *) why="${why:+$why；}前置条件未知：$t" ;;
+    esac
+  done
+  printf '%s' "$why"
 }
 
 # ─────────────────────────────────────────────────────────────── 诊断通道
@@ -257,14 +319,27 @@ gh_strip_ansi() { sed $'s/\033\\[[0-9;]*[A-Za-z]//g'; }
 # 那些红**指向的是错的方向**（看着像断言没牙齿，其实是工作树脏了）。
 # 所以每跑一个就比一次指纹；变了就**停下并报「没跑成」**（不自动还原 ——
 # 本机可能有用户未提交的改动，自动 `git checkout` 会毁掉它们）。
-tree_fp() { git status --porcelain 2>/dev/null | sort; }
+#
+# ⚠️ 指纹**只圈注入脚本真的会碰的路径**（2026-10-12 收窄）：三组注入逐条读过，
+#    它们只改 `designer-react/src/`、`openprint/src/`、`print-server/src/` 下的源码。
+#    整棵树的指纹会把「跑器在跑的时候顺手改了文档 / 别的脚本」也当成注入残留 ——
+#    那是**误报**：停下列表明红，原因却指向错的方向（和这条守卫要防的恰好同款）。
+#    别处的改动从此不拦；但这三处照旧无条件拦。
+INJECT_SCOPE='(designer-react|openprint|print-server)/src/'
+tree_fp() { git status --porcelain 2>/dev/null | grep -E "^.. $INJECT_SCOPE" | sort; }
 
 printf '\033[1mfault-inject-all\033[0m（%s）\n' "$ROOT"
-printf '模式：串行；只跑「不需要起真服务」的 %d/%d 个脚本\n' "${#CI_ABLE[@]}" "$(( ${#CI_ABLE[@]} + ${#EXCLUDED[@]} ))"
+if [ "$MODE" = "service" ]; then
+  printf '模式：串行；跑「要服务」的 %d/%d 个脚本（每个自己起停 print-server）\n' \
+    "${#ACTIVE[@]}" "$(( ${#CI_ABLE[@]} + ${#SERVICE_ABLE[@]} + ${#EXCLUDED[@]} ))"
+else
+  printf '模式：串行；跑「免服务」的 %d/%d 个脚本\n' \
+    "${#ACTIVE[@]}" "$(( ${#CI_ABLE[@]} + ${#SERVICE_ABLE[@]} + ${#EXCLUDED[@]} ))"
+fi
 
 BASE_FP="$(tree_fp)"
 if [ -n "$BASE_FP" ]; then
-  printf '\033[33m⚠ 工作树本来就不干净（%d 个改动）。\n' "$(printf '%s\n' "$BASE_FP" | wc -l | tr -d ' ')"
+  printf '\033[33m⚠ src/ 三处本来就有未提交改动（%d 个）。\n' "$(printf '%s\n' "$BASE_FP" | wc -l | tr -d ' ')"
   printf '  注入脚本改的是同一批文件；未提交的改动可能被当作「注入残留」。建议先 stash/commit。\033[0m\n'
 fi
 
@@ -273,7 +348,7 @@ passed=0; failed=0; skipped=0; worst=0
 declare -a FAILED_NAMES=() SKIPPED_NAMES=() DETAIL=() FAIL_LOG=()
 T_START=$SECONDS
 
-for entry in ${CI_ABLE[@]+"${CI_ABLE[@]}"}; do
+for entry in ${ACTIVE[@]+"${ACTIVE[@]}"}; do
   name="${entry%%|*}"; need="${entry##*|}"
   [ -n "$ONLY" ] && case "$name" in *"$ONLY"*) ;; *) continue ;; esac
 
@@ -319,9 +394,8 @@ for entry in ${CI_ABLE[@]+"${CI_ABLE[@]}"}; do
     printf '\033[31m✗ 工作树在 %s 跑完之后变了 —— 它可能被中断、没还原干净。\033[0m\n' "$name"
     printf '  后面的结果**不可信**，就此停下。变动的文件：\n'
     printf '%s\n' "$NOW_FP" | sed 's/^/    /'
-    printf '  \033[33m⚠️ 若变动的文件与注入无关\033[0m（例如你就是在它跑的时候改了文档/别的脚本），\n'
-    printf '     那是这条守卫的**误报**：它比的是**整棵树**的指纹，分不清是谁改的。\n'
-    printf '     重新跑一次即可（跑的过程中别动仓库）。\n'
+    printf '  （守卫只圈 designer-react/src · openprint/src · print-server/src —— \n'
+    printf '    别处的改动不会误报；变的是这三处，一律按「注入残留」处理。）\n'
     [ "$worst" -lt 2 ] && worst=2
     break
   fi
@@ -334,8 +408,13 @@ printf '通过 %d · 失败 %d · 没跑成 %d\n' "$passed" "$failed" "$skipped"
 [ "${#FAILED_NAMES[@]}" -gt 0 ]  && printf '失败：%s\n'   "${FAILED_NAMES[*]}"
 [ "${#SKIPPED_NAMES[@]}" -gt 0 ] && printf '没跑成：%s\n' "${SKIPPED_NAMES[*]}"
 
-printf '\n（本脚本只覆盖 %d/%d 个 fault-inject；另 %d 个要起真服务或原生驱动，见 --list。）\n' \
-  "${#CI_ABLE[@]}" "$(( ${#CI_ABLE[@]} + ${#EXCLUDED[@]} ))" "${#EXCLUDED[@]}"
+if [ "$MODE" = "service" ]; then
+  printf '\n（本模式（--service）覆盖 %d/%d 个；免服务模式另覆盖 %d 个；剩 %d 个要原生驱动或有状态门禁，见 --list。）\n' \
+    "${#ACTIVE[@]}" "$(( ${#CI_ABLE[@]} + ${#SERVICE_ABLE[@]} + ${#EXCLUDED[@]} ))" "${#CI_ABLE[@]}" "${#EXCLUDED[@]}"
+else
+  printf '\n（本模式覆盖 %d/%d 个；`--service` 另覆盖 %d 个；剩 %d 个要原生驱动或有状态门禁，见 --list。）\n' \
+    "${#ACTIVE[@]}" "$(( ${#CI_ABLE[@]} + ${#SERVICE_ABLE[@]} + ${#EXCLUDED[@]} ))" "${#SERVICE_ABLE[@]}" "${#EXCLUDED[@]}"
+fi
 [ -n "${FAULT_INJECT_LOG_DIR:-}" ] && \
   printf '日志留档：%s（每个脚本一份完整输出）\n' "$FAULT_INJECT_LOG_DIR"
 
