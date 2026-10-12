@@ -24,7 +24,9 @@ name: gates
 #          `cargo build` **再起一个 print-server**（docx 导出 / HTML 样式 / 页面设置 /
 #          图表 / 图片 / 条件格式 / 条码）。每个脚本自己起停服务，作业只补三样环境：
 #          预热 cargo（脚本跑 `--offline` 构建）、两份 node_modules（report-paper 的
-#          UI 门禁要设计师的 vitest）、条码解码 oracle（zxingcpp + rsvg-convert）。
+#          UI 门禁要设计师的 vitest）、探针 oracle（zxingcpp + Pillow +
+#          rsvg-convert + python-docx，装在**同一个 venv**里经 `PY_BIN` 传进去 ——
+#          写死解释器路径会让 ubuntu runner 上必红，2026-10-12 踩过）。
 #
 #   **仍然不覆盖**：
 #     · 5 个 `fault-inject-*.py` —— odbc 要 `--features odbc` 那套原生驱动；
@@ -326,21 +328,25 @@ jobs:
         working-directory: print-server
         run: cargo build --bin print-server
 
-      # 只有条码探针要这两个，而且都是**独立实现**这个原则的一部分：
+      # 探针用的第三方库装在**同一个 venv** 里，路径经 PY_BIN 传进去
+      # （三个探针驱动都收 PY_BIN，默认 sys.executable —— 本机怎么跑都行）：
       #   · zxingcpp —— 第三方解码器。自己解自己的条码不算数（Univer 那次「橙色
       #     边框过了 11 条单测」的同款风险），必须由不知道我们实现的 oracle 说
       #     「读出来是这串」。
       #   · rsvg-convert —— 第三方 SVG 渲染器。验的是「path 语法写错了」这类问题。
-      # 用 venv 而不是系统 python：ubuntu-24.04 的 python3 是 PEP 668 外部管理的，
-      # 且 venv 的路径正好通过 PY_BIN 传进 fault-inject-barcode-probe.py
-      # （三个探针驱动都收 PY_BIN，默认 sys.executable —— 本机怎么跑都行）。
-      # zxing-cpp 与 pillow 都有 manylinux wheel，不需要编译工具链。
-      - name: 装条码解码 oracle（zxingcpp + Pillow + rsvg）
+      #   · python-docx —— `docx-order-table.py` 从它抠 ECMA-376 的 CT_* 元素
+      #     顺序表，`verify-docx.py` 拿这张表当判据（顺序错 = Word 直接报不可读）。
+      #     **跨进程靠解释器传递**：`verify-docx.py` 用 `sys.executable` 调
+      #     `docx-order-table.py`，所以「探针跑在哪个 python 上」就等于「用哪份
+      #     python-docx」。第三处本机路径（2026-10-12 CI 首跑才暴露）就是这么修的。
+      # 用 venv 而不是系统 python：ubuntu-24.04 的 python3 是 PEP 668 外部管理的。
+      # 四个包都有 manylinux wheel，不需要编译工具链。
+      - name: 装探针 oracle（zxingcpp + Pillow + rsvg + python-docx）
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq librsvg2-bin
           python3 -m venv /tmp/barcode-oracle
-          /tmp/barcode-oracle/bin/pip install -q zxing-cpp pillow
+          /tmp/barcode-oracle/bin/pip install -q zxing-cpp pillow python-docx
           echo "PY_BIN=/tmp/barcode-oracle/bin/python" >> "$GITHUB_ENV"
 
       - name: 跑故障注入（要服务）

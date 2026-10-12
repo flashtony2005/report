@@ -21,9 +21,9 @@ PNG，交给 zxing-cpp（C++ 移植版，业界通用实现）解回来，逐条
 
 ## 用法
 
-    /Users/lushaohui/.workbuddy-ai/binaries/python/envs/default/bin/python \
-        scripts/verify-barcode.py [--keep]
+    /usr/bin/env python3 scripts/verify-barcode.py [--keep]
 
+先在那个解释器里 `pip install zxing-cpp pillow`，再跑（缺库会给出安装命令）。
 先由 Rust 侧倒出位矩阵（`BARCODE_DUMP_DIR` 指向临时目录），再跑本脚本。
 """
 
@@ -39,7 +39,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SERVER = REPO / "print-server"
-VENV_PY = Path("/Users/lushaohui/.workbuddy-ai/binaries/python/envs/default/bin/python")
 
 # 栅格化倍数：二维码方形，一维码已经很扁，倍数要小一些
 QR_SCALE = 8
@@ -107,7 +106,7 @@ def main() -> None:
     except ImportError:
         fail(
             "缺少 zxingcpp（解码 oracle）。装法：\n"
-            f"  {VENV_PY} -m pip install zxing-cpp"
+            f"  {sys.executable} -m pip install zxing-cpp"
         )
 
     tmp = Path(tempfile.mkdtemp(prefix="barcode-verify-"))

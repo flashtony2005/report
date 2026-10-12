@@ -2030,7 +2030,7 @@ issues-ui / inline-ui / ai-dropped），**要么判据根本不读用例名**（
 
 15/20 有跑器（8 免服务 + 7 要服务）。剩 5 个理由真实（odbc 原生驱动 / 有状态门禁），不许含糊。
 
-### 三处本机写死逐个消掉（迁出的前提不是「想跑」）
+### 本机写死逐个消掉（第四处只在 CI 上暴露）（迁出的前提不是「想跑」）
 
 | 写死的 | 现在 | 为什么 |
 | --- | --- | --- |
@@ -2077,12 +2077,36 @@ issues-ui / inline-ui / ai-dropped），**要么判据根本不读用例名**（
 
 - 三个作业都钉 **`ubuntu-24.04`**：`ubuntu-latest` 将于 **2026-10-19~11-19 迁 26.04**（changelog 2026-09-17 GA）。窗口内随机落镜像 = 「没改代码却红了」。等对照 run 再换。
 - `checkout@v7` · `setup-node@v7` · `cache@v6` · `upload-artifact@v7`（输入名从 raw `action.yml` 核实，不靠记忆）。
-- 新作业 `fault-inject-service`：钉 24.04 · `timeout-minutes: 150`（本机 88 条注入 ≈974s；CI 按 2 倍估 + 冷编译；**第一次绿了要按实测收紧**）· 两份 node_modules · cargo 缓存同 key · 预热 `cargo build`（脚本里是 `--offline`）· oracle：`librsvg2-bin` + venv `zxing-cpp`/`pillow` → `PY_BIN` 写进 `$GITHUB_ENV`。
+- 新作业 `fault-inject-service`：钉 24.04 · `timeout-minutes: 150`（本机 88 条注入 ≈**933s**；CI 按 2 倍估 + 冷编译；**第一次绿了要按实测收紧**）· 两份 node_modules · cargo 缓存同 key · 预热 `cargo build`（脚本里是 `--offline`）· oracle：`librsvg2-bin` + **同一个 venv** 里的 `zxing-cpp`/`pillow`/`python-docx` → `PY_BIN` 写进 `$GITHUB_ENV`。
 - 端口：4 个脚本共用 18888，另三个 18903 / 18905 / 18907。
+
+### 🔴 第一次 CI 就红了：**第四处写死**（`a7989b2` → run #21，`gates` 183s 绿 / `fault-inject` 780s 绿 / 只有新作业红）
+
+`docx-order-table.py` 里写死 `VENV = /Users/lushaohui/…/envs/default`，`find_docx_package()`
+拿它 `sys.path.insert` 找 `python-docx`。**CI 上那个目录不存在，oracle venv 里也没装 python-docx** ⇒
+探针报「缺包」（其实是「路径写错」），基线红、注入不成立、退出码 2。
+
+**为什么前三处没遮住它**：链条是 `verify-docx.py` → `sys.executable` 起子进程 → `docx-order-table.py`，
+「哪个 python 跑探针」==「用哪份 python-docx」。**中间任何一层写死路径，链就在那点断掉**，
+而断点上的报错指向症状那一层（缺包），不是原因那一层。
+
+修法（比 `PY_BIN` 更彻底 —— **不依赖任何路径**）：`DOCX_ORDER_PKG` 显式覆盖 →
+`import docx` 从**当前解释器**取包 → 都没有就 `sys.exit` 并打印
+`{sys.executable} -m pip install --only-binary=:all: python-docx`。
+配套：CI oracle venv 从「zxing-cpp pillow」扩成加 `python-docx`（**同一个 venv** 经 `PY_BIN` 传）。
+仓库扫尾 `/Users/lushaohui`：`ts-check.sh`/`node-bin.sh`/`ts-project-check.sh` 的几条是**候选回落**
+（首选项目 node_modules），`print-server/scripts/*-e2e.py` 手动跑；CI 可见的只剩
+`verify-barcode.py` 安装提示（`VENV_PY` → `sys.executable`）。
+本机复验 `CI=true PY_BIN=<venv> --only docx` → 14/14 + 基线绿（171s）。
+
+> **教训**：环境债会以「缺包 / 缺驱动」的样子出现。判据不是「grep 过绝对路径没有」，
+> 而是「换机器、换用户、换解释器，这条链还成立吗」。
+> 锚点腐坏与环境腐坏是**同一类病的两个面** —— 外部事实悄悄变了，检查还在原地绿。
+> CI 暴露后一半，`--check-anchors` 提前暴露前一半，**两个都需要**。
 
 ### 仍未验
 
-CI 上一次都没跑过（本机全绿 ≠ CI 会绿，§二十一.13 / .18 各有一次代价）。
+CI 首跑红了（见上），修完**还没复核**。本机全绿 ≠ CI 会绿这条纪律 §二十一.13 / .18 各付过一次代价，这里是第三次。
 「三个作业并行不撞端口」只在设计上成立。
 
 ---

@@ -21,7 +21,7 @@
 #   python3 scripts/docx-order-table.py            # 打印 JSON
 #   python3 scripts/docx-order-table.py -o f.json  # 写文件
 #
-# 退出码：0 = 抽出成功；2 = python-docx 不在（**不允许静默跳过** —— 判据缺了
+# 退出码：0 = 抽出成功；1 = python-docx 不在（**不允许静默跳过** —— 判据缺了
 # 就等于这条检查是摆设，必须让人看见）。
 import argparse
 import glob
@@ -29,8 +29,7 @@ import json
 import os
 import re
 import sys
-
-VENV = "/Users/lushaohui/.workbuddy-ai/binaries/python/envs/default"
+from pathlib import Path
 
 # python-docx 里**没有** `_tag_seq` 的五个（它用别的机制表达），手工补。
 # 这五条结构简单、歧义小，但**来源是我**，所以要标出来。
@@ -60,17 +59,41 @@ HAND_WRITTEN_NOTE = (
 
 
 def find_docx_package() -> str:
-    """定位 python-docx 安装位置。找不到就 exit 2 —— 别静默退化成空表。"""
-    site = os.path.join(VENV, "lib")
-    if not os.path.isdir(site):
-        raise SystemExit(f"✗ 找不到隔离 venv：{VENV}\n  先：{VENV}/bin/pip install --only-binary=:all: python-docx")
-    for cand in glob.glob(os.path.join(site, "python3*/site-packages/docx")):
-        if os.path.isdir(cand):
-            return cand
+    """定位 python-docx 的包目录。找不到就 exit 2 —— 别静默退化成空表。
+
+    顺序（先问显式，再问当前解释器，**不猜绝对路径**）：
+    1. `$DOCX_ORDER_PKG` —— 调用方显式指定；
+    2. **当前解释器**能否 `import docx` —— 这是可移植的那条路：
+       `verify-docx.py` 用 `sys.executable` 调本脚本，所以「谁的 python 跑探针」
+       就决定了「用哪份 python-docx」。CI 上由作业把 `PY_BIN` 指向装了
+       python-docx 的 venv，本机同理。
+    3. 都不行 → exit 2 并给出**可移植**的装法（`sys.executable`，不是某台机器的路径）。
+
+    ⚠️ 这里原来写死过 `/Users/lushaohui/…/envs/default`（第四处本机路径，2026-10-12
+    在 CI 上才发现：本地因为那个 venv 真的存在而一直绿着）。教训与
+    `scripts/server_bin.py` 同一条：**写死的路径只在写它的那台机器上成立**。
+    """
+    env = os.environ.get("DOCX_ORDER_PKG")
+    if env:
+        cand = Path(env)
+        if (cand / "oxml").is_dir():
+            return str(cand)
+        raise SystemExit(f"✗ $DOCX_ORDER_PKG 指的不是 python-docx 包目录：{env}")
+
+    try:
+        import docx  # type: ignore
+    except ImportError:
+        pass
+    else:
+        pkg = Path(docx.__file__).resolve().parent
+        if (pkg / "oxml").is_dir():
+            return str(pkg)
+
     raise SystemExit(
-        "✗ python-docx 不在隔离 venv 里。\n"
-        f"  装它：{VENV}/bin/pip install --only-binary=:all: python-docx\n"
-        "  （--only-binary 是为了**不触发本地编译**：装不上就明说，别悄悄编一堆 C）"
+        "✗ 当前解释器里没有 python-docx（顺序表抽不出来 ⇒ 这条判据是摆设，不许跳过）。\n"
+        f"  装它：{sys.executable} -m pip install --only-binary=:all: python-docx\n"
+        "  （--only-binary 是为了**不触发本地编译**：装不上就明说，别悄悄编一堆 C）\n"
+        "  或者用 $DOCX_ORDER_PKG 直接指到已装好的 python-docx 包目录。"
     )
 
 
