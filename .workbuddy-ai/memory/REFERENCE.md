@@ -2114,7 +2114,9 @@ issues-ui / inline-ui / ai-dropped），**要么判据根本不读用例名**（
 
 判据是**注解**不是 job success：notice 逐条列脚本名 + 耗时才是「闸真跑了」的证据。
 Node-20-deprecated / ubuntu-latest-migration 两条 GitHub 告警继续缺席 ⇒ 钉镜像 + 升 action 一直生效。
-CI 只比本机 M4（952s）慢 **15%**，「共享 runner 慢 2 倍」的估计偏保守了。
+CI 只比本机 M4（952s）慢 15%，「共享 runner 慢 2 倍」偏保守。
+⚠️ 但**方差比想象大**：run #23 service 脚本 1350s（慢 23%，`report-paper` 311→382s）
+⇒ **按一个实测点收紧阈值，随时会被下一次抖动打穿**；要看第二个点。
 ⇒ `timeout-minutes: 150` → **45**（≈实测 2.2 倍）。**150 分钟本身也是静默失败：真的挂住要两个半小时才发现。**
 
 ### 仍未验
