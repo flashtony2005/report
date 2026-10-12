@@ -281,9 +281,12 @@ jobs:
   fault-inject-service:
     name: fault-inject-service（7 个注入 · 要真服务）
     runs-on: ubuntu-24.04
-    # ~90 条注入，每条一次 cargo 增量编译 + 一次探针；本机（M4，热缓存）实测见
-    # 《架构体检》§13.8，CI 共享 runner 按 2 倍估。timeout 按估算值再留一倍。
-    timeout-minutes: 150
+    # 依据是**实测**，不再是估算（run #21，2026-10-12 第一次真跑后收紧）：
+    #   作业墙钟 20m09s，其中脚本本体 1096s（image 36 · chart 63 · docx 200 · html 188 ·
+    #   conditional 106 · barcode 192 · paper 311）。本机 M4 热缓存 952s ⇒ CI 慢 15%。
+    #   45 分钟 ≈ 实测的 2.2 倍：够覆盖共享 runner 的抖动与冷缓存，
+    #   又不至于让「真的挂住」白等两个半小时才发现。
+    timeout-minutes: 45
     env:
       FAULT_INJECT_LOG_DIR: ${{ github.workspace }}/fault-inject-logs
 
